@@ -365,10 +365,13 @@ commandPathOfRequest request =
     RunTestList -> ["test", "list"]
     RunControlStatus -> ["control", "status"]
     RunControlPlan -> ["control", "plan"]
+    RunControlReconcile -> ["control", "reconcile"]
+    RunControlDelete -> ["control", "delete"]
     RunControlArtifactImport _ _ -> ["control", "import-artifact"]
     RunControlArtifactDiscard _ -> ["control", "discard-artifact-staging"]
     RunControlInspectNodeArchive -> ["control", "inspect-node-archive"]
     RunControlInspectImageAttempt _ -> ["control", "inspect-image-attempt"]
+    RunInternalKindController _ -> ["internal-kind-controller"]
     ShowCommands format ->
       case format of
         CommandsPlain -> ["commands"]

@@ -11,6 +11,7 @@ module Prodbox.Config.KindPlan
   , kindPlanScope
   , kindPlanNodeImage
   , matchesObservedKindNodeRun
+  , kindNodeRunArguments
   , KindNodeCreateInput (..)
   , kindNodeVarVolumeName
   , kindNodeVarVolumeNameForScope
@@ -78,8 +79,13 @@ matchesObservedKindNodeRun :: KindPlan -> String -> String -> [String] -> Bool
 matchesObservedKindNodeRun plan kindDigest localImage arguments =
   kindDigest == "sha256:50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54"
     && isCanonicalSha256Digest localImage
-    && ':' `notElem` scopeRoot scope
-    && arguments == expected
+    && ':' `notElem` scopeRoot (kindPlanScope plan)
+    && arguments == kindNodeRunArguments plan localImage
+
+-- | The exact Docker argv the observed v0.32.0 provider uses for the node. It
+-- names no resource and grants no authority; the node proposal records it.
+kindNodeRunArguments :: KindPlan -> String -> [String]
+kindNodeRunArguments plan localImage = expected
  where
   scope = kindPlanScope plan
   cluster = scopeKindName scope
@@ -417,7 +423,9 @@ renderKindConfigWithImage plan image =
           .= object
             [ "apiServerAddress" .= ("127.0.0.1" :: Text.Text)
             , "apiServerPort" .= scopeApiPort scope
-            , "disableDefaultCNI" .= True
+            -- The default CNI is kindnet from the pinned node image: it needs no
+            -- external pull and was observed to enforce NetworkPolicy with real
+            -- sockets. disableDefaultCNI is therefore deliberately absent.
             ]
       , "nodes"
           .= [ object

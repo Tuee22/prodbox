@@ -230,6 +230,7 @@ commandRegistry =
         , gatewayGroup
         , helpLeaf
         , hostGroup
+        , internalKindControllerLeaf
         , internalRpcBirthControllerLeaf
         , nukeLeaf
         , testGroupSpec
@@ -300,6 +301,12 @@ parserForPath path =
   case path of
     ["control", "status"] -> Just (pure RunControlStatus)
     ["control", "plan"] -> Just (pure RunControlPlan)
+    ["control", "reconcile"] -> Just (pure RunControlReconcile)
+    ["control", "delete"] ->
+      Just
+        ( RunControlDelete
+            <$ flag' () (long "yes" <> help "Confirm removal of the recorded node, volume and network")
+        )
     ["control", "import-artifact"] ->
       Just (RunControlArtifactImport <$> strArgument (metavar "ROLE") <*> strArgument (metavar "SOURCE"))
     ["control", "discard-artifact-staging"] ->
@@ -308,6 +315,8 @@ parserForPath path =
     ["control", "inspect-image-attempt"] ->
       Just (RunControlInspectImageAttempt <$> strArgument (metavar "OPERATION"))
     ["internal-rpc-birth-controller"] -> Just internalRpcBirthControllerParser
+    ["internal-kind-controller"] ->
+      Just (RunInternalKindController <$> many (strArgument (metavar "ENVELOPE")))
     ["admin-action", "run"] ->
       Just (RunNative . NativeAdminAction <$> adminActionRunParser)
     ["aws", "policy"] ->
@@ -742,6 +751,40 @@ internalRpcBirthControllerPrefix =
   , ("hard-ns", "NANOSECONDS", "Original monotonic hard deadline")
   , ("stop-ns", "NANOSECONDS", "Original monotonic stop deadline")
   ]
+
+internalKindControllerLeaf :: CommandSpec
+internalKindControllerLeaf =
+  leafWithArgs
+    "internal-kind-controller"
+    "Run one managed kind node attempt"
+    "Internal program submitted by the kind launcher inside the kind controller unit. Exact retained records, artifacts and an observed placement are required; arguments alone grant no admission and only a test identity is admitted."
+    [ argument "selected" "SELECTED" "Absolute path of the selected bootstrap configuration."
+    , argument "operation" "OPERATION" "Exact retained operation identifier."
+    , argument "client-path" "CLIENT" "Absolute path of the launching executable."
+    , argument "client-digest" "DIGEST" "SHA-256 digest of the launching executable."
+    , argument "result" "RESULT" "Path where one result line is written."
+    , argument "outer-ns" "NANOSECONDS" "Original monotonic outer deadline."
+    , argument "work-ns" "NANOSECONDS" "Original monotonic work deadline."
+    , argument "hard-ns" "NANOSECONDS" "Original monotonic hard deadline."
+    , argument "stop-ns" "NANOSECONDS" "Original monotonic stop deadline."
+    , argument "finish-ns" "NANOSECONDS" "Original monotonic finish deadline."
+    ]
+    []
+    [ example
+        [ "internal-kind-controller"
+        , "/path/selected.dhall"
+        , "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        , "/path/prodbox"
+        , "sha256:" ++ replicate 64 'a'
+        , "/path/result"
+        , "900000000000"
+        , "600000000000"
+        , "610000000000"
+        , "640000000000"
+        , "700000000000"
+        ]
+        "Closed envelope supplied by the kind launcher"
+    ]
 
 internalRpcBirthControllerFinish :: (String, String, String)
 internalRpcBirthControllerFinish =
@@ -1648,6 +1691,18 @@ controlGroup =
         "Render candidate kind configuration without creating or inspecting resources."
         []
         [example ["control", "plan"] "Review the candidate kind configuration."]
+    , leaf
+        "reconcile"
+        "Create a new test environment's kind prerequisites and node attempt"
+        "Test identities only. Load the retained node archive, create the kind network and node volume, record the node proposal, then run one bounded managed kind node attempt. Always ends Incomplete today: cluster initialization, kubeconfig, readiness and removal are not delivered, and created resources are retained."
+        []
+        [example ["control", "reconcile"] "Attempt the retained test environment."]
+    , leaf
+        "delete"
+        "Remove a new test environment's recorded kind resources"
+        "Requires --yes. Test identities with an exactly matching recorded operation only: remove the recorded node, node volume and kind network in that order, each with its own attempt and result record, stopping at the first step that is not completely recorded. Host data, the retained root, artifacts and records remain."
+        [flagOption "yes" Nothing Nothing "Confirm removal"]
+        [example ["control", "delete", "--yes"] "Remove the recorded test resources."]
     , leafWithArgs
         "import-artifact"
         "Import a declared bootstrap artifact"

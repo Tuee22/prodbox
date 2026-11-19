@@ -170,6 +170,9 @@ Disposition `Preserved` retains capability with the common context/engine. `Repl
 | C143 | `prodbox control inspect-node-archive` | `prodbox control inspect-node-archive` | Preserved | 1 | Operator | `--verbose`, `--version`, `--config` | — |
 | C144 | `prodbox control inspect-image-attempt` | `prodbox control inspect-image-attempt` | Preserved | 1 | Operator | `--verbose`, `--version`, `--config` | — |
 | C145 | `prodbox test list` | `prodbox test list` | Preserved | 1 | Developer | `--verbose`, `--version`, `--config` | — |
+| C146 | `prodbox control reconcile` | `prodbox control reconcile` | Preserved | 1 | Operator | `--verbose`, `--version`, `--config` | — |
+| C148 | `prodbox control delete` | `prodbox control delete` | Preserved | 1 | Operator | `--verbose`, `--version`, `--yes`, `--config` | — |
+| C147 | `prodbox internal-kind-controller` | `prodbox internal kind-controller` | Internalized | 1 | Internal | `--verbose`, `--version`, `--config` | — |
 
 ## Option disposition
 

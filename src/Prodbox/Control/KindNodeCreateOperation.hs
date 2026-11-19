@@ -95,6 +95,11 @@ import Prodbox.Control.KindKubeconfigYaml
   , matchesPinnedKindKubeadmConfig
   )
 import Prodbox.Control.KindLease (KindOperationOutcome, withRecoveredKindOperation)
+import Prodbox.Control.KindNodeBootstrap
+  ( bootstrapInputReply
+  , bootstrapReadReply
+  , classifyBootstrapRequest
+  )
 import Prodbox.Control.KindNodeCreateIntent
   ( KindNodeCandidateWrite (..)
   , KindNodeConfigAttemptObservation (..)
@@ -315,6 +320,7 @@ data KindNodeBroker
       !(Maybe KindNodeRunAction -> [String] -> Bytes.ByteString -> IO KindNodeConfigCandidateObservation)
       !(IORef (Maybe KindNodeConfigAction))
       !(Maybe (Maybe KindNodeRunAction -> [String] -> Bytes.ByteString -> IO KindNodeConfigAction))
+      !(Maybe KindNodeRunAction -> [String] -> Bytes.ByteString -> IO (Maybe KindDockerReply))
 
 type KindNodeConfigAdmission = KindNodeCreateIntent -> String -> DockerSession -> IO Bool -> IO Bool
 
@@ -379,7 +385,15 @@ newKindNodeBrokerInternal bootstrap operation session info@(DockerConnectedInfo 
               state <- newMVar (KindNodeBrokerOpen Nothing)
               candidate <- newIORef Nothing
               configAction <- newIORef Nothing
-              let bound = (== proposal) <$> observeRecordedKindNodeCreateIntent bootstrap operation stable
+              -- One bracket of the supplied stability around a single record
+              -- read. The read itself verifies the file's identity before and
+              -- after, so repeating the full closure inside it only multiplied
+              -- cost: nested through each action it reached seconds per request.
+              let bound = do
+                    before <- stable
+                    observed <- observeRecordedKindNodeCreateIntent bootstrap operation (pure True)
+                    after <- stable
+                    pure (before && after && observed == proposal)
               pure $
                 Just $
                   KindNodeBroker
@@ -400,15 +414,44 @@ newKindNodeBrokerInternal bootstrap operation session info@(DockerConnectedInfo 
                         )
                         admitConfig
                     )
+                    (bootstrapInputRequest bootstrap operation session bound nodeName)
     _ -> pure Nothing
+ where
+  nodeName = scopeKindName (bootstrapScope bootstrap) ++ "-control-plane"
+
+-- Stdin forms of the bootstrap route: recognised exactly, run only when the
+-- selected node is verified both before and after.
+bootstrapInputRequest
+  :: BootstrapProjection
+  -> String
+  -> DockerSession
+  -> IO Bool
+  -> String
+  -> Maybe KindNodeRunAction
+  -> [String]
+  -> Bytes.ByteString
+  -> IO (Maybe KindDockerReply)
+bootstrapInputRequest bootstrap operation session bound nodeName previous arguments payload =
+  maybe (pure Nothing) serve (classifyBootstrapRequest nodeName arguments)
+ where
+  verifyNode = fmap (fmap snd) (verifyKindNodeRecorded bootstrap operation session bound previous)
+  serve request = do
+    before <- verifyNode
+    reply <- bootstrapInputReply bootstrap operation request payload (pure before)
+    after <- verifyNode
+    pure $
+      Just $
+        if before /= Nothing && before == after
+          then reply
+          else KindDockerReply 1 Bytes.empty (Bytes.pack "kind node observation unavailable\n")
 
 observeKindNodeBrokerResult :: KindNodeBroker -> IO (Maybe KindNodeRunAction)
-observeKindNodeBrokerResult (KindNodeBroker state _ _ _ _ _ _ _ _ _ _) = do
+observeKindNodeBrokerResult (KindNodeBroker state _ _ _ _ _ _ _ _ _ _ _) = do
   current <- readMVar state
   pure $ case current of KindNodeBrokerOpen value -> value; KindNodeBrokerClosed value -> value
 
 closeKindNodeBroker :: KindNodeBroker -> IO ()
-closeKindNodeBroker (KindNodeBroker state readGate _ _ _ _ _ _ _ _ _) = do
+closeKindNodeBroker (KindNodeBroker state readGate _ _ _ _ _ _ _ _ _ _) = do
   modifyMVar_ state $ \current -> pure $ case current of
     KindNodeBrokerOpen value -> KindNodeBrokerClosed value
     KindNodeBrokerClosed value -> KindNodeBrokerClosed value
@@ -416,10 +459,10 @@ closeKindNodeBroker (KindNodeBroker state readGate _ _ _ _ _ _ _ _ _) = do
 
 observeKindNodeBrokerConfigCandidate
   :: KindNodeBroker -> IO (Maybe KindNodeConfigCandidateObservation)
-observeKindNodeBrokerConfigCandidate (KindNodeBroker _ _ _ _ _ _ _ candidate _ _ _) = readIORef candidate
+observeKindNodeBrokerConfigCandidate (KindNodeBroker _ _ _ _ _ _ _ candidate _ _ _ _) = readIORef candidate
 
 observeKindNodeBrokerConfigAction :: KindNodeBroker -> IO (Maybe KindNodeConfigAction)
-observeKindNodeBrokerConfigAction (KindNodeBroker _ _ _ _ _ _ _ _ _ action _) = readIORef action
+observeKindNodeBrokerConfigAction (KindNodeBroker _ _ _ _ _ _ _ _ _ action _ _) = readIORef action
 
 -- | Serve the serialized broker on already owned endpoints. The outer owner
 -- remains responsible for bounding and settling the worker and recovering any
@@ -435,39 +478,51 @@ serveKindNodeBroker directory stable broker =
 
 -- Without a separately supplied admission, input is observed and refused.
 runKindNodeBrokerInput :: KindNodeBroker -> KindDockerRequest -> IO KindDockerReply
-runKindNodeBrokerInput broker@(KindNodeBroker state readGate _ _ bound _ _ candidate observe actionResult action) (KindDockerRequest arguments payload)
+runKindNodeBrokerInput broker@(KindNodeBroker state readGate _ _ bound _ _ candidate observe actionResult action bootstrapInput) (KindDockerRequest arguments payload)
   | Bytes.null payload = runKindNodeBrokerRequest broker arguments
   | otherwise = mask $ \restore -> do
       let handle current = case current of
             KindNodeBrokerClosed previous -> pure (KindNodeBrokerClosed previous, Right refused)
             KindNodeBrokerOpen previous -> do
-              observed <- try $ restore $ do
-                ready <- bound
-                candidateValue <-
-                  if ready then observe previous arguments payload else pure NodeConfigCandidateUnobservable
-                performed <- case (candidateValue, action) of
-                  (NodeConfigCandidateMatches, Just run) -> Just <$> run previous arguments payload
-                  _ -> pure Nothing
-                after <- bound
-                pure (candidateValue, performed, after)
-              case observed of
+              bootstrapped <- try (restore (bootstrapInput previous arguments payload))
+              case bootstrapped of
                 Left failure -> pure (KindNodeBrokerClosed previous, Left (failure :: SomeException))
-                Right (value, performed, after) -> do
-                  writeIORef candidate (Just value)
-                  writeIORef actionResult performed
-                  let success =
-                        after && case performed of
-                          Just
-                            ( NodeConfigActionReturned
-                                (DockerNodeConfigWriteReply 200)
-                                NodeConfigResultRecorded
-                                (Just (Right DockerNodeConfigMatches))
-                              ) -> True
-                          _ -> False
-                  pure $
-                    if success
-                      then (KindNodeBrokerOpen previous, Right (KindDockerReply 0 Bytes.empty Bytes.empty))
-                      else (KindNodeBrokerClosed previous, Right refused)
+                Right (Just reply) ->
+                  pure
+                    ( if kindDockerReplyExit reply == 0
+                        then KindNodeBrokerOpen previous
+                        else KindNodeBrokerClosed previous
+                    , Right reply
+                    )
+                Right Nothing -> configurationInput previous
+          configurationInput previous = do
+            observed <- try $ restore $ do
+              ready <- bound
+              candidateValue <-
+                if ready then observe previous arguments payload else pure NodeConfigCandidateUnobservable
+              performed <- case (candidateValue, action) of
+                (NodeConfigCandidateMatches, Just run) -> Just <$> run previous arguments payload
+                _ -> pure Nothing
+              after <- bound
+              pure (candidateValue, performed, after)
+            case observed of
+              Left failure -> pure (KindNodeBrokerClosed previous, Left (failure :: SomeException))
+              Right (value, performed, after) -> do
+                writeIORef candidate (Just value)
+                writeIORef actionResult performed
+                let success =
+                      after && case performed of
+                        Just
+                          ( NodeConfigActionReturned
+                              (DockerNodeConfigWriteReply 200)
+                              NodeConfigResultRecorded
+                              (Just (Right DockerNodeConfigMatches))
+                            ) -> True
+                        _ -> False
+                pure $
+                  if success
+                    then (KindNodeBrokerOpen previous, Right (KindDockerReply 0 Bytes.empty Bytes.empty))
+                    else (KindNodeBrokerClosed previous, Right refused)
       result <- modifyMVar state handle
       case result of
         Left failure -> closeKindDockerReadGate readGate >> throwIO failure
@@ -489,7 +544,7 @@ runBoundKindNodeWorker directory stable broker =
   runBoundKindDockerWorker (serveKindNodeBroker directory stable broker)
 
 runKindNodeBrokerRequest :: KindNodeBroker -> [String] -> IO KindDockerReply
-runKindNodeBrokerRequest broker@(KindNodeBroker state readGate session daemon bound node nodeObservation _ _ _ _) arguments = mask $ \restore -> do
+runKindNodeBrokerRequest broker@(KindNodeBroker state readGate session daemon bound node nodeObservation _ _ _ _ _) arguments = mask $ \restore -> do
   let handle current = case current of
         KindNodeBrokerClosed value -> pure (KindNodeBrokerClosed value, Right refused)
         KindNodeBrokerOpen previous -> do
@@ -558,9 +613,16 @@ nodeRead bootstrap operation session stable previous arguments = case arguments 
     , name
     ]
       | name == selected -> Just <$> addresses
-  _ -> pure Nothing
+  _ -> case classifyBootstrapRequest selected arguments of
+    Just request -> Just <$> bootstrapped request
+    Nothing -> pure Nothing
  where
   selected = scopeKindName (bootstrapScope bootstrap) ++ "-control-plane"
+  bootstrapped request = do
+    before <- verify
+    reply <- bootstrapReadReply bootstrap operation request (pure before)
+    after <- verify
+    pure (if before /= Nothing && before == after then reply else denied)
   denied = KindDockerReply 1 Bytes.empty (Bytes.pack "kind node observation unavailable\n")
   verify = fmap (fmap snd) (verifyKindNodeRecorded bootstrap operation session stable previous)
   role = do

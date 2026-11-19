@@ -2,6 +2,8 @@
 
 module Prodbox.TestRunner
   ( runTests
+  , runSelectedPhaseScenario
+  , runSelectedMutationCatalog
   , renderNamedLocalTestList
   , ClusterEvidence (..)
   , TestGate (..)
@@ -216,6 +218,8 @@ import Prodbox.Test.LifecycleCleanupClient
   , renderLifecycleTestHarnessCleanupError
   , runLifecycleTestHarnessCleanup
   )
+import Prodbox.Test.MutationExecutor (runMutationCatalog)
+import Prodbox.Test.Phase01Runner (runPhase01Scenario)
 import Prodbox.TestPlan
   ( HarnessPreparationStep (..)
   , NativeSuitePlan (..)
@@ -357,11 +361,11 @@ data TestRefusal
   | UnknownTopologySuite String
   deriving (Eq, Show)
 
-data NamedLocalSuite = NamedUnit | NamedEnvironment | NamedCli
+data NamedLocalSuite = NamedUnit | NamedEnvironment | NamedCli | NamedEvidence
   deriving (Eq, Show)
 
 namedLocalSuites :: [(String, NamedLocalSuite)]
-namedLocalSuites = [("unit", NamedUnit), ("env", NamedEnvironment), ("cli", NamedCli)]
+namedLocalSuites = [("unit", NamedUnit), ("env", NamedEnvironment), ("cli", NamedCli), ("evidence", NamedEvidence)]
 
 renderNamedLocalTestList :: String
 renderNamedLocalTestList =
@@ -370,6 +374,14 @@ renderNamedLocalTestList =
         : map (("  " ++) . fst) namedLocalSuites
         ++ ["Legacy topology-defined suites require a separate test topology and are not listed here."]
     )
+
+-- | The explicit-config scenario runner. The selected path names the owned
+-- test identity; nothing is resolved from the environment.
+runSelectedMutationCatalog :: IO ExitCode
+runSelectedMutationCatalog = runMutationCatalog
+
+runSelectedPhaseScenario :: FilePath -> IO ExitCode
+runSelectedPhaseScenario = runPhase01Scenario
 
 runTests :: FilePath -> TestCommand -> IO ExitCode
 runTests repoRoot command =
@@ -382,6 +394,7 @@ runTests repoRoot command =
           Just NamedUnit -> runNamedUnitTests repoRoot command
           Just NamedEnvironment -> runNamedEnvironmentTests repoRoot command
           Just NamedCli -> runNamedCliTests repoRoot command
+          Just NamedEvidence -> runNamedEvidenceTests repoRoot command
           Nothing
             | suiteName == "all" || "phase-" `isPrefixOf` suiteName ->
                 failWith ("The cumulative scenario runner is not implemented yet: " ++ suiteName)
@@ -408,6 +421,34 @@ runNamedUnitTests repoRoot command =
 runNamedEnvironmentTests :: FilePath -> TestCommand -> IO ExitCode
 runNamedEnvironmentTests repoRoot command =
   runNamedLocalTests "env" repoRoot command (runNamedIntegrationTests "env" repoRoot)
+
+-- The evidence suite runs only the scenario-evidence validator group of the
+-- unit executable: fabricated, missing, stale and wrong-scope reports must be
+-- rejected by independent comparison. It selects no deployment and no cluster.
+runNamedEvidenceTests :: FilePath -> TestCommand -> IO ExitCode
+runNamedEvidenceTests repoRoot command =
+  runNamedLocalTests "evidence" repoRoot command $ \testHome -> do
+    environment <-
+      getEnvironment >>= addBuildSupportEnvironment repoRoot . namedUnitEnvironment testHome
+    prepared <- ensureCanonicalOperatorBinary repoRoot environment
+    case prepared of
+      failure@(ExitFailure _) -> pure failure
+      ExitSuccess -> do
+        writeOutputLine "Running prodbox test evidence (scenario evidence validator)"
+        runCommandForExitCode
+          Subprocess
+            { subprocessPath = "cabal"
+            , subprocessArguments =
+                [ "test"
+                , "--builddir=.build"
+                , "test:prodbox-unit"
+                , "--test-show-details=direct"
+                , "--test-option=-p"
+                , "--test-option=/scenario evidence comparison/"
+                ]
+            , subprocessEnvironment = Just environment
+            , subprocessWorkingDirectory = Just repoRoot
+            }
 
 -- The legacy CLI suite exercises lifecycle paths with fake executables. Do
 -- not start it on a host with an existing RKE2 installation, even when a test

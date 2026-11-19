@@ -955,7 +955,7 @@ renderControlObservation observed =
     , "Docker connected info: " ++ connectedInfoText (controlConnectedInfo observed)
     , "Docker inventory: " ++ runtimeText (controlRuntime observed)
     , "Node image: " ++ imageText (controlImage observed)
-    , "Docker executable identity, image provenance and archive binding, Kubernetes readiness, network policy, and cloud resources were not checked."
+    , "Docker executable identity, image provenance and archive binding, cluster certificates and identity, network policy enforcement (observed only during `control reconcile`), and cloud resources were not checked."
     ]
  where
   daemonText DockerDaemonUnobservable = "unobservable"

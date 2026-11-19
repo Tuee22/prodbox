@@ -952,6 +952,7 @@ import Prodbox.Config.ComponentGraph
   , resolveCapabilityProviders
   , validateComponentGraph
   )
+import Prodbox.Config.DeploymentScope (DeploymentEnvironment (Test), deploymentScope)
 import Prodbox.Config.RetainedArtifacts
   ( RetainedArtifactDeclaration (..)
   , RetainedArtifactsSection (..)
@@ -988,6 +989,17 @@ import Prodbox.Config.Tier0
   )
 import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.ContainerImage qualified as ContainerImage
+import Prodbox.Control.KindKubeconfigYaml
+  ( decodeBoundedYamlDocuments
+  , matchesPinnedKindKubeadmConfig
+  )
+import Prodbox.Control.KindNodeBootstrap
+  ( BootstrapRequest (..)
+  , BootstrapStep (..)
+  , classifyBootstrapRequest
+  )
+import Prodbox.Control.NetworkEnforcement (EnforcementObservation (..), enforcementProven)
+import Prodbox.Control.Reconcile (kindUlaSubnet)
 import Prodbox.ControlPlane.AuthenticatedRuntime qualified as AuthenticatedRuntime
 import Prodbox.ControlPlane.AuthenticationRegistry
   ( controlPlaneSigningKeyInventory
@@ -3036,6 +3048,221 @@ targetSecretAgentStartupDiagnosticSuite =
             )
             `shouldBe` ControlPlaneRuntime.TargetSecretAgentStartupAuthenticationTrustConstruction
 
+-- | The subnet pre-created for the kind network must be the one kind itself
+-- proposes for the name (SHA-1 of name plus little-endian attempt, bytes 2..7
+-- under fc00::/8), so kind accepts the existing network. Expected values were
+-- computed independently with Python hashlib and checked against a real
+-- Docker network created from this function.
+controlReconcileSubnetSuite :: SuiteBuilder ()
+controlReconcileSubnetSuite =
+  describe "control reconcile network subnet" $ do
+    it "matches the independently computed kind ULA proposal" $ do
+      kindUlaSubnet "prodbox-t-probe" 0 `shouldBe` "fc00:22f9:ee5b:a01c::/64"
+    it "changes with the attempt number and the name" $ do
+      kindUlaSubnet "prodbox-t-probe" 1 `shouldNotBe` kindUlaSubnet "prodbox-t-probe" 0
+      kindUlaSubnet "prodbox-t-other" 0 `shouldNotBe` kindUlaSubnet "prodbox-t-probe" 0
+
+-- | The kubeadm configuration the pinned kind v0.32.0 produced for node image
+-- v1.36.1 (kubeadm v1beta4: extra arguments are ordered name/value lists). It
+-- was captured from a throwaway real cluster with the cluster name replaced.
+realKubeadmV1beta4Document :: BS.ByteString
+realKubeadmV1beta4Document =
+  TextEncoding.encodeUtf8 (Text.pack realKubeadmV1beta4Text)
+
+realKubeadmV1beta4Text :: String
+realKubeadmV1beta4Text =
+  "apiServer:\n"
+    ++ "  certSANs:\n"
+    ++ "  - localhost\n"
+    ++ "  - 127.0.0.1\n"
+    ++ "  extraArgs:\n"
+    ++ "  - name: runtime-config\n"
+    ++ "    value: \"\"\n"
+    ++ "apiVersion: kubeadm.k8s.io/v1beta4\n"
+    ++ "clusterName: prodbox-t-chk\n"
+    ++ "controlPlaneEndpoint: prodbox-t-chk-control-plane:6443\n"
+    ++ "controllerManager:\n"
+    ++ "  extraArgs:\n"
+    ++ "  - name: enable-hostpath-provisioner\n"
+    ++ "    value: \"true\"\n"
+    ++ "kind: ClusterConfiguration\n"
+    ++ "kubernetesVersion: v1.36.1\n"
+    ++ "networking:\n"
+    ++ "  podSubnet: 10.244.0.0/16\n"
+    ++ "  serviceSubnet: 10.96.0.0/16\n"
+    ++ "scheduler:\n"
+    ++ "  extraArgs: null\n"
+    ++ "---\n"
+    ++ "apiVersion: kubeadm.k8s.io/v1beta4\n"
+    ++ "bootstrapTokens:\n"
+    ++ "- token: abcdef.0123456789abcdef\n"
+    ++ "kind: InitConfiguration\n"
+    ++ "localAPIEndpoint:\n"
+    ++ "  advertiseAddress: 172.18.0.2\n"
+    ++ "  bindPort: 6443\n"
+    ++ "nodeRegistration:\n"
+    ++ "  criSocket: unix:///run/containerd/containerd.sock\n"
+    ++ "  kubeletExtraArgs:\n"
+    ++ "  - name: node-ip\n"
+    ++ "    value: 172.18.0.2\n"
+    ++ "  - name: provider-id\n"
+    ++ "    value: kind://docker/prodbox-t-chk/prodbox-t-chk-control-plane\n"
+    ++ "  - name: node-labels\n"
+    ++ "    value: \"\"\n"
+    ++ "skipPhases:\n"
+    ++ "- preflight\n"
+    ++ "---\n"
+    ++ "apiVersion: kubeadm.k8s.io/v1beta4\n"
+    ++ "controlPlane:\n"
+    ++ "  localAPIEndpoint:\n"
+    ++ "    advertiseAddress: 172.18.0.2\n"
+    ++ "    bindPort: 6443\n"
+    ++ "discovery:\n"
+    ++ "  bootstrapToken:\n"
+    ++ "    apiServerEndpoint: prodbox-t-chk-control-plane:6443\n"
+    ++ "    token: abcdef.0123456789abcdef\n"
+    ++ "    unsafeSkipCAVerification: true\n"
+    ++ "kind: JoinConfiguration\n"
+    ++ "nodeRegistration:\n"
+    ++ "  criSocket: unix:///run/containerd/containerd.sock\n"
+    ++ "  kubeletExtraArgs:\n"
+    ++ "  - name: node-ip\n"
+    ++ "    value: 172.18.0.2\n"
+    ++ "  - name: provider-id\n"
+    ++ "    value: kind://docker/prodbox-t-chk/prodbox-t-chk-control-plane\n"
+    ++ "  - name: node-labels\n"
+    ++ "    value: \"\"\n"
+    ++ "skipPhases:\n"
+    ++ "- preflight\n"
+    ++ "---\n"
+    ++ "apiVersion: kubelet.config.k8s.io/v1beta1\n"
+    ++ "cgroupDriver: systemd\n"
+    ++ "cgroupRoot: /kubelet\n"
+    ++ "evictionHard:\n"
+    ++ "  imagefs.available: 0%\n"
+    ++ "  nodefs.available: 0%\n"
+    ++ "  nodefs.inodesFree: 0%\n"
+    ++ "failSwapOn: false\n"
+    ++ "imageGCHighThresholdPercent: 100\n"
+    ++ "kind: KubeletConfiguration\n"
+    ++ "---\n"
+    ++ "apiVersion: kubeproxy.config.k8s.io/v1alpha1\n"
+    ++ "conntrack:\n"
+    ++ "  maxPerCore: 0\n"
+    ++ "iptables:\n"
+    ++ "  minSyncPeriod: 1s\n"
+    ++ "kind: KubeProxyConfiguration\n"
+    ++ "mode: iptables\n"
+
+kindKubeadmShapeSuite :: SuiteBuilder ()
+kindKubeadmShapeSuite =
+  describe "kind kubeadm configuration shape" $ do
+    it "accepts the real v1beta4 configuration and rejects a changed one" $ do
+      scope <- either (fail . show) pure (deploymentScope "/tmp/prodbox-kubeadm-shape" Test "chk" 26443)
+      documents <- decodeBoundedYamlDocuments realKubeadmV1beta4Document >>= either (fail . show) pure
+      length documents `shouldBe` 5
+      matchesPinnedKindKubeadmConfig scope "172.18.0.2" "v1.36.1" "systemd" documents `shouldBe` True
+      matchesPinnedKindKubeadmConfig scope "172.18.0.3" "v1.36.1" "systemd" documents `shouldBe` False
+      matchesPinnedKindKubeadmConfig scope "172.18.0.2" "v1.36.0" "systemd" documents `shouldBe` False
+      changed <-
+        decodeBoundedYamlDocuments
+          ( TextEncoding.encodeUtf8
+              ( Text.replace
+                  "unsafeSkipCAVerification: true"
+                  "unsafeSkipCAVerification: false"
+                  (Text.pack realKubeadmV1beta4Text)
+              )
+          )
+          >>= either (fail . show) pure
+      matchesPinnedKindKubeadmConfig scope "172.18.0.2" "v1.36.1" "systemd" changed `shouldBe` False
+
+-- | The post-config requests kind v0.32.0 sent in a real run with the pinned
+-- node image, recorded with a logging wrapper. Only these exact forms for the
+-- selected node are recognised.
+kindNodeBootstrapSuite :: SuiteBuilder ()
+kindNodeBootstrapSuite =
+  describe "kind node bootstrap requests" $ do
+    let node = "prodbox-t-run-control-plane"
+        admin = "--kubeconfig=/etc/kubernetes/admin.conf"
+        exec rest = ["exec", "--privileged", node] ++ rest
+        execInput rest = ["exec", "--privileged", "-i", node] ++ rest
+    it "recognises each observed form for the selected node" $ do
+      classifyBootstrapRequest
+        node
+        (exec ["kubeadm", "init", "--config=/kind/kubeadm.conf", "--skip-token-print", "--v=6"])
+        `shouldBe` Just (RequestStep StepInit)
+      classifyBootstrapRequest
+        node
+        (exec ["kubectl", admin, "taint", "nodes", "--all", "node-role.kubernetes.io/control-plane-"])
+        `shouldBe` Just (RequestStep StepTaint)
+      classifyBootstrapRequest
+        node
+        ( exec
+            [ "kubectl"
+            , admin
+            , "label"
+            , "nodes"
+            , "--all"
+            , "node.kubernetes.io/exclude-from-external-load-balancers-"
+            ]
+        )
+        `shouldBe` Just (RequestStep StepLabel)
+      classifyBootstrapRequest node (execInput ["kubectl", "create", admin, "-f", "-"])
+        `shouldBe` Just (RequestStep StepCniCreate)
+      classifyBootstrapRequest node (execInput ["kubectl", admin, "apply", "-f", "-"])
+        `shouldBe` Just (RequestStep StepStorageApply)
+      classifyBootstrapRequest node (exec ["cat", "/etc/kubernetes/admin.conf"])
+        `shouldBe` Just RequestReadAdmin
+      classifyBootstrapRequest node (exec ["cat", "/kind/manifests/default-storage.yaml"])
+        `shouldBe` Just (RequestReadManifest StepStorageApply)
+      let portLabel = "{{ index .Config.Labels \"desktop.docker.io/ports/6443/tcp\" }}"
+          portMapping =
+            "{{ with (index (index .NetworkSettings.Ports \"6443/tcp\") 0) }}{{ printf \"%s\t%s\" .HostIp .HostPort }}{{ end }}"
+      classifyBootstrapRequest node ["inspect", "--format", portLabel, node]
+        `shouldBe` Just (RequestInspect portLabel)
+      classifyBootstrapRequest node ["inspect", "--format", portMapping, node]
+        `shouldBe` Just (RequestInspect portMapping)
+    it "refuses another node, another path, another flag and extra arguments" $ do
+      classifyBootstrapRequest "other" (exec ["cat", "/etc/kubernetes/admin.conf"]) `shouldBe` Nothing
+      classifyBootstrapRequest node (exec ["cat", "/etc/shadow"]) `shouldBe` Nothing
+      classifyBootstrapRequest
+        node
+        (exec ["kubeadm", "init", "--config=/tmp/other.conf", "--skip-token-print", "--v=6"])
+        `shouldBe` Nothing
+      classifyBootstrapRequest node (exec ["kubeadm", "reset"]) `shouldBe` Nothing
+      classifyBootstrapRequest
+        node
+        ( exec
+            [ "kubectl"
+            , "--kubeconfig=/tmp/other"
+            , "taint"
+            , "nodes"
+            , "--all"
+            , "node-role.kubernetes.io/control-plane-"
+            ]
+        )
+        `shouldBe` Nothing
+      classifyBootstrapRequest node (execInput ["kubectl", "delete", admin, "-f", "-"]) `shouldBe` Nothing
+      classifyBootstrapRequest node (exec ["kubectl", admin, "apply", "-f", "-", "--force"])
+        `shouldBe` Nothing
+      classifyBootstrapRequest node ["inspect", "--format", "{{json .}}", node] `shouldBe` Nothing
+
+-- | Enforcement is proven only by a working observer, a held allow, a real deny
+-- and a restored connection once the policy is gone. Each broken observation
+-- is a distinct negative control.
+networkEnforcementVerdictSuite :: SuiteBuilder ()
+networkEnforcementVerdictSuite =
+  describe "network enforcement verdict" $ do
+    let proven = EnforcementObservation True True True False True
+    it "accepts only the complete observation" $ do
+      enforcementProven proven `shouldBe` True
+    it "rejects a blind observer, a lost allow, a missing deny and an unrestored connection" $ do
+      enforcementProven proven {observedBaselineAllowed = False} `shouldBe` False
+      enforcementProven proven {observedBaselineOther = False} `shouldBe` False
+      enforcementProven proven {observedPolicyAllowed = False} `shouldBe` False
+      enforcementProven proven {observedPolicyOther = True} `shouldBe` False
+      enforcementProven proven {observedRemovedOther = False} `shouldBe` False
+
 main :: IO ()
 main = do
   arguments <- getArgs
@@ -3290,6 +3517,10 @@ byteFailureCases =
 
 unitSuite :: SuiteBuilder ()
 unitSuite = do
+  controlReconcileSubnetSuite
+  networkEnforcementVerdictSuite
+  kindNodeBootstrapSuite
+  kindKubeadmShapeSuite
   targetSecretAgentStartupDiagnosticSuite
   adminActionQuotaJournalSuite
   adminActionLifecycleSuite

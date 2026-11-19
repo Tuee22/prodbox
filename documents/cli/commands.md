@@ -72,6 +72,8 @@ The generated payload below remains unchanged. It describes actual old command n
 | `prodbox commands` | Render the command registry |
 | `prodbox control status` | Inspect local control observations |
 | `prodbox control plan` | Render the selected kind configuration |
+| `prodbox control reconcile` | Create a new test environment's kind prerequisites and node attempt |
+| `prodbox control delete` | Remove a new test environment's recorded kind resources |
 | `prodbox control import-artifact` | Import a declared bootstrap artifact |
 | `prodbox control discard-artifact-staging` | Discard the selected artifact staging file |
 | `prodbox control inspect-node-archive` | Inspect the retained OCI node archive |
@@ -103,6 +105,7 @@ The generated payload below remains unchanged. It describes actual old command n
 | `prodbox host info` | Display host diagnostics |
 | `prodbox host firewall gateway-restrict` | Restrict the gateway NodePort to 127.0.0.1 |
 | `prodbox host firewall gateway-unrestrict` | Remove the gateway NodePort loopback restriction |
+| `prodbox internal-kind-controller` | Run one managed kind node attempt |
 | `prodbox internal-rpc-birth-controller` | Run the pinned operation-owned RPC birth controller |
 | `prodbox nuke` | Total teardown of every prodbox-owned AWS resource (operator-only) |
 | `prodbox test list` | List locally registered test suites |

@@ -1610,6 +1610,7 @@ integrationCliSuite = do
                       [ AesonKey.fromString "PublishAllPorts" Aeson..= False
                       , AesonKey.fromString "Privileged" Aeson..= True
                       , AesonKey.fromString "CgroupnsMode" Aeson..= ("private" :: String)
+                      , AesonKey.fromString "NetworkMode" Aeson..= replicate 64 'c'
                       , AesonKey.fromString "RestartPolicy"
                           Aeson..= Aeson.object
                             [ AesonKey.fromString "Name" Aeson..= ("on-failure" :: String)
@@ -2156,6 +2157,57 @@ integrationCliSuite = do
           nodeInput
           nodeId
           (changeState (state False False False False "created"))
+          `shouldBe` Right (DockerNodeContainerMatching False)
+        -- Real Docker appends label=disable to a privileged container's
+        -- options, normalizes NetworkMode to the network ID and leaves a
+        -- created container's NetworkID empty until it starts.
+        let changeHost key value target = case target of
+              Aeson.Object node -> case AesonKeyMap.lookup (AesonKey.fromString "HostConfig") node of
+                Just (Aeson.Object host) ->
+                  Aeson.Object
+                    ( AesonKeyMap.insert
+                        (AesonKey.fromString "HostConfig")
+                        (Aeson.Object (AesonKeyMap.insert (AesonKey.fromString key) value host))
+                        node
+                    )
+                _ -> target
+              _ -> target
+            labelDisable =
+              changeHost
+                "SecurityOpt"
+                (Aeson.toJSON (["seccomp=unconfined", "apparmor=unconfined", "label=disable"] :: [String]))
+            foreignSecurity =
+              changeHost "SecurityOpt" (Aeson.toJSON (["seccomp=unconfined", "label=disable"] :: [String]))
+        parseDockerNodeContainer bootstrap nodeInput nodeId (labelDisable inspected)
+          `shouldBe` Right (DockerNodeContainerMatching True)
+        parseDockerNodeContainer bootstrap nodeInput nodeId (foreignSecurity inspected)
+          `shouldBe` Right DockerNodeContainerConflict
+        parseDockerNodeContainer
+          bootstrap
+          nodeInput
+          nodeId
+          (changeHost "NetworkMode" (Aeson.toJSON (replicate 64 'f')) inspected)
+          `shouldBe` Right DockerNodeContainerConflict
+        parseDockerNodeContainer
+          bootstrap
+          nodeInput
+          nodeId
+          (nodeInspect image "" name "/var/lib/docker/volumes/example/_data" rootPath)
+          `shouldBe` Right DockerNodeContainerConflict
+        parseDockerNodeContainer
+          bootstrap
+          nodeInput
+          nodeId
+          ( case nodeInspect image "" name "/var/lib/docker/volumes/example/_data" rootPath of
+              Aeson.Object node ->
+                Aeson.Object
+                  ( AesonKeyMap.insert
+                      (AesonKey.fromString "State")
+                      (Aeson.object (state False False False False "created"))
+                      node
+                  )
+              other -> other
+          )
           `shouldBe` Right (DockerNodeContainerMatching False)
         parseDockerNodeContainer bootstrap nodeInput nodeId (changeState []) `shouldSatisfy` isLeft
         parseDockerNodeContainer bootstrap nodeInput nodeId (publishAllPorts inspected)
@@ -3393,7 +3445,7 @@ integrationCliSuite = do
                                     (NodeRemoveActionReturned (DockerNodeContainerRemoveReply 204) NodeRemoveResultRecorded)
                                 )
                             )
-                        effects `shouldReturn` ["DELETE /containers/" ++ containerId ++ "?force=1&v=0 HTTP/1.1"]
+                        effects `shouldReturn` ["DELETE /containers/" ++ containerId ++ "?force=1&v=1 HTTP/1.1"]
                         withRecoveredKindOperation
                           removeBootstrap
                           operation
@@ -3467,7 +3519,7 @@ integrationCliSuite = do
                 removeDockerSessionKindNode session (replicate 64 'c') (pure True) (pure True)
               result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted wanted)
               takeMVar requests
-                `shouldReturn` ("DELETE /containers/" ++ replicate 64 'c' ++ "?force=1&v=0 HTTP/1.1")
+                `shouldReturn` ("DELETE /containers/" ++ replicate 64 'c' ++ "?force=1&v=1 HTTP/1.1")
             removeFile socketPath
         withDockerNetworkRemoveFixture socketPath (Just 204) $ \requests -> do
           result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ ->
@@ -6936,7 +6988,7 @@ integrationCliSuite = do
         result `shouldBe` ExitSuccess
         errors `shouldBe` ""
         output
-          `shouldBe` "Built-in local suites:\n  unit\n  env\n  cli\nLegacy topology-defined suites require a separate test topology and are not listed here.\n"
+          `shouldBe` "Built-in local suites:\n  unit\n  env\n  cli\n  evidence\nLegacy topology-defined suites require a separate test topology and are not listed here.\n"
         doesFileExist (tmpDir </> "prodbox.dhall") `shouldReturn` False
         doesDirectoryExist (tmpDir </> ".test-data") `shouldReturn` False
 
@@ -11443,7 +11495,7 @@ withDockerDaemonFixtureControlVolumeAndNode path conflict hook daemonChanged con
                 ["POST", "/images/load?quiet=1", _] -> Just (True, BS8.pack "{\"stream\":\"fixture loaded\"}\n")
                 ["DELETE", endpoint, _]
                   | Just (nodeId, _) <- nodeResponse
-                  , endpoint == "/containers/" ++ nodeId ++ "?force=1&v=0" ->
+                  , endpoint == "/containers/" ++ nodeId ++ "?force=1&v=1" ->
                       Just (False, BS8.empty)
                 ["GET", endpoint, _]
                   | Just (name, body) <- volumeResponse, endpoint == "/volumes/" ++ name -> Just (True, body)

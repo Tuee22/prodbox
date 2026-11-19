@@ -243,6 +243,9 @@ dockerGet path =
     , HTTP.proxy = Nothing
     , HTTP.redirectCount = 0
     , HTTP.responseTimeout = HTTP.responseTimeoutMicro 5000000
+    , -- Docker compresses archive bodies when gzip is advertised, which
+      -- http-client does by default; every parser here needs identity.
+      HTTP.requestHeaders = [("Accept-Encoding", "identity")]
     }
 
 readInfo :: Bool -> HTTP.Manager -> IO (Either DockerConnectedInfoFailure String)
@@ -570,8 +573,9 @@ readDockerSessionKindNodeBootLine (DockerSession manager) identifier
   firstBootMarker (line : remaining) = case marker line of
     Nothing -> firstBootMarker remaining
     found -> found
-  marker line =
-    let (_, start) = BS8.breakSubstring "Reached target " line
+  marker rawLine =
+    let line = stripColourSequences rawLine
+        (_, start) = BS8.breakSubstring "Reached target " line
         (middle, target) = BS8.breakSubstring "Multi-User System" start
         (_, cgroup) = BS8.breakSubstring "detected cgroup v1" line
         candidate
@@ -583,6 +587,21 @@ readDockerSessionKindNodeBootLine (DockerSession manager) identifier
           then Nothing
           else Just (candidate <> "\n")
 
+-- Remove only CSI colour sequences (ESC '[' digits and semicolons, then 'm').
+-- A TTY container's init writes them around unit names; any other control byte
+-- is left in place and still fails the printable check.
+stripColourSequences :: BS.ByteString -> BS.ByteString
+stripColourSequences input = case BS.uncons input of
+  Nothing -> BS.empty
+  Just (27, rest)
+    | Just ('[', afterBracket) <- BS8.uncons rest
+    , (parameters, afterParameters) <-
+        BS8.span (\character -> character == ';' || (character >= '0' && character <= '9')) afterBracket
+    , Just ('m', remaining) <- BS8.uncons afterParameters
+    , BS.length parameters <= 16 ->
+        stripColourSequences remaining
+  Just (byte, rest) -> BS.cons byte (stripColourSequences rest)
+
 -- Read only the file that kind's version probe would display. An archive with a
 -- link, multiple entries, an unexpected name or an oversized body is refused.
 readDockerSessionKindNodeVersion
@@ -593,6 +612,9 @@ readDockerSessionKindNodeVersion (DockerSession manager) identifier
       let request =
             (dockerGet (BS8.pack ("/containers/" ++ identifier ++ "/archive")))
               { HTTP.queryString = renderQuery True [("path", Just "/kind/version")]
+              , -- The client advertises gzip by default and Docker then
+                -- compresses the archive; the strict tar parser needs identity.
+                HTTP.requestHeaders = [("Accept-Encoding", "identity")]
               }
       result <- try (HTTP.withResponse request manager readArchive)
       pure $
@@ -823,7 +845,8 @@ parseDockerNodeContainer bootstrap input identifier = parseEither $ Aeson.withOb
   privileged <- hostConfig .: "Privileged"
   cgroupMode <- hostConfig .: "CgroupnsMode"
   restart <- hostConfig .: "RestartPolicy"
-  security <- hostConfig .: "SecurityOpt"
+  security <- hostConfig .: "SecurityOpt" :: Parser [String]
+  networkMode <- hostConfig .: "NetworkMode" :: Parser String
   tmpfs <- hostConfig .: "Tmpfs"
   initProcess <- hostConfig .: "Init"
   ports <- hostConfig .: "PortBindings" >>= parsePorts
@@ -840,7 +863,7 @@ parseDockerNodeContainer bootstrap input identifier = parseEither $ Aeson.withOb
   expectedExposed <- Aeson.withObject "expected node" (.: "ExposedPorts") expectedBody
   expectedHost <- Aeson.withObject "expected node" (.: "HostConfig") expectedBody
   expectedRestart <- expectedHost .: "RestartPolicy"
-  expectedSecurity <- expectedHost .: "SecurityOpt"
+  expectedSecurity <- expectedHost .: "SecurityOpt" :: Parser [String]
   expectedTmpfs <- expectedHost .: "Tmpfs"
   networkSettings <- node .: "NetworkSettings"
   networks <- networkSettings .: "Networks" :: Parser (Map.Map String Aeson.Value)
@@ -871,7 +894,8 @@ parseDockerNodeContainer bootstrap input identifier = parseEither $ Aeson.withOb
           && privileged
           && cgroupMode == ("private" :: String)
           && restart == (expectedRestart :: Aeson.Value)
-          && security == (expectedSecurity :: Aeson.Value)
+          -- Docker appends label=disable to a privileged container's options.
+          && (security == expectedSecurity || security == expectedSecurity ++ ["label=disable"])
           && tmpfs == (expectedTmpfs :: Aeson.Value)
           && initProcess == (False :: Bool)
           && exposed == expectedExposed
@@ -882,7 +906,12 @@ parseDockerNodeContainer bootstrap input identifier = parseEither $ Aeson.withOb
           && Map.lookup "io.x-k8s.kind.role" labels == Just "control-plane"
           && Map.lookup "io.prodbox.generation" labels == Just (nodeCreateGeneration input)
           && Map.lookup "io.prodbox.operation" labels == Just (nodeCreateOperation input)
-          && Map.toList networkIds == [(cluster, nodeCreateNetworkId input)]
+          && (networkMode == cluster || networkMode == nodeCreateNetworkId input)
+          -- A created, never-started container reports an empty network ID;
+          -- Docker fills it only when the container starts.
+          && ( Map.toList networkIds == [(cluster, nodeCreateNetworkId input)]
+                 || (not running && status == "created" && Map.toList networkIds == [(cluster, "")])
+             )
           && case (expectedVolume, selected "/var") of
             (Just volume, [("volume", Just actual, source, True)]) -> actual == volume && not (null source)
             _ -> False
@@ -992,7 +1021,10 @@ removeDockerSessionKindNode (DockerSession manager) identifier beforeEffect afte
           let request =
                 (dockerGet (BS8.pack ("/containers/" ++ identifier)))
                   { HTTP.method = "DELETE"
-                  , HTTP.queryString = "?force=1&v=0"
+                  , -- v=1 removes only anonymous volumes attached to this container
+                    -- (the node image declares one). Named volumes, including the
+                    -- node's recorded /var volume, are never touched by it.
+                    HTTP.queryString = "?force=1&v=1"
                   , HTTP.responseTimeout = HTTP.responseTimeoutMicro 30000000
                   }
           received <- try (try (HTTP.withResponse request manager readRemoval))

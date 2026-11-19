@@ -80,6 +80,8 @@ prodbox
   control
     status
     plan
+    reconcile
+    delete
     import-artifact
     discard-artifact-staging
     inspect-node-archive
@@ -120,6 +122,7 @@ prodbox
     firewall
       gateway-restrict
       gateway-unrestrict
+  internal-kind-controller
   internal-rpc-birth-controller
   nuke
   test

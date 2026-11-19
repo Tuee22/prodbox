@@ -9,6 +9,7 @@ module Prodbox.App
   )
 where
 
+import Control.Exception (IOException, try)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Reader
   ( ReaderT (..)
@@ -34,6 +35,8 @@ import Prodbox.CLI.Command
   , ConfigCommand (..)
   , GatewayCommand (..)
   , NativeCommand (..)
+  , TestCommand (..)
+  , TestScope (..)
   , WorkloadCommand (..)
   )
 import Prodbox.CLI.Docs (renderCommandHelp)
@@ -50,12 +53,19 @@ import Prodbox.CLI.Parser
 import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry, findCommandSpec)
 import Prodbox.CLI.Tree (renderCommandTree)
 import Prodbox.Config.BootstrapProjection
-  ( bootstrapKindPlan
+  ( BootstrapProjection
+  , bootstrapKindPlan
   , bootstrapRuntimeSocket
+  , bootstrapScope
   , readBootstrapProjection
   )
 import Prodbox.Config.BootstrapSetup (runSelectedBootstrapSetup)
-import Prodbox.Config.DeploymentScope (validRootGeneration)
+import Prodbox.Config.DeploymentScope
+  ( DeploymentEnvironment (Test)
+  , scopeEnvironment
+  , scopeRoot
+  , validRootGeneration
+  )
 import Prodbox.Config.KindPlan (kindPlanNodeImage, renderKindConfig)
 import Prodbox.Config.SchemaDhall (materializeSchemaFilesIfStale)
 import Prodbox.Control.ArtifactImport
@@ -65,6 +75,7 @@ import Prodbox.Control.ArtifactImport
   , discardBootstrapArtifactStaging
   , importBootstrapArtifact
   )
+import Prodbox.Control.Delete (DeleteStep (..), deleteNewTestIdentity)
 import Prodbox.Control.DockerConnectedInfo
   ( DockerConnectedInfoFailure
   , DockerConnectedInfoResult (..)
@@ -72,9 +83,16 @@ import Prodbox.Control.DockerConnectedInfo
   , DockerImageLoadStream (..)
   )
 import Prodbox.Control.DockerPeer (DockerPeer (..), DockerPeerResult (..), withConnectedDockerPeer)
+import Prodbox.Control.KindController (launchKindController, runKindControllerEntry)
 import Prodbox.Control.KindDockerClient (runKindDockerClient)
 import Prodbox.Control.KindLease (KindOperationOutcome (..))
 import Prodbox.Control.KindRuntimeConfig (renderKindConfigForArchive)
+import Prodbox.Control.KubernetesReadiness (observeKubernetesReadiness, renderKubernetesReadiness)
+import Prodbox.Control.NetworkEnforcement
+  ( EnforcementOutcome (..)
+  , enforcementProven
+  , observeNetworkEnforcement
+  )
 import Prodbox.Control.NodeArchive
   ( ArchiveReferenceFootprint (..)
   , InspectedArchiveResult (..)
@@ -93,6 +111,7 @@ import Prodbox.Control.NodeImageOperation
   , NodeImageRecoveryPoint (..)
   , observeRecoveredConnectedNodeImage
   )
+import Prodbox.Control.Reconcile (ReconcileOutcome (..), reconcileNewPrerequisites)
 import Prodbox.Control.Status
   ( ControlObservation (controlRuntime)
   , ImageArchiveComparison (..)
@@ -110,9 +129,15 @@ import Prodbox.Native (runNativeCommand)
 import Prodbox.Repo (findRepoRoot, resolveTier0ConfigPath)
 import Prodbox.Settings (SelectedSettingsValidation (..), validateSelectedSettingsAtPath)
 import Prodbox.Subprocess.SystemdBus (BusError, SystemDockerObservation (..), observeSystemDocker)
-import Prodbox.TestRunner (renderNamedLocalTestList)
+import Prodbox.TestRunner
+  ( renderNamedLocalTestList
+  , runSelectedMutationCatalog
+  , runSelectedPhaseScenario
+  )
+import System.Directory (doesFileExist)
 import System.Environment (getArgs, getProgName)
 import System.Exit (ExitCode (ExitFailure), exitWith)
+import System.FilePath ((</>))
 
 data Env = Env
   { envRepoRoot :: FilePath
@@ -170,11 +195,15 @@ runSelectedCommand :: FilePath -> CommandRequest -> IO ()
 runSelectedCommand selected request = case request of
   RunControlStatus -> runControlStatus selected
   RunControlPlan -> runControlPlan selected
+  RunControlReconcile -> runControlReconcile selected
+  RunControlDelete -> runControlDelete selected
   RunControlArtifactImport role source -> runControlArtifactImport selected role source
   RunControlArtifactDiscard role -> runControlArtifactDiscard selected role
   RunControlInspectNodeArchive -> runControlInspectNodeArchive selected
   RunControlInspectImageAttempt operation -> runControlInspectImageAttempt selected operation
   RunNative (NativeConfig (ConfigSetup options)) -> runSelectedBootstrapSetup selected options >>= exitWith
+  RunNative (NativeTest (TestCommand (TestRun "phase-01") _ _ _)) -> runSelectedPhaseScenario selected >>= exitWith
+  RunNative (NativeTest (TestCommand (TestRun "phase-01-mutation") _ _ _)) -> runSelectedMutationCatalog >>= exitWith
   RunNative (NativeConfig ConfigValidate) -> do
     result <- validateSelectedSettingsAtPath selected
     either
@@ -194,10 +223,13 @@ runCommandRequest request =
     RunTestList -> writeOutput renderNamedLocalTestList
     RunControlStatus -> resolveTier0ConfigPath "." >>= runControlStatus
     RunControlPlan -> resolveTier0ConfigPath "." >>= runControlPlan
+    RunControlReconcile -> resolveTier0ConfigPath "." >>= runControlReconcile
+    RunControlDelete -> resolveTier0ConfigPath "." >>= runControlDelete
     RunControlArtifactImport role source -> resolveTier0ConfigPath "." >>= \selected -> runControlArtifactImport selected role source
     RunControlArtifactDiscard role -> resolveTier0ConfigPath "." >>= \selected -> runControlArtifactDiscard selected role
     RunControlInspectNodeArchive -> resolveTier0ConfigPath "." >>= runControlInspectNodeArchive
     RunControlInspectImageAttempt operation -> resolveTier0ConfigPath "." >>= \selected -> runControlInspectImageAttempt selected operation
+    RunInternalKindController arguments -> runKindControllerEntry arguments >>= exitWith
     RunNative command@(NativeRpcBirthController _) -> dispatch "." command
     RunNative command -> do
       repoRootResult <- findRepoRoot
@@ -255,6 +287,8 @@ runControlStatus selected = do
                   ++ renderControlObservation value
                   ++ renderSystemDockerManager manager
               )
+            readiness <- observeKubernetesReadiness projection
+            writeOutput (renderKubernetesReadiness readiness)
             case controlRuntime value of
               RuntimeUnobservable failure -> failWith ("Cannot observe local control: " ++ renderControlStatusError failure)
               _ -> pure ()
@@ -317,6 +351,84 @@ runControlPlan selected = do
         "Candidate kind configuration (JSON):\n"
           ++ rendered
           ++ "\nRoot ownership, artifacts, ports, runtime, CNI and cluster state were not checked; no resources were changed.\n"
+
+-- Early removal for a new test identity. Exit zero only when every step
+-- completed; the independent inventory is `control status`.
+runControlDelete :: FilePath -> IO ()
+runControlDelete selected = do
+  bootstrap <- readBootstrapProjection selected
+  case bootstrap of
+    Left failure -> failWith ("Cannot read control bootstrap: " ++ show failure)
+    Right projection -> do
+      steps <- deleteNewTestIdentity projection
+      let render step =
+            "  "
+              ++ deleteStepName step
+              ++ ": "
+              ++ (if deleteStepCompleted step then "removal reply recorded" else "NOT completed")
+              ++ " - "
+              ++ take 300 (deleteStepDetail step)
+              ++ "\n"
+          report = concatMap render steps
+      if all deleteStepCompleted steps
+        then
+          writeOutput
+            ( "Recorded kind resources were removed; replies are not proof of absence, so read `control status`.\n"
+                ++ report
+                ++ "Host data, records, artifacts, the loaded node image and the retained root remain.\n"
+            )
+        else failWith ("Removal is incomplete; records are retained for recovery.\n" ++ report)
+
+-- Run the real-socket policy observation when the kubeconfig was installed.
+observeEnforcementReport :: BootstrapProjection -> String -> IO String
+observeEnforcementReport projection operation = do
+  let kubeconfig = scopeRoot (bootstrapScope projection) </> "control" </> "kubeconfig"
+  present <- doesFileExist kubeconfig
+  if not present
+    then pure "Network policy enforcement: not observed (no installed kubeconfig)."
+    else do
+      outcome <- observeNetworkEnforcement kubeconfig ("prodbox-netcheck-" ++ take 12 operation)
+      pure $
+        "Network policy enforcement: "
+          ++ ( case enforcementObservation outcome of
+                 Just observation
+                   | enforcementProven observation -> "PROVEN with real connections (" ++ show observation ++ ")"
+                   | otherwise -> "NOT proven (" ++ show observation ++ ")"
+                 Nothing -> "not observed (" ++ maybe "unknown" id (enforcementFailure outcome) ++ ")"
+             )
+          ++ "; cleanup: "
+          ++ enforcementCleanup outcome
+          ++ "."
+
+-- Always ends Incomplete: the cluster is not initialized, no kubeconfig or
+-- readiness exists, and no remover is delivered. Created resources are kept.
+runControlReconcile :: FilePath -> IO ()
+runControlReconcile selected = do
+  bootstrap <- readBootstrapProjection selected
+  case bootstrap of
+    Left failure -> failWith ("Cannot read control bootstrap: " ++ show failure)
+    Right projection
+      | scopeEnvironment (bootstrapScope projection) /= Test ->
+          failWith "Control reconcile currently supports only test identities."
+      | otherwise -> do
+          outcome <- reconcileNewPrerequisites projection
+          case outcome of
+            ReconcileNodeReady operation -> do
+              let resultPath = scopeRoot (bootstrapScope projection) </> ("kind-controller-result-" ++ operation)
+              launched <- launchKindController selected operation resultPath
+              result <- try (readFile resultPath) :: IO (Either IOException String)
+              network <- observeEnforcementReport projection operation
+              failWith $
+                "Incomplete: operation "
+                  ++ operation
+                  ++ ". Prerequisites were created and retained; managed node attempt: "
+                  ++ either ("failed: " ++) ("ok: " ++) launched
+                  ++ "; controller result: "
+                  ++ either (const "unavailable") (takeWhile (/= '\n')) result
+                  ++ ". "
+                  ++ network
+                  ++ " Readiness read-back and recreation are not delivered."
+            other -> failWith ("Incomplete before node creation; records are retained: " ++ show other)
 
 runControlArtifactImport :: FilePath -> String -> FilePath -> IO ()
 runControlArtifactImport selected role source = case role of

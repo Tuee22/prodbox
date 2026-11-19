@@ -17,6 +17,7 @@ import Control.Exception (try)
 import Control.Monad.Trans.Resource (runResourceT)
 import Data.Aeson (Value)
 import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as Key
 import Data.Aeson.Types (Parser, parseEither, (.:))
 import Data.ByteString qualified as ByteString
 import Data.Conduit (ConduitT, await, runConduit, (.|))
@@ -96,26 +97,33 @@ decodeBoundedYamlDocuments input
 -- cluster coordinates. This is a partial projection, not validation of the
 -- remaining fields, authenticity, permission to execute, or readiness.
 matchesKindKubeadmScope :: DeploymentScope -> Text.Text -> Text.Text -> [Value] -> Bool
-matchesKindKubeadmScope scope nodeAddress version documents = case documents of
+matchesKindKubeadmScope scope nodeAddress version documents =
+  any
+    (\api -> matchesKindKubeadmScopeFor api scope nodeAddress version documents)
+    ["v1beta3", "v1beta4"]
+
+matchesKindKubeadmScopeFor
+  :: Text.Text -> DeploymentScope -> Text.Text -> Text.Text -> [Value] -> Bool
+matchesKindKubeadmScopeFor api scope nodeAddress version documents = case documents of
   [cluster, initial, join, kubelet, proxy] ->
     either (const False) ((== nodeAddress) . ipLiteralText) (mkIpLiteral nodeAddress)
       && not (Text.null version)
       && Text.length version <= 128
       && parseEither clusterProjection cluster == Right True
       && parseEither initProjection initial == Right True
-      && parseEither (identity "kubeadm.k8s.io/v1beta3" "JoinConfiguration") join == Right True
+      && parseEither (identity ("kubeadm.k8s.io/" <> api) "JoinConfiguration") join == Right True
       && parseEither (identity "kubelet.config.k8s.io/v1beta1" "KubeletConfiguration") kubelet == Right True
       && parseEither (identity "kubeproxy.config.k8s.io/v1alpha1" "KubeProxyConfiguration") proxy
         == Right True
   _ -> False
  where
   clusterName = Text.pack (scopeKindName scope)
-  identity api kind = Aeson.withObject "document" $ \object -> do
+  identity expectedApi kind = Aeson.withObject "document" $ \object -> do
     actualApi <- object .: "apiVersion" :: Parser Text.Text
     actualKind <- object .: "kind" :: Parser Text.Text
-    pure (actualApi == api && actualKind == kind)
+    pure (actualApi == expectedApi && actualKind == kind)
   clusterProjection value = do
-    selected <- identity "kubeadm.k8s.io/v1beta3" "ClusterConfiguration" value
+    selected <- identity ("kubeadm.k8s.io/" <> api) "ClusterConfiguration" value
     Aeson.withObject
       "cluster"
       ( \object -> do
@@ -135,7 +143,7 @@ matchesKindKubeadmScope scope nodeAddress version documents = case documents of
       )
       value
   initProjection value = do
-    selected <- identity "kubeadm.k8s.io/v1beta3" "InitConfiguration" value
+    selected <- identity ("kubeadm.k8s.io/" <> api) "InitConfiguration" value
     Aeson.withObject
       "init"
       ( \object -> do
@@ -153,7 +161,16 @@ matchesKindKubeadmScope scope nodeAddress version documents = case documents of
 matchesPinnedKindKubeadmConfig
   :: DeploymentScope -> Text.Text -> Text.Text -> Text.Text -> [Value] -> Bool
 matchesPinnedKindKubeadmConfig scope nodeAddress version cgroupDriver documents =
-  matchesKindKubeadmScope scope nodeAddress version documents
+  any
+    (\api -> matchesPinnedKindKubeadmConfigFor api scope nodeAddress version cgroupDriver documents)
+    ["v1beta3", "v1beta4"]
+
+-- | kubeadm v1beta3 encodes extra arguments as a map; v1beta4 as an ordered
+-- list of name/value pairs. Both shapes were observed from the pinned provider.
+matchesPinnedKindKubeadmConfigFor
+  :: Text.Text -> DeploymentScope -> Text.Text -> Text.Text -> Text.Text -> [Value] -> Bool
+matchesPinnedKindKubeadmConfigFor api scope nodeAddress version cgroupDriver documents =
+  matchesKindKubeadmScopeFor api scope nodeAddress version documents
     && cgroupDriver `elem` ["systemd", "cgroupfs"]
     && case documents of
       [_, initial, join, _, _] -> case (parseEither initToken initial, parseEither joinToken join) of
@@ -165,14 +182,19 @@ matchesPinnedKindKubeadmConfig scope nodeAddress version cgroupDriver documents 
   node = cluster <> "-control-plane"
   endpoint = node <> ":6443"
   local = Aeson.object ["advertiseAddress" Aeson..= nodeAddress, "bindPort" Aeson..= (6443 :: Int)]
+  extraArgs :: [(Text.Text, Text.Text)] -> Value
+  extraArgs pairs
+    | api == "v1beta4" =
+        Aeson.toJSON [Aeson.object ["name" Aeson..= name, "value" Aeson..= value] | (name, value) <- pairs]
+    | otherwise = Aeson.object [Key.fromText name Aeson..= value | (name, value) <- pairs]
   registration =
     Aeson.object
       [ "criSocket" Aeson..= ("unix:///run/containerd/containerd.sock" :: Text.Text)
       , "kubeletExtraArgs"
-          Aeson..= Aeson.object
-            [ "node-ip" Aeson..= nodeAddress
-            , "node-labels" Aeson..= ("" :: Text.Text)
-            , "provider-id" Aeson..= ("kind://docker/" <> cluster <> "/" <> node)
+          Aeson..= extraArgs
+            [ ("node-ip", nodeAddress)
+            , ("provider-id", "kind://docker/" <> cluster <> "/" <> node)
+            , ("node-labels", "")
             ]
       ]
   initToken = Aeson.withObject "init" $ \object -> do
@@ -194,7 +216,7 @@ matchesPinnedKindKubeadmConfig scope nodeAddress version cgroupDriver documents 
   tokenChar character = (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9')
   expected token =
     [ Aeson.object
-        [ "apiVersion" Aeson..= ("kubeadm.k8s.io/v1beta3" :: Text.Text)
+        [ "apiVersion" Aeson..= ("kubeadm.k8s.io/" <> api)
         , "kind" Aeson..= ("ClusterConfiguration" :: Text.Text)
         , "clusterName" Aeson..= cluster
         , "kubernetesVersion" Aeson..= version
@@ -207,15 +229,15 @@ matchesPinnedKindKubeadmConfig scope nodeAddress version cgroupDriver documents 
         , "apiServer"
             Aeson..= Aeson.object
               [ "certSANs" Aeson..= (["localhost", "127.0.0.1"] :: [Text.Text])
-              , "extraArgs" Aeson..= Aeson.object ["runtime-config" Aeson..= ("" :: Text.Text)]
+              , "extraArgs" Aeson..= extraArgs [("runtime-config", "")]
               ]
         , "controllerManager"
             Aeson..= Aeson.object
-              ["extraArgs" Aeson..= Aeson.object ["enable-hostpath-provisioner" Aeson..= ("true" :: Text.Text)]]
+              ["extraArgs" Aeson..= extraArgs [("enable-hostpath-provisioner", "true")]]
         , "scheduler" Aeson..= Aeson.object ["extraArgs" Aeson..= Aeson.Null]
         ]
     , Aeson.object
-        [ "apiVersion" Aeson..= ("kubeadm.k8s.io/v1beta3" :: Text.Text)
+        [ "apiVersion" Aeson..= ("kubeadm.k8s.io/" <> api)
         , "kind" Aeson..= ("InitConfiguration" :: Text.Text)
         , "bootstrapTokens" Aeson..= [Aeson.object ["token" Aeson..= token]]
         , "localAPIEndpoint" Aeson..= local
@@ -223,7 +245,7 @@ matchesPinnedKindKubeadmConfig scope nodeAddress version cgroupDriver documents 
         , "skipPhases" Aeson..= (["preflight"] :: [Text.Text])
         ]
     , Aeson.object
-        [ "apiVersion" Aeson..= ("kubeadm.k8s.io/v1beta3" :: Text.Text)
+        [ "apiVersion" Aeson..= ("kubeadm.k8s.io/" <> api)
         , "kind" Aeson..= ("JoinConfiguration" :: Text.Text)
         , "controlPlane" Aeson..= Aeson.object ["localAPIEndpoint" Aeson..= local]
         , "discovery"

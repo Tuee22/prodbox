@@ -82,10 +82,13 @@ data CommandRequest
   = RunNative NativeCommand
   | RunControlStatus
   | RunControlPlan
+  | RunControlReconcile
+  | RunControlDelete
   | RunControlArtifactImport String FilePath
   | RunControlArtifactDiscard String
   | RunControlInspectNodeArchive
   | RunControlInspectImageAttempt String
+  | RunInternalKindController [String]
   | RunTestList
   | ShowCommands CommandListingFormat
   | ShowHelp [String]

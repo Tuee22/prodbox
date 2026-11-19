@@ -41,7 +41,7 @@ runKindDockerClient arguments = do
           request <- prepareKindDockerRequest IO.stdin arguments
           case request of
             Nothing -> pure Nothing
-            Just bounded -> Just <$> exchangeBoundKindDockerRequest 5000000 root stable bounded
+            Just bounded -> Just <$> exchangeBoundKindDockerRequest 175000000 root stable bounded
   case ( result
            :: Either
                 IOException
@@ -66,7 +66,35 @@ prepareKindDockerRequest input arguments = case arguments of
         | not (ByteString.null bytes) && ByteString.length bytes <= 65536 ->
             Just (KindDockerRequest arguments bytes)
       _ -> Nothing
+  [ "exec"
+    , "--privileged"
+    , "-i"
+    , _
+    , "kubectl"
+    , "create"
+    , "--kubeconfig=/etc/kubernetes/admin.conf"
+    , "-f"
+    , "-"
+    ] -> manifestInput
+  [ "exec"
+    , "--privileged"
+    , "-i"
+    , _
+    , "kubectl"
+    , "--kubeconfig=/etc/kubernetes/admin.conf"
+    , "apply"
+    , "-f"
+    , "-"
+    ] -> manifestInput
   _ -> pure (Just (KindDockerRequest arguments ByteString.empty))
+ where
+  manifestInput = do
+    received <- timeout 5000000 (ByteString.hGet input 65537)
+    pure $ case received of
+      Just bytes
+        | not (ByteString.null bytes) && ByteString.length bytes <= 65536 ->
+            Just (KindDockerRequest arguments bytes)
+      _ -> Nothing
 
 -- The explicit bridge path is only used by a fully sealed memory snapshot of
 -- the operator. It is an endpoint selector, not proof of worker or server

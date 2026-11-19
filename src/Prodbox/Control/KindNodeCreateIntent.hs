@@ -43,6 +43,8 @@ module Prodbox.Control.KindNodeCreateIntent
   , recordKindNodeStartResult
   , observeKindNodeStartResult
   , KindNodeRemoveControlObservation (..)
+  , KindNodeRemoveControlWrite (..)
+  , recordKindNodeRemoveControl
   , observeKindNodeRemoveControl
   , KindNodeRemoveAttemptWrite (..)
   , KindNodeRemoveAttemptObservation (..)

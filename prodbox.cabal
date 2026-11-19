@@ -252,6 +252,14 @@ library
         Prodbox.Control.NodeArchiveStage
         Prodbox.Control.NodeImageIntent
         Prodbox.Control.KindNetworkIntent
+        Prodbox.Control.Delete
+        Prodbox.Control.KindController
+        Prodbox.Control.KindKubeconfigInstall
+        Prodbox.Control.KindNodeBootstrap
+        Prodbox.Control.KubernetesReadiness
+        Prodbox.Control.NetworkEnforcement
+        Prodbox.Control.Recreate
+        Prodbox.Control.Reconcile
         Prodbox.Control.KindNodeCreateIntent
         Prodbox.Control.KindNodeCreateOperation
         Prodbox.Control.KindNodeCreateReadback
@@ -975,6 +983,8 @@ library
         Prodbox.Subprocess.NetworkFilter
         Prodbox.Test.MutationOutcome
         Prodbox.Test.ReviewedMutation
+        Prodbox.Test.MutationExecutor
+        Prodbox.Test.Phase01Runner
         Prodbox.Test.ScenarioEvidence
         Prodbox.Test.ScenarioEvidenceStore
         Prodbox.Test.TemporalQualification
@@ -1172,7 +1182,7 @@ executable prodbox
     hs-source-dirs:   app/prodbox
     other-modules:    Paths_prodbox
     default-language: GHC2021
-    ghc-options:      -Wall -rtsopts -with-rtsopts=-T
+    ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-T
     build-depends:
         base ^>=4.21.2.0,
         optparse-applicative ^>=0.18.1.0,

@@ -1,0 +1,11 @@
+.TH PRODBOX_internal_kind_controller 1
+.SH NAME
+prodbox-internal-kind-controller \- Run one managed kind node attempt
+.SH SYNOPSIS
+.B prodbox internal-kind-controller
+.SH DESCRIPTION
+Internal program submitted by the kind launcher inside the kind controller unit. Exact retained records, artifacts and an observed placement are required; arguments alone grant no admission and only a test identity is admitted.
+.SH EXAMPLES
+.TP
+\fBprodbox internal-kind-controller /path/selected.dhall bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb /path/prodbox sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa /path/result 900000000000 600000000000 610000000000 640000000000 700000000000\fR
+Closed envelope supplied by the kind launcher

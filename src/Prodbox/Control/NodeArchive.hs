@@ -150,7 +150,7 @@ withInspectedNodeArchive bootstrap action = case (bootstrapNodeArtifact bootstra
   (_, Nothing) -> pure (InspectedArchiveRefused NodeArchiveUnsupported)
   (Just artifact, Just arch) -> do
     progress <- newIORef ArchiveCallbackNotStarted
-    result <- timeout 180000000
+    result <- timeout 540000000
       $ try
       $ withVerifiedScopeArtifact
         scope

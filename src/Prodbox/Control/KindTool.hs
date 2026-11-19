@@ -48,9 +48,12 @@ import Data.Bits ((.&.))
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Char (isAscii, isAsciiLower, isDigit, isPrint)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (isPrefixOf)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
+import Data.Word (Word64)
+import GHC.Clock (getMonotonicTimeNSec)
 import Prodbox.Config.BootstrapProjection
   ( ArtifactDeclaration (..)
   , BootstrapProjection
@@ -136,7 +139,7 @@ import Prodbox.Control.KindNodeCreateIntent
   )
 import Prodbox.Control.KindNodeCreateOperation
   ( KindNodeRunAction
-  , newKindNodeBroker
+  , newKindNodeBrokerWithConfig
   , observeKindNodeBrokerResult
   , runBoundKindNodeWorker
   )
@@ -767,8 +770,8 @@ runConfinedKindNodeOnHost
   -> IO (KindOperationOutcome (KindDockerEndpointResult ConfinedKindNodeAttempt))
 runConfinedKindNodeOnHost placement budgets limits bootstrap operation readRoots nullDevice kind client session info peerStable admitCreate admitStart =
   withRecoveredKindDockerWorkerRoots bootstrap operation $ \roots rootsStable -> do
-    let stable = (&&) <$> rootsStable <*> peerStable
-        worker = scopeRoot (bootstrapScope bootstrap) </> ("kind-worker-" ++ operation)
+    stable <- recentStable 400000000 ((&&) <$> rootsStable <*> peerStable)
+    let worker = scopeRoot (bootstrapScope bootstrap) </> ("kind-worker-" ++ operation)
         scratch = worker </> "scratch"
         environment = kindNodeWorkerEnvironment bootstrap operation
         command =
@@ -798,7 +801,18 @@ runConfinedKindNodeOnHost placement budgets limits bootstrap operation readRoots
                 if not ready
                   then pure ConfinedNodeInvalidDescriptors
                   else do
-                    broker <- newKindNodeBroker bootstrap operation session info stable admitCreate admitStart
+                    -- Configuration writes use the same admission callback as start: the
+                    -- owner supplies one narrow local permission for this node attempt.
+                    broker <-
+                      newKindNodeBrokerWithConfig
+                        bootstrap
+                        operation
+                        session
+                        info
+                        stable
+                        admitCreate
+                        admitStart
+                        admitStart
                     case broker of
                       Nothing -> pure ConfinedNodeBrokerRefused
                       Just owner -> do
@@ -815,6 +829,26 @@ runConfinedKindNodeOnHost placement budgets limits bootstrap operation readRoots
                             pure (ConfinedNodeObserved brokerResult childResult nodeResult marker)
         _ -> pure ConfinedNodeToolMismatch
       other -> pure (ConfinedNodeProposalRefused other)
+
+-- | Reuse a passing stability observation for a short window. A failing
+-- observation is never retained, so a detected change always propagates. The
+-- window bounds how many times one broker request re-evaluates the full record,
+-- image and network closure; without it nested rechecks made each request cost
+-- several seconds. A change that appears and reverts inside the window is not
+-- detected; this interim bound needs review before any non-test admission.
+recentStable :: Word64 -> IO Bool -> IO (IO Bool)
+recentStable window observe = do
+  lastPassed <- newIORef Nothing
+  pure $ do
+    now <- getMonotonicTimeNSec
+    cached <- readIORef lastPassed
+    case cached of
+      Just passedAt | now - passedAt < window -> pure True
+      _ -> do
+        result <- observe
+        finished <- getMonotonicTimeNSec
+        writeIORef lastPassed (if result then Just finished else Nothing)
+        pure result
 
 -- | Project the explicit, scope-bound worker environment. This does not
 -- validate the operation or authorize execution.
@@ -1016,13 +1050,14 @@ runArchiveBoundConfinedKindNodeOnHost limit placement budgets limits bootstrap o
                       <$> withConnectedDockerInfo
                         limit
                         (bootstrapRuntimeSocket bootstrap)
-                        (connected archive expected nodeIntent recordStable)
+                        (connected archive expected nodeIntent recordStable archiveStable)
               other -> pure (ConfinedNodeProposalUnavailable other)
       NodeImageIdentityObserved _ _ -> pure ConfinedNodeImageRecordMismatch
  where
-  connected archive expected nodeIntent recordStable session info@(DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable = do
+  connected archive expected nodeIntent recordStable archiveStable session info@(DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable = do
     let actual = DockerDaemonObserved identifier identity
         stable = (&&) <$> recordStable <*> peerStable
+        quick = (&&) <$> archiveStable <*> peerStable
     if actual /= expected
       then pure (ConfinedNodeDaemonMismatch actual)
       else do
@@ -1033,20 +1068,26 @@ runArchiveBoundConfinedKindNodeOnHost limit placement budgets limits bootstrap o
             image <- observeConfinedNodeImage bootstrap operation archive session stable
             if image /= ConfinedNodeImageReady
               then pure (ConfinedNodeImageRefused image)
-              else checkNetwork archive expected nodeIntent session info stable
-  checkNetwork archive expected nodeIntent session info stable = do
+              else checkNetwork archive expected nodeIntent session info stable quick
+  checkNetwork archive expected nodeIntent session info stable quick = do
     let networkId = nodeCreateNetworkId (kindNodeCreateInput nodeIntent)
     network <- observeConfinedNodeNetwork bootstrap operation networkId expected session stable
     if network /= ConfinedNodeNetworkReady
       then pure (ConfinedNodeNetworkRefused network)
       else do
+        -- The full record check brackets each evaluation once. The image and
+        -- network reads run under the cheap archive and peer check: repeating
+        -- the record observation inside every one of their reads made one
+        -- evaluation cost about 1.2 s and one broker request several seconds.
         let networkStable = do
-              image <- observeConfinedNodeImage bootstrap operation archive session stable
+              before <- stable
+              image <- observeConfinedNodeImage bootstrap operation archive session quick
               if image /= ConfinedNodeImageReady
                 then pure False
-                else
-                  (== ConfinedNodeNetworkReady)
-                    <$> observeConfinedNodeNetwork bootstrap operation networkId expected session stable
+                else do
+                  current <- observeConfinedNodeNetwork bootstrap operation networkId expected session quick
+                  after <- stable
+                  pure (before && current == ConfinedNodeNetworkReady && after)
         result <-
           runVerifiedConfinedKindNodeOnHost
             placement

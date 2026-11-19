@@ -1302,7 +1302,6 @@ deploymentScopeSuite = describe "deployment scope coordinates" $ do
                           Aeson..= Aeson.object
                             [ "apiServerAddress" Aeson..= ("127.0.0.1" :: String)
                             , "apiServerPort" Aeson..= (26443 :: Int)
-                            , "disableDefaultCNI" Aeson..= True
                             ]
                       , "nodes"
                           Aeson..= [ Aeson.object

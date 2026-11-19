@@ -8439,6 +8439,653 @@ The final real-test, independent read-back, synthetic and RPC logs under
 `83bc335dc7d6818569cd74e581d52f5118e2bb4578cde3e9c8a84479bb5d6d27`, and
 `df125eea4511717efbb7e5b34be899bc6c14a7f7719b1175a77dc4c438ddf6d2`.
 
+`prodbox test run evidence` is now a public named suite. It runs only the 28
+scenario-evidence comparison cases of the compiled unit executable (stale,
+fabricated, missing, duplicate/oversized and foreign-binding reports, plus the
+snapshot/report-store cases) through `cabal test` with the pattern
+`/scenario evidence comparison/`, with no deployment, cluster or credentials.
+The warning-as-error build passed; the public binary run exited 0 with all 28
+cases passing (2026-11-18, log `evidence.log` in the session scratchpad, not
+retained in the repository). `test list` and its CLI assertion now include the
+suite. This is a partial A01-06 observation only: the validator is exercised at
+the library boundary, M02 has not been killed through the bounded executor from
+this suite, and no wrong-scope negative control from an outer observer exists.
+The canonical `./.build/prodbox dev check` then exited 0 on this change.
+A01-06, M02 and Phase 1 remain open.
+
+First `control reconcile` composition slice (private, not yet a public
+command). `Prodbox.Control.Reconcile.reconcileNewNetwork` prepares the selected
+fresh root, observes the daemon, records the kind intent and network proposal
+under the lease, then creates the kind network through the held recorded
+Docker session. Its subnet is kind's own first-attempt ULA proposal for the
+network name; the unit suite pins it to a value computed independently with
+Python `hashlib` (and kind v0.32's `generateULASubnetFromName`). A one-time
+probe through `cabal repl` against the real local Docker daemon, with a
+throwaway test identity `probe` and an isolated temporary root, returned HTTP
+201; an independent `docker network inspect` observed the network
+`prodbox-t-probe` with the expected subnet, IPv6 enabled, masquerade option and
+the three ownership labels, and the before/after network inventory differed
+only by it. The probe network was then removed by a hand `docker network rm`
+(a hand action on a disposable probe resource: it does not qualify any
+lifecycle run), and read-back showed it absent. Not done: volume, image load,
+node create/start (needs the kind-controller placement launcher and the
+broker's kubeadm exec route), kubeconfig, readiness, public CLI wiring and a
+public remover. Open design points identified for the remaining slices:
+admission callback definition, prior-worker settlement and the placement
+launcher. T03, A01-01 to A01-05 and Phase 1 remain open.
+
+The same private slice now continues to the node var volume:
+`reconcileNewPrerequisites` creates the network and, only after Docker answers
+201 with a network id, records the volume proposal under the recovered
+operation and creates the volume through the held attempt. A second real-Docker
+probe (`cabal repl`, throwaway identity `probetwo`, isolated temporary root)
+returned 201 for both; the library's own read-back classified the volume as
+matching and recorded its receipt. Independent `docker volume inspect` /
+`docker network inspect` observed exactly those two new resources, each labelled
+with the deployment, generation and operation, and the network id equalled the
+reported one. Both were removed by hand (`docker volume rm`, `docker network rm`;
+not qualifying lifecycle evidence) and the volume and network inventories were
+read back identical to their before-state. Still not done: image load, node
+create/start, kubeadm, kubeconfig, readiness, public wiring and remover.
+
+The private composition now starts with the node image: the image preparation
+records the kind intent and stages the retained archive, loads it, and the
+orchestrator proceeds to the network and volume only after an independent
+daemon lookup of the archive's config ID succeeds. To obtain an archive the
+inspector accepts, the pinned `kindest/node` image (kind v0.32.0's default,
+`v1.36.1`) was pulled from the public registry by hand, saved with
+`docker save`, and repacked without Docker's extra `manifest.json` (the
+inspector deliberately accepts only `oci-layout`, `index.json` and `blobs/`);
+the archive's root index names the linux/amd64 platform manifest, so the config
+pins that manifest digest `sha256:e98b1342...` rather than the multi-platform
+index digest. The 918,947,840-byte archive (SHA-256 `2739823a...`) was retained
+through the public `control import-artifact node-archive`; the public
+`control inspect-node-archive` confirmed manifest/platform blobs for
+linux/amd64 and config digest `sha256:152b34af...`. With the image first
+removed from the daemon, a real-Docker probe (identity `probefour`, isolated
+root) loaded it, created the network and volume, and returned 201 for both;
+independent `docker image inspect` found the exact config ID (amd64/linux, no
+tags), inventories differed by exactly the network and volume, and the public
+`control status` reported the recovered operation, image intent and attempt,
+network and volume matches. All probe resources were removed by hand (not
+qualifying evidence) and inventories read back as before. Two findings: the
+earlier network-first order was wrong because image preparation is the only
+entry that records the kind intent; and `control reconcile` still needs the node
+create/start launcher and kubeadm exec route before it can be activated.
+
+Node create/start launcher findings (2026-11-18, read-only). The kind
+placement profile (`prodbox-kind-controller.service` in `prodboxkind.slice`,
+runtime directory `prodbox-kind`) is only observed by
+`withKindHostSubprocessPlacement`; nothing in `src/` starts that unit. The
+only launcher is the qualification fixture `test/qualification/KindHostPlacement.hs`,
+which submits a `StartTransientUnit` over the user bus and re-executes the test
+binary as `controller`. It works on this host only with `XDG_RUNTIME_DIR=/run/user/1000`
+set (the user manager reports `degraded`; the current shell has no
+`XDG_RUNTIME_DIR`). Productionising it needs: (1) a production launcher
+and an internal controller entrypoint (`HostControllerKind` has no kind member,
+and `HostControllerPublication*` plus its qualification codecs enumerate the
+closed kinds, about 75 references in nine files); (2) a real host-capacity plan:
+the fixture's `fixture` function compiles `HostExecutionPlan` and the kind
+worker snapshot budgets from hand-picked numbers, which T04 must replace with
+discovered, funded requests, limits and quotas before secret workers exist; (3)
+the node create proposal (`mkKindNodeCreateIntent`) built from the loaded
+image ID and created network ID; and (4) the broker's kubeadm/admin.conf exec
+route, which the plan records as still open. Until (1)-(4) exist,
+`control reconcile` cannot honestly be activated, so it remains unwired.
+
+Managed kind node attempt, first public `control reconcile` (2026-11-18). New
+`Prodbox.Control.KindController` productionises the qualification fixture's
+launcher: it submits `prodbox-kind-controller.service` in `prodboxkind.slice` to
+the user manager over the bus and the same executable re-enters through the new
+internal `internal-kind-controller` inside that unit, where it runs the
+archive-bound confined worker and writes one result line. `control reconcile`
+(test identities only) runs image, network, volume, node proposal and worker
+paths, launches the controller, and always ends Incomplete (non-zero) with a
+retained-state message; it is the first public command that can create real
+resources, with no remover until T06. `prodbox` is now linked `-threaded`
+(managed controllers pass `-N1`; kind workers need a bound thread). The image
+step now records its load result (`withNewConnectedNodeImageRecordedAttempt`),
+the network step records its receipt, and `kindNodeRunArguments` exposes the
+node argv that the observed matcher already encoded.
+
+Eleven real runs against the local Docker daemon and user manager, each on a
+fresh throwaway test identity, advanced the boundary reached in this order, and
+each refusal was a true defect in the composition, not in the host: the `+RTS`
+heap cap must equal the plan's heap cap; the unit's runtime cap must exceed the
+finish deadline and fit the child budget; the declared envelope needed a larger
+container limit (768 MiB for the sealed snapshots), a parent CPU quota of one
+core (at 10% the proposal observer's 10-second bound expired), and 65,536-byte
+output ceilings; the image result and network receipt records were missing; and
+the worker directory tree must be prepared before the broker opens it. The
+real kind v0.32.0 then ran confined, reached `docker info` through the bridge,
+and the broker's read gate accepted real daemon info (checked directly). Then
+the attempt stopped: each broker request evaluates the archive-bound stability
+closure several times and each evaluation re-observes the node image and the
+network, about 1.4 s, so one request takes more than the bridge client's 5 s
+(raised to 60 s here, which is a bound change that needs review); with the
+session capped at 180 s the worker never reached node creation. No `run`
+attempt was recorded and no node existed. Diagnostic instrumentation used to
+find this was removed. Probe resources, retained roots and the loaded image were
+removed by hand after each run (hand actions, not qualifying evidence) and the
+Docker volume, network, container and image inventories read back as before.
+This is not A01-01: no node, mount recreation or kubeconfig exists. Open: make
+the per-request stability cost proportionate (cache or narrow the closure, a
+design change to the recheck-around-each-request rule), the kubeadm/admin.conf
+exec route, a measured capacity envelope replacing the declared one (T04), the
+public remover (T06) and the readiness read-back.
+
+Real node create and start through the confined worker (2026-11-18, later
+session). Fourteen further real runs on fresh throwaway test identities took
+`control reconcile` from "kind cannot finish a Docker read" to a created,
+started and booted kind control-plane node. The measured cause of the earlier
+stall was the nested stability closure: one evaluation re-observed the image and
+network (about 1.2 s), the node-proposal check repeated that five times inside
+itself, and each broker action nested the check again, so one request cost
+several seconds. Three changes, each needing review before any non-test
+admission: the image and network observation inside one evaluation now use the
+archive and peer check, with the full record check bracketing the evaluation once
+(`networkStable`); the broker's proposal check is one bracket around a single
+record read (the read verifies file identity itself); and a passing stability
+observation is reused for 400 ms by `recentStable` (a failing one is never
+reused, so a change that persists is always detected; one that appears and
+reverts inside the window is not). The bridge client's per-request bound is 60 s
+instead of 5 s. With these a full attempt takes about 100 s and the Docker
+session cap of 180 s is no longer the limit.
+
+Four real-Docker facts the synthetic fixtures did not model, each fixed with a
+positive and negative control: a created container reports an empty `NetworkID`
+until it starts and `NetworkMode` is normalised to the network ID; Docker appends
+`label=disable` to a privileged container's security options; TTY init writes
+ANSI colour sequences into the boot line the broker matches; and the archive
+endpoint returns gzip because the client advertises it (the strict tar parser
+now asks for identity). Config writes reuse the start admission through
+`newKindNodeBrokerWithConfig`.
+
+Observed in the last real run: the broker served `info`, `run`, `logs -f`,
+`inspect`, `exec cat /kind/version`, `inspect -f` addresses and `mkdir -p /kind`;
+the run recorded create (201) and start (204) results; the public
+`control status` reported "node daemon replied 201" and "node start daemon
+replied 204"; the container was up when read. kind's next request, the kubeadm
+configuration copy, was refused: the retained matcher encodes kubeadm v1beta3
+and the node image v1.36.1 produces a different shape. That is the start of the
+kubeadm gap, so no cluster, kubeconfig or readiness exists and A01-01 is not
+met. The probe node, volume, network, image and roots were removed by hand
+(hand actions, not qualifying evidence) and the Docker inventories read back as
+before. Diagnostic instrumentation was removed. Open: the kubeadm
+configuration acceptance and `kubeadm init`/`admin.conf` exec route, the
+kubeconfig writer and readiness, a measured capacity envelope (the declared
+one is unmeasured: one core, 64 MiB heap, 768 MiB container), the public
+remover (T06) and recreation, adverse and policy cases (A01-02 to A01-05).
+
+kubeadm configuration (2026-11-18). A throwaway real kind v0.32.0 cluster on
+node image v1.36.1 (hand diagnostic, deleted; Docker containers and networks
+read back as before) showed the node's `/kind/kubeadm.conf` is kubeadm v1beta4:
+five documents, extra arguments as ordered name/value lists, not the v1beta3
+maps the retained matcher encoded. `matchesKindKubeadmScope` and
+`matchesPinnedKindKubeadmConfig` now accept exactly the two observed shapes
+(v1beta3 map form, v1beta4 list form) and still compare the whole document
+set; a unit test pins the real v1beta4 file (cluster name substituted) and
+rejects a changed node address, kubernetes version and a flipped
+`unsafeSkipCAVerification`. A real `control reconcile` then wrote the
+configuration into the node (daemon replied 200, recorded: the public
+`control status` reports "node configuration attempt recorded ... daemon
+replied 200"). kind's next request, `kubeadm init`, is not served: the broker
+has no exec route for it and no design exists in the retained code (the
+sequence after the config write is `kubeadm init`, `cat
+/etc/kubernetes/admin.conf` which carries cluster credentials, stdin-fed
+`kubectl` applies for the CNI and storage manifests, and taint changes).
+That route needs attempt/result records, a private admin.conf custody path,
+bounded streaming output and its own admission, so it is the next owned work;
+until it exists `control reconcile` cannot produce a cluster. The probe node
+and roots were removed by hand.
+
+Early control removal, P01-T06 (2026-11-18). `control delete --yes` removes a
+new test identity's recorded node, node volume and kind network through the
+retained removal operations in that order (`Prodbox.Control.Delete`). The node
+step first requires an independent Docker CLI inventory that positively lists the
+recorded container, then writes the removal control record and runs the recorded
+removal; the volume and network steps use their own write-ahead attempt and
+result records; the loop stops at the first step that is not completely
+recorded. Production and foreign identities, and identities without an exactly
+matching recorded operation, are refused before any effect. Real evidence on a
+fresh throwaway identity that `control reconcile` had taken to a running node:
+the three removals returned 204 and wrote their results; independent
+`docker ps -a` showed zero containers and the volume and network inventories were
+identical to their before-state; the public `control status` reported the node
+removal inventory "target not listed, 0 name matches, 0 cluster-label matches
+in repeated reads"; a second `control delete --yes` refused ("the independent
+inventory did not positively list the recorded node") and a production config was
+refused with nothing touched; omitting `--yes` prints usage. The loaded node
+image, the retained root, artifacts and every record remain by design; the
+image and scratch root were removed by hand afterwards. This is a partial T06
+slice: it handles only identities that cannot have admitted cloud effects, and
+absence is still reported as unverified by the status text (replies are not proof).
+Not yet done: kubeadm init route, kubeconfig, readiness, measured capacity,
+recreation after node loss, adverse and policy cases.
+
+Cluster initialization through the broker (2026-11-18, latest). A real
+`control reconcile` on a fresh throwaway test identity now ends with kind itself
+exiting successfully inside the confined worker ("Starting control-plane",
+"Installing StorageClass", "Set kubectl context"): a Kubernetes v1.36.1 control
+plane is running in the recorded node. Independent checks with the private
+(0600) kubeconfig kind wrote in the worker scratch: the API server answered on
+the identity's loopback port, the node was listed (NotReady, as expected with
+the default CNI disabled by the plan's kind configuration and no platform CNI
+yet), the `standard` StorageClass existed, and the control-plane pods were
+present. The route is `Prodbox.Control.KindNodeBootstrap`: it recognises only
+the exact post-config requests kind v0.32.0 sent in a real run recorded with a
+logging wrapper (`kubeadm init`, the node taint and label, the default
+manifests, the stdin `kubectl` applies, the cluster-admin credential read, two
+port inspects), for the selected node only. Mutating steps need their
+prerequisite's recorded success, write an attempt record before the effect and a
+result record (exit code, output digests and lengths) after it, and are executed
+by the trusted controller through a bounded Docker CLI call on the selected
+socket, not by the confined worker; stdin manifests must equal a fresh read of
+the node's own file. Real-run findings fixed on the way: the declared controller
+task budget (16) made the Go Docker CLI fail on `pthread_create`, now 64
+(declared, unmeasured); the config write's read-back and every archive read
+needed `Accept-Encoding: identity`; kind installs the CNI and storage steps
+concurrently so they depend only on the label step; the bridge client bound is
+175 s and the archive wrapper bound 540 s because one attempt now takes about
+110 s. The removal also had a leak: container removal used `v=0`, so the node
+image's anonymous volume remained; it is `v=1` (only anonymous volumes of that
+container; named volumes are never touched) with updated fixtures, and a full
+cycle (reconcile, cluster checks, `control delete --yes`) then left the Docker
+container, volume and network inventories identical to their before-state. The
+classifier has unit tests with negative controls. Admission remains the narrow
+test-identity-only local permission; the declared envelope is unmeasured; the
+default CNI is out of scope here (T04 owns management policy). Still open:
+copying the credential to a validated `control/kubeconfig` under the retained
+root (it still lives in the worker scratch), readiness and the status read-back,
+measured capacity (T04), recreation after node loss, and the adverse and policy
+cases; A01-01 is not yet claimed because no run was recorded through the
+evidence runner.
+
+Credential custody (2026-11-19). `Prodbox.Control.KindKubeconfigInstall`
+moves the cluster credential kind wrote in the worker scratch into the retained
+root's `control/kubeconfig`: the source is read through no-follow descriptors
+under the generation-checked root and must be a private (no group/other bits),
+single-link regular file owned by the operator and at most 512 KiB; its decoded
+document must validate against the selected scope (cluster, context and API
+address) before anything is written; the `control` directory is created 0700 if
+absent and verified, the destination is created exclusively at 0600 and
+synchronised with its directory, and it is read back through the ordinary
+reader. An existing destination is never replaced and credential bytes are never
+rendered or logged. The managed controller calls it after the attempt; a missing
+source is a normal outcome of an unfinished attempt. Real evidence on a fresh
+throwaway identity: the install reported `KindKubeconfigInstalled`, `control` was
+mode 700 and `kubeconfig` mode 600, `kubectl` listed the control-plane node
+through the installed file, the public `control status` reported "selected local
+file is structurally valid; cluster identity and certificates unverified", and a
+second install reported `KindKubeconfigDestinationExists` without touching the
+file. (A first version failed on `fdRead` signalling end-of-file by exception;
+fixed.) `control delete --yes` then removed the node, volume and network and the
+Docker inventories read back as before; the credential file stays in the retained
+root by design. Readiness is not claimed: the node is NotReady until a platform
+CNI exists, which T04 owns, so the readiness read-back belongs after T04. Still
+open: management CNI policy and capacity discovery (T04), recreation after node
+loss (A01-02), cross-environment and adverse cases (A01-03), the evidence
+runner and bounded mutation executor wiring (T05, T07), and recorded A01
+acceptance runs.
+
+Adverse isolation cases through the public binary, partial A01-03
+(2026-11-19). Each case ran the built `prodbox` against throwaway test
+identities with an outer observer (Docker inventories, retained-root listings,
+host network objects) read before and after. (1) A foreign same-name Docker
+network carrying a marker label: `control reconcile` loaded its owned image,
+then the network create was answered 409 and recorded, nothing further ran; the
+foreign network kept its ID and label and no container or volume appeared.
+(2) A declared node archive that was never imported: refused with
+`ScopeArtifactMissing`, no image pull, no Docker object created. (3) A root
+that is a symlink: `control status` reported the root could not be safely
+observed and `control reconcile` was refused at the lease; the link target stayed
+empty. (4) A second identity whose anchor lies inside another identity's
+retained root: both commands refused (`FreshScopeUnobservable`) and an
+independent `find` listing of the foreign root was identical before and after.
+(5) `DOCKER_HOST`, `KUBECONFIG` and `DOCKER_CONFIG` set to nonexistent hostile
+values: `control status` output was identical to the clean run except one
+volatile available-memory reading, so the selected socket and root were used,
+not the ambient ones. After the cases the Docker container, volume and network
+inventories were identical to their starting state; scratch directories were
+removed by hand. Not covered: an actual production root and cross-environment
+pair on this host, `.data/` sibling configuration, and the recorded evidence
+runner (A01-06 and T05 still own the report binding), so A01-03 stays open.
+
+Observed usage against the declared envelope, partial T04/A01-05
+(2026-11-19). One real `control reconcile` that reached a running control plane
+was sampled every two seconds from the user manager's cgroup files for the
+controller unit and its slice, then `docker stats` read the node. Observed: the
+controller unit's `memory.peak` 239 MiB (it holds the sealed kind tool and
+client snapshots), the slice peak 246 MiB, at most 21 tasks in the unit (the
+first declared limit of 16 was therefore too small, matching the earlier Go
+`pthread_create` failure; the declared 64 gives about three times the observed
+peak), and the node container 426 MiB with 160 tasks and about 26% of a core
+sampled once after start. The declared controller envelope (768 MiB container
+limit, 64 tasks, one core, 64 MiB heap cap) is larger than the observed peaks
+with margin, so it is supported on this host for this single control plane, but
+it is one run on one host: no repeated runs, no load, no simultaneous
+management-plus-secret-worker workload (none exists until Phase 2), and no
+test that insufficient capacity rejects before work beyond the host-observation
+unit cases. The node's own container limits and Kubernetes requests, limits and
+quotas are not yet set. A01-05 stays open. The cluster was removed with
+`control delete --yes` and the Docker inventories read back identical.
+
+Management CNI and policy enforcement observed, P01-T04 / A01-04
+(2026-11-19). The CNI is kindnet from the pinned node image: the plan's kind
+configuration no longer disables the default CNI, so no external image is pulled
+(every test image also ships in the node and runs with pull policy Never). An
+empirical check on a throwaway cluster first showed kindnet enforces
+NetworkPolicy with real sockets. The broker now serves the CNI install: kind
+renders the node's `/kind/manifests/default-cni.yaml` from a template and a
+parsed object model before piping it to `kubectl create`, so the payload is
+bound semantically (decoded documents equal the node's file with the pod subnet
+substituted and the single `CONTROL_PLANE_ENDPOINT` environment entry kind
+appends; the storage manifest stays byte-for-byte). A real run reached a `Ready`
+node with kindnet, kube-proxy and both CoreDNS pods `Running`. The product then
+runs `Prodbox.Control.NetworkEnforcement` at the end of `control reconcile`: in a
+throwaway namespace a CoreDNS pod serves TCP, bash clients connect through
+`/dev/tcp`, and four observations are taken. Real result: baseline both clients
+connected (the observer works), with the ingress policy applied the allowed
+client connected and the other did not, and with the policy deleted the other
+connected again; the namespace was removed. `enforcementProven` accepts only that
+complete pattern and rejects a blind observer, a lost allow, a missing deny and an
+unrestored connection (unit controls). Negative control on a real cluster: with
+kindnet stopped and its `kindnet-network-policies` nftables table deleted in the
+node, the identical observer saw the forbidden client connect and reported not
+proven. So a successful policy apply was never treated as evidence. Limits: the
+pinned management policies of later phases do not exist yet (the policy applied
+is the observation's own fixture), traffic is node-local on a single-node
+cluster (no cross-node path), the check runs after creation and is not yet a
+gate before secret handling, and A01-04 is not recorded through the evidence
+runner. A01-04 stays open for those reasons; node readiness now holds, so the
+readiness read-back can be built.
+
+Recreation after node loss, partial A01-02 (2026-11-19). `control reconcile`
+on a retained root whose previous operation was completely removed now archives
+that operation first (`Prodbox.Control.Recreate`): only when removal results
+are recorded for the node, the volume and the network, and an independent Docker
+listing shows no container of the selected cluster, it moves (renameat, nothing
+is deleted) the operation's records, its worker directory and the old cluster
+credential into `history/<operation>/`, leaving the generation record, the
+retained artifacts and all host data in place, and then runs a fresh operation
+with its own exclusive records. Real run through the public binary on one
+throwaway identity: a first `control reconcile` produced a Ready node (and the
+network enforcement observation proven); a real Pod mounting the node's
+`/var/lib/prodbox` host path wrote a random 128-bit marker, and the outer observer
+read the same bytes on the host as a root-owned file; `control delete --yes`
+removed the node (`docker ps -a` empty) and the marker was unchanged; a second
+`control reconcile` on the same config archived the first operation under
+`history/`, created a new node, a new credential and a new set of records, and
+proved enforcement again; a new Pod on the recreated node read back exactly the
+original marker. Negative control: the same config with a different
+`root_generation` was reported by `control status` as "foreign or different root
+generation" and `control reconcile` was refused at the lease
+(`KindLeaseGenerationUnavailable`), with no new records and no history entry. A
+second delete left the marker intact and the Docker inventories read back as
+before. Not covered: the distinct wrong-mount failure (a node whose bind mount
+points elsewhere), loss of the node container by an event other than the
+adapter's own removal (a killed or missing container with intact records), and a
+recorded evidence-runner report, so A01-02 stays open.
+
+Readiness read-back and an unsupported node-loss path (2026-11-19). `control
+status` now appends a Kubernetes readiness line from
+`Prodbox.Control.KubernetesReadiness`: only when the ordinary reader accepts the
+installed kubeconfig for the selected scope it runs three bounded read-only
+`kubectl` queries (the API server's `/readyz`, the node Ready conditions, the
+kube-system pod phases) and reports one point observation, explicitly not a
+certificate or identity check; the status footer no longer claims readiness is
+unchecked and says network policy enforcement is observed only by
+`control reconcile`. Real run: before any cluster the line says "not observed (no
+acceptable installed kubeconfig)"; on a Ready cluster "API /readyz ok; nodes Ready
+1 of 1; kube-system pods Running 8 of 8"; with the node container stopped
+"unobservable; API readiness: exit ExitFailure 1"; after restarting it the same
+Ready line returned within 45 s (kind nodes survive a stop/start). Finding:
+force-removing the node container outside the adapter (`docker rm -f`) leaves a
+state the public commands do not recover. `control status` shows the node's
+create reply as recorded and the independent removal inventory "not observed";
+`control reconcile` refuses with `ArchiveNotCompletelyRemoved` (no removal results
+were recorded); `control delete --yes` refuses ("the independent inventory did not
+positively list the recorded node") because its positive control needs the node.
+Records were retained and nothing was changed, which is the safe refusal, but the
+node volume and the network had to be removed by hand (a hand action, not
+evidence). A supported recovery needs an observer positive control that does not
+depend on the missing container and a recorded disposition for a node whose
+absence is observed rather than removed; that is open work under A01-02, and the
+distinct wrong-mount case is still unexercised.
+
+Node loss outside the adapter, recovery (2026-11-19, A01-02 partial). The
+refusal recorded earlier is now followed by a supported disposition.
+`control delete --yes`, when the recorded node is not listed, no longer stops: it
+first requires the sampled inventory to show no name or cluster-label match,
+then creates a never-started control container from the recorded image with a
+distinct `io.prodbox.absence-control=<operation>` label, and accepts absence only
+if that label filter lists exactly the control container, the node's full ID is
+not listed, and the control container is removed again with an empty re-listing;
+only then it writes the exclusive record `kind-node-absence-observed.json`
+(operation, node ID and control ID) and continues with the volume and network
+removals. The record stands in for the node removal result in
+`Prodbox.Control.Recreate`'s precondition and for nothing else; a blind or
+unlisted control, a failed control removal or a failed record write leaves the
+step incomplete with nothing recorded. Real run on one throwaway identity: a
+Ready node and a root-owned marker file in the host root; `docker rm -f` of the
+node; `control delete --yes` reported the absence disposition and removed the
+volume and network (Docker containers, volumes and networks read back as before,
+no control container left); a second `control reconcile` archived the first
+operation (including the absence record) under `history/`, created a new Ready
+node, proved NetworkPolicy enforcement again, and a new Pod on it read back
+exactly the marker the host root held (`f8b772ef459f9257`, equal to the host
+file). The disposition is a read of one daemon's inventory at one time, not a
+settlement of any worker. Still open for A01-02: the distinct wrong-mount case
+and a recorded evidence-runner report.
+
+Wrong-mount case, A01-02 partial (2026-11-19). With a first identity's node
+running, a second config with the same deployment ID (so the same cluster name)
+but a different `project_anchor` (so a different retained root) was prepared and
+inspected through the public binary: its `control status` reported "Docker
+inventory: control-plane container running; retained bind source, target, or
+configured write flag differs", a finding distinct from the generation mismatch
+("foreign or different root generation") and the foreign-network refusal;
+`control delete --yes` for it refused with `KindIntentMissing` and `control
+reconcile` refused at the missing artifact before any Docker effect; an
+identity comparison of the first node's ID and start time showed it unchanged,
+and the Docker inventories read back identical after the first identity was
+removed by `control delete --yes`. Not covered: a node created with a bind mount
+that differs after the fact (only the cross-root case), so A01-02 remains open
+for the evidence-runner report.
+
+Repeated capacity observation, A01-05 partial (2026-11-19). Three consecutive
+full `control reconcile` + `control delete --yes` cycles on fresh throwaway
+identities were sampled every two seconds from the user manager's cgroup files:
+controller unit `memory.peak` 241, 242 and 242 MiB, slice peak 249, 250 and
+250 MiB, at most 20, 20 and 21 tasks, and the node container (read after the
+enforcement observation, with its test pods already removed) 527, 529 and 536
+MiB with 249 to 255 tasks; each cycle's NetworkPolicy enforcement observation
+was proven and the Docker inventories read back identical after the third.
+Against the declared envelope (768 MiB container limit, 64 tasks, one core, a
+64 MiB heap cap) the controller peaks leave about 3x memory and 3x task
+headroom, stable across cycles on this host. Not covered: insufficient
+capacity rejected through the public binary before any work (only the
+host-observation unit cases), concurrent identities, a workload beyond the
+control plane (none exists until Phase 2), and Kubernetes requests, limits and
+quotas on the node's own system pods. A01-05 stays open.
+
+Production/test pair, A01-03 partial (2026-11-19). A production-environment
+config and a test-environment config with the same deployment ID, anchored in two
+separate scratch projects (not this host's real `.data/`), were inspected
+through the public binary: the production identity resolved to a `.data/`
+root and cluster name `prodbox-p-<id>`, the test identity to a `.test-data/` root
+and `prodbox-t-<id>`, so the same ID cannot alias; the production identity's
+`control reconcile` was refused ("supports only test identities") and its
+`control delete --yes` refused ("only a test identity may use early removal")
+before any Docker call; neither project gained a file and the Docker container
+inventory stayed empty. Together with the earlier foreign-network, symlink,
+nested-root, missing-archive, hostile-ambient and wrong-mount cases this covers
+the listed adverse inputs except the unavailable-node-image pull denial through
+a network-level observer and a rewritten production sibling config; A01-03
+stays open for the evidence-runner report and a real production root.
+
+Scenario runner and recorded evidence, T05 and A01-01/A01-06 partial
+(2026-11-19). `prodbox --config <identity> test run phase-01` now runs
+`Prodbox.Test.Phase01Runner`: for an explicitly selected, prepared test
+identity it drives the built public binary through one lifecycle (`control
+reconcile`, `control status`, `control delete --yes`, `control status`),
+records four claimed observations from the commands' own output
+(`context.scope`, `cluster.ready`, `cleanup.absence`, `host.data-retained`),
+then takes the same four with other tools (kubectl through the installed
+credential plus the Docker CLI for readiness, Docker container/volume/network
+listings for absence, direct reads of the retained root and its generation
+record), binds the report to the worktree source identity, the running
+binary's digest, the kind-tool and node-archive digests, the selected scope,
+generation, a fresh run and operation identity, the boot ID and absolute
+monotonic deadlines, publishes it in the append-only store (the runner creates
+the private `.build` the store requires) and validates it against the
+independent observations. Production identities are refused. A real run
+reported claimed = independent = satisfied for all four, primary succeeded,
+cleanup confirmed, `EvidenceChecksSatisfied`, exit 0, and the Docker
+inventories read back identical. A second concurrent run exposed that the
+managed controller has one fixed unit name, so two scenarios cannot run at the
+same time: one passed and the other failed honestly (readiness and absence
+unsatisfied, primary failed, cleanup failed, `EvidenceChecksUnmet`, exit 1),
+and its failure report was kept, not replaced. That failure also exposed two
+real defects, fixed: `control delete --yes` and `control reconcile`'s archive
+step now treat an operation whose node create attempt was never recorded as
+having no node to remove (an attempt without a result still keeps its records
+for recovery), and the leftovers were then removed through the public command.
+Two environments created one after the other then coexisted Ready with
+distinct node names, networks, API ports (26660 and 26661), kubeconfig
+contexts and host-mount sources, and were removed with `control delete --yes`
+(inventories identical). The unit suite's fabricated, missing, stale and
+wrong-scope report cases remain the negative controls of the validator
+(`test run evidence`). Still open: the runner covers case 1 only (recreation,
+network enforcement and the adverse cases are not yet scenario reports), claims
+and observers share one process, only one scenario can run at a time on a host,
+and the bounded mutation executor (A01-07, T07) is not wired, so no A01 case is
+closed.
+
+Scenario reports for cases 1, 2 and 4 (2026-11-19). `test run phase-01` now
+makes one pass of two lifecycles on the same retained root and publishes three
+validated reports. Case 1 (lifecycle) as before. Case 4 (network enforcement):
+claimed from `control reconcile`'s own "PROVEN" line, with the runner re-running
+the real-socket observation in a separate namespace as the independent
+observation. Case 2 (recreation): a real Pod writes a random 128-bit marker into
+the host root, the first node is removed through `control delete --yes`, a
+second `control reconcile` recreates it on the same root and generation, a new
+Pod reads the marker back; claimed from the Pod logs and the commands' output,
+independently observed by direct reads of the marker file before and after, a
+comparison of the two node container IDs (different) and a listing of the
+retained `history/` directory (the archived first operation). Real result: all
+three reports claimed = independent, primary succeeded, cleanup confirmed,
+`EvidenceChecksSatisfied`, exit 0; Docker inventories identical afterwards.
+Preceding runs are kept as the record of what failed: a first version's case 2
+report was `PrimaryFailed` with an observation mismatch because the Pod helper
+reused a one-byte stdin ceiling and never applied its manifest (the diagnostic
+`detail:` line the runner now prints named the cause), and its validator returned
+`EvidenceObservationMismatch` rather than a pass, which is the validator
+doing its job. Limits: claims and observers still share one process, case 4's
+independent observation repeats the same real-socket method in another
+namespace, the adverse cases (case 3) and capacity (case 5) are not scenario
+reports, only one scenario can run per host, and A01-07's bounded mutation
+executor remains unwired, so no A01 case is closed.
+
+Bounded mutation executor wired (2026-11-19). `test run phase-01-mutation`
+(`Prodbox.Test.MutationExecutor`) snapshots the secret-filtered worktree and the
+build objects into a private `.build/mutants/<stamp>/<case>` workspace, probes
+the isolation boundary in the very container the build then uses (network `lo`
+only, no Docker socket, no `test-secrets.dhall`; the pinned node image supplies
+only a root file system, the host toolchain is mounted read-only), builds and
+runs the designated test as baseline, applies one patch, rebuilds, requires the
+single-test selection to be bound to each binary digest, runs the one test with
+`--mutation-assertion`, verifies cleanup by label listing and classifies with
+`classifyMutationAttempt`. Unprivileged namespaces, systemd sandboxing and
+bubblewrap were each measured on this host and give no network boundary here
+(the container does). Real result: M01 Killed (`context.rejects_root_alias`),
+M02 Killed (`evidence.rejects_unbound_result`), a compiled change the test
+cannot see Survived, a non-compiling source Invalid, a 1 ns test timeout
+Inconclusive; exit 0 only when every outcome equals its expectation; workspaces
+removed, no containers left. A first run caught a defect in the executor itself:
+the build command's status was masked (dash has no PIPESTATUS), so a
+non-compiling mutant looked built; the classifier still refused it
+(unchanged-binary digest = Inconclusive), and the status is now captured from a
+log file. Limits: baseline and mutant builds take about four minutes each per
+case, the host `/usr` is mounted read-only into the container, and equivalence
+is never inferred. Cases 3 and 5 and the pinned management policies remain open.
+
+Case 3 partial scenario report (2026-11-19). The same `test run phase-01`
+pass now also creates a foreign Docker network holding the cluster's network
+name (label `owner=foreign-a01-03`), runs `control reconcile` through the public
+binary, and publishes a fourth validated report: the command refused (non-zero
+with output), an outer `docker network inspect` of id, creation time, labels and
+attached-container count is identical before and after, no control-plane node
+exists, and after the runner removes only its own foreign network the cluster
+absence check passes. Real result: `EvidenceChecksSatisfied`, exit 0, Docker
+inventories identical. Covers only the foreign same-name network of A01-03;
+cross-environment, overlapping, symlinked and foreign roots, ambient
+kubeconfig and the unavailable node image are not yet scenario reports, so
+A01-03 stays open (the earlier manual adverse rounds are not evidence for it).
+
+Evidence-validator report, A01-06 (2026-11-19). The same pass drives
+`validateStoredScenarioReport` against the real stored case-1 report: the
+untampered pair is accepted (positive control) and five tampered variants are
+each rejected: a flipped independent observation, a missing independent
+observation, a stale independent window (started after the report), a wrong
+generation, and a nonexistent operation (missing report). Real result: all five
+rejected, control accepted, `EvidenceChecksSatisfied`, exit 0, Docker
+inventories identical. A first version of the stale variant widened the
+independent window instead, which the validator correctly accepted (an outer
+window may be wider); the variant was wrong, not the validator, and was fixed.
+The "fabricated, wrong-scope" report shapes beyond these variants, and
+validation by a process other than the runner, remain unexercised.
+
+Case 3 extended: ambient kubeconfig (2026-11-19). While the first cluster is
+Ready the runner starts an outer listener on a decoy port, writes a decoy
+kubeconfig naming it, and runs `control status` with `KUBECONFIG` pointing at
+the decoy. Claimed: the public output still reports the real cluster's
+`/readyz ok`. Independent: the listener accepted zero connections and the decoy
+file is byte-identical. The listener is stopped by a stop file and its exit is
+part of the cleanup result. Real result: case 3 now carries four observations,
+all satisfied, `EvidenceChecksSatisfied`, exit 0, Docker inventories identical.
+A01-03 still lacks cross-environment, overlapping, symlinked and foreign-root
+actions and the unavailable node image. A01-05 (insufficient capacity rejects
+before work) was investigated and not built: the controller envelope is
+compiled from a fixed declared allocation against the observed host, so a real
+shortage needs a genuinely small filesystem or exhausted memory. Loop mounts
+via udisks are not authorized for this user, `unshare` is blocked by the
+unprivileged-namespace restriction, and exhausting host memory with earlyoom
+active is unsafe, so no honest negative was produced.
+
+Case 3 extended: symlinked, foreign and wrong-generation roots (2026-11-19).
+Three configs are derived from the selected one and run through the public
+`control reconcile`: a project whose `.test-data/<id>` is a symlink to a victim
+directory, a project whose root is an existing directory holding someone else's
+file and no generation record, and the real root with a different generation.
+Each was refused (non-zero with output); the symlink victim and the foreign
+directory read back byte-identical, the real root's generation record is
+unchanged, and no container, network or volume bearing the adverse names
+appeared. Case 3 now has seven observations; all satisfied, `EvidenceChecksSatisfied`,
+exit 0, Docker inventories identical, derived directories removed. A first run
+failed on my own observer (the full-absence check cannot pass while the
+case's foreign network, named after the cluster, still exists); the observer
+was changed to containers and volumes, not the product. A01-03 still lacks
+cross-environment and overlapping-root actions and the unavailable node image.
+
+Case 3 extended: unavailable node image (2026-11-19). A config derived from the
+selected one names a node image digest no registry or cache holds, and runs
+through the public `control reconcile` on the real retained root. It was
+refused; an outer `docker image ls -a --no-trunc` is identical before and after
+(no pull, no import) and no container of the cluster exists. Case 3 now has
+eight observations, all satisfied, `EvidenceChecksSatisfied`, exit 0, Docker
+inventories identical. A01-03 now lacks only cross-environment and
+overlapping-root actions, which need a second admitted scope, and independent
+validation outside the runner.
+
+Case 3 extended: cross-environment (2026-11-19). The selected identity declared
+as `production` in a project with no production root runs through the public
+`control reconcile`: refused, and the project directory is still empty, so no
+root was created. Case 3 has nine observations, all satisfied,
+`EvidenceChecksSatisfied`, exit 0, Docker inventories identical. Overlapping
+roots across two admitted scopes remain unexercised through the binary; that
+needs a second admitted scope.
+
 - [ ] **P01-T01** — Refactor the typed CommandSpec/parser/dispatch boundaries and visibility model. Add explicit --config, minimal bootstrap context and scoped diagnostics; activate only completed commands, without successful future-feature stubs.
 - [ ] **P01-T02** — Implement production/test identity and safe path construction: distinct project roots, kind names, mounts, kubeconfigs, ports, networks, metadata and resource ownership. Reject overlap, symlink escape, foreign context and ambient target selection before effects.
 - [ ] **P01-T03** — Implement the kind adapter with exact host extraMounts, deterministic PV binding, pinned node/bootstrap artifact identity and explicit node port reservations for the accepted MetalLB/Envoy publication contract. Constrain kind's Docker effects to the admitted scope, including duplicate-network removal and image pulls, and preserve interrupted-operation recovery. Existing RKE2 identity import is not new enrollment.

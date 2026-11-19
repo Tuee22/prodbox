@@ -626,6 +626,23 @@ Render candidate kind configuration without creating or inspecting resources.
 Examples:
 - prodbox control plan  # Review the candidate kind configuration.
 
+## prodbox control reconcile
+prodbox control reconcile - Create a new test environment's kind prerequisites and node attempt
+
+Test identities only. Load the retained node archive, create the kind network and node volume, record the node proposal, then run one bounded managed kind node attempt. Always ends Incomplete today: cluster initialization, kubeconfig, readiness and removal are not delivered, and created resources are retained.
+Examples:
+- prodbox control reconcile  # Attempt the retained test environment.
+
+## prodbox control delete
+prodbox control delete - Remove a new test environment's recorded kind resources
+
+Requires --yes. Test identities with an exactly matching recorded operation only: remove the recorded node, node volume and kind network in that order, each with its own attempt and result record, stopping at the first step that is not completely recorded. Host data, the retained root, artifacts and records remain.
+Options:
+- --yes - Confirm removal
+
+Examples:
+- prodbox control delete --yes  # Remove the recorded test resources.
+
 ## prodbox control import-artifact
 prodbox control import-artifact - Import a declared bootstrap artifact
 
@@ -883,6 +900,13 @@ Options:
 Examples:
 - prodbox host firewall gateway-unrestrict  # Remove the loopback-only restriction on the default NodePort.
 - prodbox host firewall gateway-unrestrict --port 30443  # Remove the restriction on an explicit NodePort.
+
+## prodbox internal-kind-controller
+prodbox internal-kind-controller - Run one managed kind node attempt
+
+Internal program submitted by the kind launcher inside the kind controller unit. Exact retained records, artifacts and an observed placement are required; arguments alone grant no admission and only a test identity is admitted.
+Examples:
+- prodbox internal-kind-controller /path/selected.dhall bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb /path/prodbox sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa /path/result 900000000000 600000000000 610000000000 640000000000 700000000000  # Closed envelope supplied by the kind launcher
 
 ## prodbox internal-rpc-birth-controller
 prodbox internal-rpc-birth-controller - Run the pinned operation-owned RPC birth controller

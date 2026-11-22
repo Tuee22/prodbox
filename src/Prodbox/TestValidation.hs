@@ -152,17 +152,17 @@ import Prodbox.Bootstrap.Broker.Routes
 import Prodbox.BuildSupport
   ( canonicalOperatorBinaryPath
   )
+import Prodbox.CLI.Cluster
+  ( RetainedStorageInventoryEntry (..)
+  , resolveRetainedManualPvRoot
+  , retainedStorageInventoryEntries
+  )
 import Prodbox.CLI.Output
   ( writeDiagnostic
   , writeDiagnosticLine
   , writeError
   , writeOutput
   , writeOutputLine
-  )
-import Prodbox.CLI.Rke2
-  ( RetainedStorageInventoryEntry (..)
-  , resolveRetainedManualPvRoot
-  , retainedStorageInventoryEntries
   )
 import Prodbox.CLI.Vault (brokerHostConnection, freshVaultIdempotencyKey)
 import Prodbox.Capacity.Config qualified as Capacity

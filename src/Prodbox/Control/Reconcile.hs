@@ -97,6 +97,7 @@ type NetworkAttempt =
 
 data ReconcileOutcome
   = ReconcileRootRefused !FreshScopeResult
+  | ReconcileCapacityRefused !String
   | ReconcileDaemonUnobserved !String
   | ReconcileNetworkProposalInvalid
   | ReconcileNetworkProposalRefused !String
@@ -138,8 +139,11 @@ randomOperationId = do
 -- | Image, network, then node var volume for one new operation. Each later
 -- step runs only after an independent observation of the earlier one; any
 -- other outcome is returned and every durable record is retained.
-reconcileNewPrerequisites :: BootstrapProjection -> IO ReconcileOutcome
-reconcileNewPrerequisites bootstrap = do
+-- | The capacity admission runs after the root exists (its probe reads the
+-- retained root's device) and before any archive, image, network, volume or
+-- node effect; a refusal leaves only the root and its generation record.
+reconcileNewPrerequisites :: IO (Maybe String) -> BootstrapProjection -> IO ReconcileOutcome
+reconcileNewPrerequisites admit bootstrap = do
   prepared <-
     prepareFreshScope (bootstrapScope bootstrap) (Text.unpack (bootstrapRootGeneration bootstrap))
   case prepared of
@@ -149,6 +153,11 @@ reconcileNewPrerequisites bootstrap = do
  where
   socket = bootstrapRuntimeSocket bootstrap
   start = do
+    refusal <- admit
+    case refusal of
+      Just reason -> pure (ReconcileCapacityRefused reason)
+      Nothing -> archive
+  archive = do
     archived <- archiveCompletedOperation bootstrap
     case archived of
       ArchiveNothingRecorded -> begin

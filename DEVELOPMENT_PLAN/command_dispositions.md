@@ -173,6 +173,18 @@ Disposition `Preserved` retains capability with the common context/engine. `Repl
 | C146 | `prodbox control reconcile` | `prodbox control reconcile` | Preserved | 1 | Operator | `--verbose`, `--version`, `--config` | — |
 | C148 | `prodbox control delete` | `prodbox control delete` | Preserved | 1 | Operator | `--verbose`, `--version`, `--yes`, `--config` | — |
 | C147 | `prodbox internal-kind-controller` | `prodbox internal kind-controller` | Internalized | 1 | Internal | `--verbose`, `--version`, `--config` | — |
+| C149 | `prodbox control services` | `prodbox control services` | Preserved | 2 | Operator | `--verbose`, `--version`, `--config` | — |
+| C150 | `prodbox control unlock` | `prodbox control unlock` | Preserved | 2 | Operator | `--verbose`, `--version`, `--config` | — |
+| C151 | `prodbox control protected-unlock` | `prodbox control protected-unlock` | Preserved | 2 | Operator | `--verbose`, `--version`, `--config` | — |
+| C152 | `prodbox control backup` | `prodbox control backup` | Preserved | 2 | Operator | `--verbose`, `--version`, `--config` | — |
+| C153 | `prodbox control restore` | `prodbox control restore` | Preserved | 2 | Operator | `--verbose`, `--version`, `--yes`, `--config` | — |
+| C154 | `prodbox control vault-status` | `prodbox control vault-status` | Preserved | 2 | Operator | `--verbose`, `--version`, `--config` | — |
+| C155 | `prodbox control broker-init` | `prodbox control broker-init` | Preserved | 2 | Operator | `--verbose`, `--version`, `--config` | — |
+| C156 | `prodbox control broker-unseal` | `prodbox control broker-unseal` | Preserved | 2 | Operator | `--verbose`, `--version`, `--config` | — |
+| C161 | `prodbox delete` | `prodbox delete` | Preserved | 3 | Operator | `--verbose`, `--version`, `--config`, `--yes` | — |
+| C160 | `prodbox control authority-deploy` | `prodbox control authority-deploy` | Preserved | 3 | Operator | `--verbose`, `--version`, `--config` | — |
+| C159 | `prodbox control lifecycle-status` | `prodbox control lifecycle-status` | Preserved | 3 | Operator | `--verbose`, `--version`, `--config` | — |
+| C157 | `prodbox control broker-baseline` | `prodbox control broker-baseline` | Preserved | 2 | Operator | `--verbose`, `--version`, `--config` | — |
 
 ## Option disposition
 

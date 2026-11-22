@@ -172,7 +172,7 @@ registeredLegacyEscapeSites =
   , LegacyEscapeSite
       { escapeSiteMarker = "bespoke-cascade-executor"
       , escapeSiteCategory = BespokeCascadeExecutor
-      , escapeSiteFile = "src/Prodbox/CLI/Rke2.hs"
+      , escapeSiteFile = "src/Prodbox/CLI/Cluster.hs"
       , escapeSiteDescription =
           "The cascade is orchestrated by a bespoke executor rather than by a "
             ++ "lifecycle-owned desired-absence program."
@@ -270,7 +270,7 @@ escapeCoverageRules =
       { coverageRuleCategory = BespokeCascadeExecutor
       , coverageRuleSymbol = "runNativeDeleteCascade"
       , coverageRuleSites =
-          [ "src/Prodbox/CLI/Rke2.hs"
+          [ "src/Prodbox/CLI/Cluster.hs"
           , "src/Prodbox/Test/CascadeQualification.hs"
           , "src/Prodbox/Test/CleanRoomHandoff.hs"
           ]
@@ -279,7 +279,7 @@ escapeCoverageRules =
   , EscapeCoverageRule
       { coverageRuleCategory = BespokeCascadeExecutor
       , coverageRuleSymbol = "runCascadeDrainResult"
-      , coverageRuleSites = ["src/Prodbox/CLI/Rke2.hs"]
+      , coverageRuleSites = ["src/Prodbox/CLI/Cluster.hs"]
       , coverageRuleLedgerRow = "bespoke cascade executor"
       }
   , EscapeCoverageRule

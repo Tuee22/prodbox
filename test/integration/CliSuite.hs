@@ -100,8 +100,8 @@ import Prodbox.BuildSupport
   , canonicalOperatorBinaryPath
   , syncBuiltOperatorBinary
   )
+import Prodbox.CLI.Cluster qualified as Rke2
 import Prodbox.CLI.Nuke qualified as Nuke
-import Prodbox.CLI.Rke2 qualified as Rke2
 import Prodbox.Capacity.Config qualified as Capacity
 import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
 import Prodbox.Config.BootstrapProjection
@@ -12834,7 +12834,7 @@ fakeRke2Environment repoRoot = do
       , -- These reconcile/delete tests model a host with an RKE2 install
         -- present, so the no-cluster short-circuit in 'rke2 delete' must NOT
         -- fire and the gate/cascade paths run as before. Production probes the
-        -- real on-disk markers; see 'rke2InstallPresent' in 'Prodbox.CLI.Rke2'.
+        -- real on-disk markers; see 'rke2InstallPresent' in 'Prodbox.CLI.Cluster'.
         ("PRODBOX_TEST_RKE2_PRESENT", "1")
       , ("PRODBOX_TEST_PULUMI_VAULT_GATE", "allow")
       , ("PRODBOX_TEST_HOST_VAULT_KV", "allow")

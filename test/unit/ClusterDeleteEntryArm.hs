@@ -15,7 +15,7 @@ module ClusterDeleteEntryArm
 where
 
 import Data.List (sort)
-import Prodbox.CLI.Rke2
+import Prodbox.CLI.Cluster
 import TestSupport
 
 clusterDeleteEntryArmSuite :: SuiteBuilder ()

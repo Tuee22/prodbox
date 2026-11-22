@@ -1,7 +1,7 @@
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Prodbox.CLI.Rke2
+module Prodbox.CLI.Cluster
   ( clusterResourceStatusWith
   , acmeRuntimeManifestWith
   , ensureAcmeRuntimeForSubstrate
@@ -203,11 +203,11 @@ import Prodbox.Aws.CredentialHandle (baseCredentialHandleFromSettings)
 import Prodbox.Aws.Native.Sts qualified as NativeSts
 import Prodbox.Aws.Native.Wire (httpSend)
 import Prodbox.CLI.Command
-  ( EdgeCommand (..)
+  ( ClusterCommand (..)
+  , EdgeCommand (..)
   , FederationRegisterOptions (..)
   , Plan (..)
   , PlanOptions (..)
-  , Rke2Command (..)
   , Rke2DeleteFlags (..)
   , buildPlan
   , runPlanWithOptions
@@ -1147,7 +1147,7 @@ doctrineCrdSuffixes =
   , ".postgres-operator.crunchydata.com"
   ]
 
-runRke2Command :: FilePath -> Rke2Command -> IO ExitCode
+runRke2Command :: FilePath -> ClusterCommand -> IO ExitCode
 runRke2Command repoRoot command =
   case command of
     Rke2Status ->
@@ -1685,7 +1685,7 @@ runNativeHarnessInstall mode repoRoot = do
 -- | @prodbox edge ...@ dispatch. @edge reconcile@ is the AWS-gated,
 -- edge-only reconcile (the same plan @cluster reconcile --with-edge@
 -- appends, but standalone). @edge status@ is routed to the existing
--- public-edge readiness check ('HostPublicEdge') at the parser layer.
+-- public-edge readiness check ('EdgeStatusCommand') at the parser layer.
 runEdgeCommand :: FilePath -> EdgeCommand -> IO ExitCode
 runEdgeCommand repoRoot command =
   case command of
@@ -3567,7 +3567,7 @@ observeHarnessLifecycleProviderCredential repoRoot = do
 
 -- | Credential repair precedes deep Provider readiness, on fresh and adopted
 -- cleanup runs alike. This is their shared local-runtime reconcile command.
-harnessPostCredentialRuntimeCommand :: Rke2Command
+harnessPostCredentialRuntimeCommand :: ClusterCommand
 harnessPostCredentialRuntimeCommand = Rke2Reconcile (PlanOptions False Nothing) False
 
 reconcileHarnessLifecycleProviderSlot

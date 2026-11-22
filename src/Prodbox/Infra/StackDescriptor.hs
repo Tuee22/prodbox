@@ -4,13 +4,13 @@
 -- project subdir under @pulumi/@, its CLI verb stem
 -- (@eks@\/@test@\/@aws-subzone@\/@aws-ses@), and its lifecycle class —
 -- scattered across 'Prodbox.Aws', 'Prodbox.Lifecycle.ResourceClass',
--- 'Prodbox.CLI.Pulumi', and 'Prodbox.CLI.Spec', and prone to drift. This
+-- 'Prodbox.CLI.AwsStack', and 'Prodbox.CLI.Spec', and prone to drift. This
 -- record collapses them into one typed list; the per-run name list, the
 -- CLI verbs, the project dirs, and the generated registry-name↔CLI-command
 -- doc section are all DERIVED from it.
 --
 -- This module is deliberately dependency-light (no IO, no AWS\/Pulumi
--- imports) so it can sit below 'Prodbox.Aws' and 'Prodbox.CLI.Pulumi'
+-- imports) so it can sit below 'Prodbox.Aws' and 'Prodbox.CLI.AwsStack'
 -- without an import cycle; it imports only the 'LifecycleClass' ADT from
 -- 'Prodbox.Lifecycle.ResourceClass' (the lower-level registry of every
 -- creatable resource, of which the Pulumi-managed stacks are the

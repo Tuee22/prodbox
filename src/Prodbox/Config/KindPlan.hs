@@ -19,6 +19,7 @@ module Prodbox.Config.KindPlan
   , kindNodeVarVolumeCreateBody
   , kindNodeCreateBody
   , requireDisjointKindPlans
+  , kindPlanHostPorts
   , renderKindConfig
   , renderKindConfigWithLocalImageId
   )
@@ -391,6 +392,9 @@ requireDisjointKindPlans left right = do
   if any (`elem` hostPorts right) (hostPorts left)
     then Left OverlappingKindHostPort
     else Right ()
+
+kindPlanHostPorts :: KindPlan -> [Int]
+kindPlanHostPorts = hostPorts
 
 hostPorts :: KindPlan -> [Int]
 hostPorts plan =

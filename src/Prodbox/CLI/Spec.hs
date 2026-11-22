@@ -49,10 +49,13 @@ import Prodbox.CLI.Command
   , AdoptableLegacyStack (..)
   , AwsAuditStack (..)
   , AwsCommand (..)
+  , AwsStackCommand (..)
   , AwsTeardownFlags (..)
   , BootstrapBrokerCommand (..)
   , BrokerLaunchOptions (..)
   , ChartsCommand (..)
+  , ClusterCommand (..)
+  , ClusterK8sCommand (..)
   , CommandListingFormat (..)
   , CommandRequest (..)
   , ConfigCommand (..)
@@ -70,16 +73,13 @@ import Prodbox.CLI.Command
   , HostCommand (..)
   , HostFitMode (..)
   , IntegrationSuite (..)
-  , K8sCommand (..)
   , LintCommand (..)
   , NativeCommand (..)
   , NukeOptions (..)
   , PerRunPruneTarget (..)
   , PlanOptions (..)
   , PolicyTier (..)
-  , PulumiCommand (..)
   , PulumiResiduePolicy (..)
-  , Rke2Command (..)
   , Rke2DeleteFlags (..)
   , TestCommand (..)
   , TestScope (..)
@@ -223,6 +223,7 @@ commandRegistry =
         , clusterGroup
         , commandsLeaf
         , controlGroup
+        , ordinaryDeleteLeaf
         , configGroup
         , devGroup
         , dnsGroup
@@ -300,8 +301,25 @@ parserForPath :: [String] -> Maybe (Parser CommandRequest)
 parserForPath path =
   case path of
     ["control", "status"] -> Just (pure RunControlStatus)
+    ["delete"] -> Just (RunOrdinaryDelete <$ flag' () (long "yes" <> help "Confirm the deletion"))
+    ["control", "lifecycle-status"] -> Just (pure RunControlLifecycleStatus)
+    ["control", "authority-deploy"] -> Just (pure RunControlAuthorityDeploy)
     ["control", "plan"] -> Just (pure RunControlPlan)
     ["control", "reconcile"] -> Just (pure RunControlReconcile)
+    ["control", "services"] -> Just (pure RunControlServices)
+    ["control", "unlock"] -> Just (pure RunControlUnlock)
+    ["control", "protected-unlock"] -> Just (pure RunControlProtectedUnlock)
+    ["control", "vault-status"] -> Just (pure RunControlVaultStatus)
+    ["control", "broker-init"] -> Just (pure RunControlBrokerInit)
+    ["control", "broker-unseal"] -> Just (pure RunControlBrokerUnseal)
+    ["control", "broker-baseline"] -> Just (pure RunControlBrokerBaseline)
+    ["control", "backup"] -> Just (pure RunControlBackup)
+    ["control", "restore"] ->
+      Just
+        ( RunControlRestore
+            <$> strArgument (metavar "BACKUP")
+            <* flag' () (long "yes" <> help "Confirm replacing the retained Vault and MinIO data with the backup")
+        )
     ["control", "delete"] ->
       Just
         ( RunControlDelete
@@ -421,7 +439,7 @@ parserForPath path =
           <*> substrateOptionParser
           <*> yesSwitchParser "Skip confirmation prompt"
           <*> planOptionsParser
-    ["dev", "check"] -> Just (pure (RunNative NativeCheckCode))
+    ["dev", "check"] -> Just (pure (RunNative NativeDevCheck))
     ["commands"] ->
       Just $
         commandsTreeParser
@@ -453,8 +471,8 @@ parserForPath path =
     ["vault", "pki", "issue-test-cert"] ->
       Just (pure (RunNative (NativeVault VaultPkiIssueTestCert)))
     ["dns", "check"] -> Just (pure (RunNative (NativeDns DnsCheck)))
-    ["dev", "docs", "check"] -> Just (pure (RunNative (NativeDocs DocsCheck)))
-    ["dev", "docs", "generate"] -> Just (pure (RunNative (NativeDocs DocsGenerate)))
+    ["dev", "docs", "check"] -> Just (pure (RunNative (NativeDevDocs DocsCheck)))
+    ["dev", "docs", "generate"] -> Just (pure (RunNative (NativeDevDocs DocsGenerate)))
     ["gateway", "start"] ->
       Just (fmap (RunNative . NativeGateway . GatewayDaemonCommand) daemonLaunchOptionsParser)
     ["gateway", "status"] ->
@@ -481,15 +499,15 @@ parserForPath path =
     ["host", "firewall", "gateway-unrestrict"] ->
       Just (RunNative . NativeHost . HostFirewallGatewayUnrestrict <$> gatewayNodePortParser)
     ["edge", "status"] ->
-      Just (fmap (RunNative . NativeHost . HostPublicEdge) substrateOptionParser)
+      Just (fmap (RunNative . NativeHost . EdgeStatusCommand) substrateOptionParser)
     ["edge", "reconcile"] ->
       Just (fmap (RunNative . NativeEdge . EdgeReconcile) planOptionsParser)
-    ["cluster", "health"] -> Just (pure (RunNative (NativeK8s K8sHealth)))
+    ["cluster", "health"] -> Just (pure (RunNative (NativeClusterK8s K8sHealth)))
     ["cluster", "wait"] ->
       Just $
         fmap
           ( \(timeoutSeconds, namespaces) ->
-              RunNative (NativeK8s (K8sWait (maybe 300 id timeoutSeconds) (defaultNamespaces namespaces)))
+              RunNative (NativeClusterK8s (K8sWait (maybe 300 id timeoutSeconds) (defaultNamespaces namespaces)))
           )
           ( (,)
               <$> optional
@@ -507,7 +525,7 @@ parserForPath path =
       Just $
         fmap
           ( \(namespaces, tailLines) ->
-              RunNative (NativeK8s (K8sLogs (defaultNamespaces namespaces) (maybe 10 id tailLines)))
+              RunNative (NativeClusterK8s (K8sLogs (defaultNamespaces namespaces) (maybe 10 id tailLines)))
           )
           ( (,)
               <$> manyStringsOption "namespace" 'n' "Namespace to get logs from"
@@ -520,50 +538,50 @@ parserForPath path =
                     )
                 )
           )
-    ["dev", "lint", "all"] -> Just (pure (RunNative (NativeLint LintAll)))
-    ["dev", "lint", "files"] -> Just (fmap (RunNative . NativeLint . LintFiles) writeSwitchParser)
-    ["dev", "lint", "docs"] -> Just (fmap (RunNative . NativeLint . LintDocs) writeSwitchParser)
-    ["dev", "lint", "haskell"] -> Just (fmap (RunNative . NativeLint . LintHaskell) writeSwitchParser)
-    ["dev", "lint", "chart"] -> Just (pure (RunNative (NativeLint LintChart)))
+    ["dev", "lint", "all"] -> Just (pure (RunNative (NativeDevLint LintAll)))
+    ["dev", "lint", "files"] -> Just (fmap (RunNative . NativeDevLint . LintFiles) writeSwitchParser)
+    ["dev", "lint", "docs"] -> Just (fmap (RunNative . NativeDevLint . LintDocs) writeSwitchParser)
+    ["dev", "lint", "haskell"] -> Just (fmap (RunNative . NativeDevLint . LintHaskell) writeSwitchParser)
+    ["dev", "lint", "chart"] -> Just (pure (RunNative (NativeDevLint LintChart)))
     ["aws", "stack", "eks", "reconcile"] ->
-      Just (fmap (RunNative . NativePulumi . PulumiEksResources) planOptionsParser)
-    ["aws", "stack", "eks", "diff"] -> Just (pure (RunNative (NativePulumi (PulumiStackDiff AwsEksTarget))))
+      Just (fmap (RunNative . NativeAwsStack . PulumiEksResources) planOptionsParser)
+    ["aws", "stack", "eks", "diff"] -> Just (pure (RunNative (NativeAwsStack (PulumiStackDiff AwsEksTarget))))
     ["aws", "stack", "eks", "purge-dependents"] -> Just networkPurgeParser
-    ["aws", "stack", "test", "diff"] -> Just (pure (RunNative (NativePulumi (PulumiStackDiff AwsTestTarget))))
-    ["aws", "stack", "aws-subzone", "diff"] -> Just (pure (RunNative (NativePulumi (PulumiStackDiff AwsSubzoneTarget))))
-    ["aws", "stack", "aws-ses", "diff"] -> Just (pure (RunNative (NativePulumi (PulumiStackDiff AwsSesTarget))))
+    ["aws", "stack", "test", "diff"] -> Just (pure (RunNative (NativeAwsStack (PulumiStackDiff AwsTestTarget))))
+    ["aws", "stack", "aws-subzone", "diff"] -> Just (pure (RunNative (NativeAwsStack (PulumiStackDiff AwsSubzoneTarget))))
+    ["aws", "stack", "aws-ses", "diff"] -> Just (pure (RunNative (NativeAwsStack (PulumiStackDiff AwsSesTarget))))
     ["aws", "stack", "eks", "destroy"] ->
       Just $
         fmap
-          (\(confirmed, planOptions') -> RunNative (NativePulumi (PulumiEksDestroy confirmed planOptions')))
+          (\(confirmed, planOptions') -> RunNative (NativeAwsStack (PulumiEksDestroy confirmed planOptions')))
           ((,) <$> yesSwitchParser destroyConfirmationHelp <*> planOptionsParser)
     ["aws", "stack", "test", "reconcile"] ->
-      Just (fmap (RunNative . NativePulumi . PulumiTestResources) planOptionsParser)
+      Just (fmap (RunNative . NativeAwsStack . PulumiTestResources) planOptionsParser)
     ["aws", "stack", "test", "destroy"] ->
       Just $
         fmap
-          (\(confirmed, planOptions') -> RunNative (NativePulumi (PulumiTestDestroy confirmed planOptions')))
+          (\(confirmed, planOptions') -> RunNative (NativeAwsStack (PulumiTestDestroy confirmed planOptions')))
           ((,) <$> yesSwitchParser destroyConfirmationHelp <*> planOptionsParser)
     ["aws", "stack", "aws-subzone", "reconcile"] ->
-      Just (fmap (RunNative . NativePulumi . PulumiAwsSubzoneResources) planOptionsParser)
+      Just (fmap (RunNative . NativeAwsStack . PulumiAwsSubzoneResources) planOptionsParser)
     ["aws", "stack", "aws-subzone", "destroy"] ->
       Just $
         fmap
           ( \(confirmed, planOptions') ->
-              RunNative (NativePulumi (PulumiAwsSubzoneDestroy confirmed planOptions'))
+              RunNative (NativeAwsStack (PulumiAwsSubzoneDestroy confirmed planOptions'))
           )
           ((,) <$> yesSwitchParser destroyConfirmationHelp <*> planOptionsParser)
     ["aws", "stack", "aws-ses", "reconcile"] ->
-      Just (fmap (RunNative . NativePulumi . PulumiAwsSesResources) planOptionsParser)
+      Just (fmap (RunNative . NativeAwsStack . PulumiAwsSesResources) planOptionsParser)
     ["aws", "stack", "aws-ses", "destroy"] ->
       Just $
         fmap
           ( \(confirmed, planOptions') ->
-              RunNative (NativePulumi (PulumiAwsSesDestroy confirmed planOptions'))
+              RunNative (NativeAwsStack (PulumiAwsSesDestroy confirmed planOptions'))
           )
           ((,) <$> yesSwitchParser destroyConfirmationHelp <*> planOptionsParser)
     ["aws", "stack", "aws-ses", "migrate-backend"] ->
-      Just (fmap (RunNative . NativePulumi . PulumiAwsSesMigrateBackend) planOptionsParser)
+      Just (fmap (RunNative . NativeAwsStack . PulumiAwsSesMigrateBackend) planOptionsParser)
     ["aws", "stack", "eks", "prune-corrupt-checkpoint"] ->
       Just
         (fmap (prunePerRunCheckpointCommand PrunePerRunEks) (yesSwitchParser "Skip confirmation prompts"))
@@ -620,27 +638,28 @@ parserForPath path =
           <$> strArgument (metavar "EMAIL_OR_USER_ID")
           <*> switch (long "delete" <> help "Fully delete the user instead of disabling")
           <*> planOptionsParser
-    ["cluster", "status"] -> Just (pure (RunNative (NativeRke2 Rke2Status)))
-    ["cluster", "start"] -> Just (pure (RunNative (NativeRke2 Rke2Start)))
-    ["cluster", "stop"] -> Just (pure (RunNative (NativeRke2 Rke2Stop)))
-    ["cluster", "restart"] -> Just (pure (RunNative (NativeRke2 Rke2Restart)))
+    ["cluster", "status"] -> Just (pure (RunNative (NativeCluster Rke2Status)))
+    ["cluster", "start"] -> Just (pure (RunNative (NativeCluster Rke2Start)))
+    ["cluster", "stop"] -> Just (pure (RunNative (NativeCluster Rke2Stop)))
+    ["cluster", "restart"] -> Just (pure (RunNative (NativeCluster Rke2Restart)))
     ["cluster", "reconcile"] ->
       Just
         ( fmap
-            (RunNative . NativeRke2)
+            (RunNative . NativeCluster)
             (Rke2Reconcile <$> planOptionsParser <*> withPublicEdgeSwitch)
         )
     ["cluster", "delete"] ->
       Just (rke2DeleteParser <$> rke2DeleteFlagsParser <*> planOptionsParser)
     ["cluster", "federation", "register"] ->
       Just $
-        (\childClusterId options' -> RunNative (NativeRke2 (Rke2FederationRegister childClusterId options')))
+        ( \childClusterId options' -> RunNative (NativeCluster (Rke2FederationRegister childClusterId options'))
+        )
           <$> strArgument (metavar "CHILD")
           <*> federationRegisterOptionsParser
     ["cluster", "logs"] ->
       Just $
         fmap
-          (RunNative . NativeRke2 . Rke2Logs)
+          (RunNative . NativeCluster . Rke2Logs)
           ( optional
               ( option
                   auto
@@ -735,7 +754,7 @@ parserForPath path =
                   )
             )
         )
-    ["dev", "tla-check"] -> Just (pure (RunNative NativeTlaCheck))
+    ["dev", "tla-check"] -> Just (pure (RunNative NativeDevTla))
     ["workload", "start"] ->
       Just (fmap (RunNative . NativeWorkload . WorkloadStart) workloadOptionsParser)
     _ -> Nothing
@@ -1408,11 +1427,11 @@ writeSwitchParser =
 -- request for a per-run stack. The 'Bool' is the @--yes@ confirmation.
 prunePerRunCheckpointCommand :: PerRunPruneTarget -> Bool -> CommandRequest
 prunePerRunCheckpointCommand target confirmed =
-  RunNative (NativePulumi (PulumiPruneCorruptCheckpoint target confirmed))
+  RunNative (NativeAwsStack (PulumiPruneCorruptCheckpoint target confirmed))
 
 adoptLegacyPlanCommand :: AdoptableLegacyStack -> CommandRequest
 adoptLegacyPlanCommand stack =
-  RunNative (NativePulumi (PulumiAdoptLegacyPlan stack))
+  RunNative (NativeAwsStack (PulumiAdoptLegacyPlan stack))
 
 -- | The digest is a required argument rather than an option: an adoption with
 -- no confirmed digest is read-only discovery authorizing a durable ownership
@@ -1420,7 +1439,7 @@ adoptLegacyPlanCommand stack =
 adoptLegacyApplyParser :: AdoptableLegacyStack -> Parser CommandRequest
 adoptLegacyApplyParser stack =
   ( \digest confirmed ->
-      RunNative (NativePulumi (PulumiAdoptLegacyApply stack digest confirmed))
+      RunNative (NativeAwsStack (PulumiAdoptLegacyApply stack digest confirmed))
   )
     <$> strOption
       ( long "plan-digest"
@@ -1483,7 +1502,7 @@ rke2DeleteFlagsParser =
 -- | Sprint 4.11: build an 'Rke2Delete' request from parsed flags.
 rke2DeleteParser :: Rke2DeleteFlags -> PlanOptions -> CommandRequest
 rke2DeleteParser flags planOptions =
-  RunNative (NativeRke2 (Rke2Delete flags planOptions))
+  RunNative (NativeCluster (Rke2Delete flags planOptions))
 
 -- | Sprint 7.7 — parser for the two mutually-exclusive Pulumi-residue
 -- flags on @prodbox aws teardown@.
@@ -1697,6 +1716,76 @@ controlGroup =
         "Test identities only. Load the retained node archive, create the kind network and node volume, record the node proposal, then run one bounded managed kind node attempt. Always ends Incomplete today: cluster initialization, kubeconfig, readiness and removal are not delivered, and created resources are retained."
         []
         [example ["control", "reconcile"] "Attempt the retained test environment."]
+    , leaf
+        "services"
+        "Deploy the pinned MinIO and Vault into a created test environment"
+        "Test identities only, after `control reconcile` has produced a running node. Prove the pinned management policy is enforced by real sockets before any secret exists, create the MinIO bootstrap credential, import the pinned local MinIO and Vault archives into the node, apply the services with a pull policy of Never and read both back directly. Vault is left uninitialized."
+        []
+        [example ["control", "services"] "Deploy MinIO and Vault into the retained test environment."]
+    , leaf
+        "unlock"
+        "Initialize or self-unseal the test environment's Vault and prove a secret round trip"
+        "Test identities only, after `control services`. Initialize Vault once with one key share and keep the unlock bundle as an object in this environment's MinIO (the test-only self-unseal policy), or unseal an initialized Vault from that object, then write and read back a fresh marker through an authenticated request. A protected production identity is refused before any unlock material is read. An initialized Vault with no unlock object, or an object naming another environment or root generation, is reported as a recovery condition and never re-initialized. Secrets are not printed."
+        []
+        [example ["control", "unlock"] "Initialize or self-unseal the retained test Vault."]
+    , leaf
+        "protected-unlock"
+        "Unseal the test environment's Vault with an operator-supplied key"
+        "Test identities only. Read Vault's state first; only for an initialized, sealed Vault ask for the unseal key at a hidden prompt (or one line of standard input) and send it to Vault. This path never reads the environment's MinIO or unlock object, so it works while MinIO is down. Absent or empty input is reported as needing input and changes nothing; a wrong key is refused. The key is never printed."
+        []
+        [example ["control", "protected-unlock"] "Unseal the retained test Vault with the operator's key."]
+    , leaf
+        "vault-status"
+        "Read Vault's state through the Bootstrap Broker's authenticated route"
+        "Test identities only, after `control services`. Mint a custom-audience TokenRequest for the Broker's secret-free client ServiceAccount, open the bracketed loopback port-forward to the Broker, prove it answers and make the closed read-only Vault status request. The cluster is the environment's installed credential, never ambient. The answer carries no secret."
+        []
+        [example ["control", "vault-status"] "Ask the Broker for Vault's state."]
+    , leaf
+        "broker-init"
+        "Initialize Vault through the Bootstrap Broker with an operator password"
+        "Test identities only, after `control services`. Read the operator password at a hidden prompt (or one line of standard input), then drive the Broker's closed initialization sequence: the Broker launches its one-shot secret workers, the password reaches only a worker's standard input, and the unlock bundle it produces is protected by that password. Absent input is reported as needing input and changes nothing. Nothing secret is printed and no secrets fixture is read."
+        []
+        [example ["control", "broker-init"] "Initialize the retained test Vault through the Broker."]
+    , leaf
+        "broker-unseal"
+        "Unseal Vault through the Bootstrap Broker with the operator password"
+        "Test identities only. Read the operator password at a hidden prompt (or one line of standard input) and drive the Broker's closed unseal sequence for an initialized, sealed Vault. A wrong password is refused by the worker and leaves Vault sealed."
+        []
+        [example ["control", "broker-unseal"] "Unseal the retained test Vault through the Broker."]
+    , leaf
+        "broker-baseline"
+        "Reconcile Vault's baseline through the Bootstrap Broker with the operator password"
+        "Test identities only, after `control broker-init` and an unsealed Vault. Read the operator password at a hidden prompt (or one line of standard input) and drive the Broker's closed baseline-reconcile sequence: its one-shot worker completes the generated root under the password and the Broker configures Vault's authentication and policy baseline (including the Kubernetes auth roles). Absent input changes nothing and nothing secret is printed."
+        []
+        [example ["control", "broker-baseline"] "Apply Vault's baseline through the Broker."]
+    , leaf
+        "lifecycle-status"
+        "Read the local operation journal and report its admission verdict"
+        "Read-only. Observes the retained root's operation journal directly and reports never-admitted, admitted-settled, admitted-pending or recovery-required. An unreadable journal or missing existing history is never reported as absent or fresh, and the command changes nothing."
+        []
+        [example ["control", "lifecycle-status"] "Report the admission verdict for this environment."]
+    , leaf
+        "authority-deploy"
+        "Deploy the Lifecycle Authority runtime into the test environment"
+        "Test identities only, after `control services`. Renders the Authority's role configuration with the repository's generator, points it at the management Vault, applies its namespace, ServiceAccount, ConfigMap, Deployment and Service from the locally imported runtime image (no registry), and reports readiness read from the Pod. On failure it reports the container log's tail; nothing is repaired by hand."
+        []
+        [example ["control", "authority-deploy"] "Deploy the Authority runtime."]
+    , leaf
+        "backup"
+        "Back up the test environment's Vault and MinIO data inside its retained root"
+        "Test identities only. Stop the Vault and MinIO Pods, copy both data directories into backups/<name> with a manifest naming the scope, root generation and a digest of the file list, and start the Pods again. The backup holds sealed Vault data and MinIO objects and stays inside the retained root with private permissions."
+        []
+        [example ["control", "backup"] "Take a consistent local backup of the bootstrap services' data."]
+    , leafWithArgs
+        "restore"
+        "Restore a backup of the test environment's Vault and MinIO data"
+        "Requires --yes. Verify the backup's manifest against this scope, root generation and its files, stop the Pods, move the current data aside (nothing is deleted), copy the backup into place and start the Pods. Vault comes up sealed and is unsealed as usual."
+        [argument "backup" "BACKUP" "The backup name printed by `control backup`."]
+        [flagOption "yes" Nothing Nothing "Confirm the replacement"]
+        [ example
+            ["control", "restore", "backup-0123456789ab", "--yes"]
+            "Replace the service data with that backup."
+        ]
     , leaf
         "delete"
         "Remove a new test environment's recorded kind resources"
@@ -2540,7 +2629,7 @@ networkPurgeParser =
   )
     <|> pure (request NetworkPurgePlan)
  where
-  request = RunNative . NativePulumi . PulumiEksPurgeDependents
+  request = RunNative . NativeAwsStack . PulumiEksPurgeDependents
   readMode raw = case mkProviderNetworkPurgeApplyMode (Text.pack raw) of
     Right mode -> Right mode
     Left _ -> Left "--plan-digest must be a lowercase SHA-256 digest"
@@ -3068,6 +3157,25 @@ substrateOption =
     Nothing
     "SUBSTRATE"
     "Target substrate (home-local, aws); default home-local"
+
+ordinaryDeleteLeaf :: CommandSpec
+ordinaryDeleteLeaf =
+  leaf
+    "delete"
+    "Delete the selected deployment's cloud-owned resources and keep the local plane"
+    ( "Requires --yes. Reads the deployment's operation journal directly. A deployment "
+        ++ "that never admitted a cloud capability answers `Nothing to delete` without "
+        ++ "cloud credentials, Vault initialization or any change, and a second run answers "
+        ++ "the same; an unresolved or unreadable journal is refused. The kind environment, "
+        ++ "local services, trust and journal are always retained. Cloud capabilities are "
+        ++ "delivered by later phases, so an admitted deployment is refused rather than "
+        ++ "reported deleted. This command never accepts a cascade option."
+    )
+    [flagOption "yes" Nothing Nothing "Confirm the deletion"]
+    [ example
+        ["delete", "--yes"]
+        "Delete the deployment's cloud-owned resources (none, when never admitted)."
+    ]
 
 nukeLeaf :: CommandSpec
 nukeLeaf =

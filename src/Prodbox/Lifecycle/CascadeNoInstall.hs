@@ -5,7 +5,7 @@
 --
 -- Everything here is pure: no file, network or credential access happens in
 -- this module. The effects that gather the evidence live in
--- "Prodbox.CLI.Rke2", and this module decides what that evidence licenses.
+-- "Prodbox.CLI.Cluster", and this module decides what that evidence licenses.
 --
 -- __Why the decision is separate from the effects.__ A cascade that reached no
 -- phase observed nothing by itself. The only way it can exit zero honestly is

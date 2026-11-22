@@ -217,9 +217,9 @@ library
         Prodbox.CLI.Interactive
         Prodbox.CLI.Json
         Prodbox.CLI.Output
-        Prodbox.CLI.Pulumi
+        Prodbox.CLI.AwsStack
         Prodbox.CLI.Parser
-        Prodbox.CLI.Rke2
+        Prodbox.CLI.Cluster
         Prodbox.CLI.Spec
         Prodbox.CLI.Tree
         Prodbox.CLI.Users
@@ -253,10 +253,12 @@ library
         Prodbox.Control.NodeImageIntent
         Prodbox.Control.KindNetworkIntent
         Prodbox.Control.Delete
+        Prodbox.Control.HostPorts
         Prodbox.Control.KindController
         Prodbox.Control.KindKubeconfigInstall
         Prodbox.Control.KindNodeBootstrap
         Prodbox.Control.KubernetesReadiness
+        Prodbox.Control.ManagementPolicy
         Prodbox.Control.NetworkEnforcement
         Prodbox.Control.Recreate
         Prodbox.Control.Reconcile
@@ -276,6 +278,21 @@ library
         Prodbox.Control.DockerConnectedInfo
         Prodbox.Control.ImageIdObservation
         Prodbox.Config.SelectedDhall
+        Prodbox.Control.Backup
+        Prodbox.Control.OperatorInput
+        Prodbox.Control.ProtectedUnlock
+        Prodbox.Control.BrokerClientCommand
+        Prodbox.Control.AuthorityDeploy
+        Prodbox.Control.AuthorityJournalClient
+        Prodbox.Control.BrokerDeploy
+        Prodbox.Control.ServiceSupport
+        Prodbox.Control.Services
+        Prodbox.Control.Unlock
+        Prodbox.Lifecycle.AdmissionHistory
+        Prodbox.Lifecycle.AdmissionLedgerProjection
+        Prodbox.ControlPlane.AdmissionJournalMirror
+        Prodbox.ControlPlane.AuthorityJournalReadServer
+        Prodbox.Control.JournalStore
         Prodbox.Control.Status
         Prodbox.Control.KindDockerClient
         Prodbox.Control.KindDockerEndpoint
@@ -985,6 +1002,9 @@ library
         Prodbox.Test.ReviewedMutation
         Prodbox.Test.MutationExecutor
         Prodbox.Test.Phase01Runner
+        Prodbox.Test.Phase02BrokerRunner
+        Prodbox.Test.Phase03Runner
+        Prodbox.Test.Phase02Runner
         Prodbox.Test.ScenarioEvidence
         Prodbox.Test.ScenarioEvidenceStore
         Prodbox.Test.TemporalQualification
@@ -1530,6 +1550,7 @@ test-suite prodbox-unit
         QualificationFrozenCounterexample
         QualificationEvidence
         QualificationSourceIdentity
+        AdmissionHistoryTests
         ScenarioEvidenceTests
         SealedConstructors
         QualificationCreateInterruptedCounterexample

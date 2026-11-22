@@ -338,11 +338,11 @@ cleanRoomHandoffSuite =
       let halfDeleted =
             [ (path, fragment)
             | (path, fragment) <- registeredLegacyCutoverFragments
-            , (path, fragment) /= ("src/Prodbox/CLI/Rke2.hs", "runNativeDeleteCascade")
+            , (path, fragment) /= ("src/Prodbox/CLI/Cluster.hs", "runNativeDeleteCascade")
             ]
       legacyCutoverResidueViolations LegacyScanPreActivation halfDeleted
         `shouldBe` [ LegacyCutoverFragmentAbsentFromPath
-                       "src/Prodbox/CLI/Rke2.hs"
+                       "src/Prodbox/CLI/Cluster.hs"
                        "runNativeDeleteCascade"
                    ]
 
@@ -359,7 +359,7 @@ cleanRoomHandoffSuite =
         `shouldBe` False
       legacyCutoverResidueViolations
         LegacyScanPostActivation
-        [("src/Prodbox/CLI/Rke2.hs", "data CascadePhaseOutcomeFrame =")]
+        [("src/Prodbox/CLI/Cluster.hs", "data CascadePhaseOutcomeFrame =")]
         `shouldBe` []
 
     it "covers every installed cascade terminal trace with stable bindings" $ do

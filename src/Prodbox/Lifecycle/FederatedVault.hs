@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Pure Sprint 4.32 decisions for the federated Vault lifecycle. The effectful
--- interpreter in "Prodbox.CLI.Rke2" deploys charts and talks to Vault; this
+-- interpreter in "Prodbox.CLI.Cluster" deploys charts and talks to Vault; this
 -- module owns the total root/child classification and fail-closed parent
 -- readiness policy.
 module Prodbox.Lifecycle.FederatedVault

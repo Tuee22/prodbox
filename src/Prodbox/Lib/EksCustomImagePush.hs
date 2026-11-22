@@ -3,7 +3,7 @@
 -- | Sprint 7.5.c.v.b — push custom-built prodbox images into EKS-side
 -- Harbor via an in-cluster crane pod.
 --
--- The home substrate's 'Prodbox.CLI.Rke2.ensureCustomImageVariants'
+-- The home substrate's 'Prodbox.CLI.Cluster.ensureCustomImageVariants'
 -- builds the single union @prodbox-runtime@ image via host Docker,
 -- then @docker push@'s to the home RKE2's
 -- in-cluster Harbor via the @127.0.0.1:30080@ NodePort. On the AWS

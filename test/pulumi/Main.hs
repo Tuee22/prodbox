@@ -3,7 +3,7 @@ module Main (main) where
 import Control.Exception (SomeException, try)
 import Data.IORef qualified as IORef
 import Data.Map.Strict qualified as Map
-import Prodbox.CLI.Pulumi
+import Prodbox.CLI.AwsStack
   ( ephemeralOutputsStackName
   , ephemeralOutputsValues
   , ephemeralPulumiOutputsPath

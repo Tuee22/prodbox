@@ -319,7 +319,11 @@ performS3WithDeadline deadline config httpMethod rawPath rawQuery body extraHead
               { method = httpMethod
               , path = wirePath
               , queryString = wireQuery
-              , requestHeaders = [(CI.mk name, value) | (name, value) <- signed]
+              , -- One request per connection: a worker that computes for seconds
+                -- between requests was handed a connection MinIO had already
+                -- closed (NoResponseDataReceived), which the store boundary
+                -- reported as the opaque BootstrapStoreUnavailable.
+                requestHeaders = [(CI.mk name, value) | (name, value) <- signed] ++ [("Connection", "close")]
               , requestBody = RequestBodyBS body
               }
       expired <- case deadline of

@@ -231,11 +231,11 @@ dependencyAdmissionSuite =
         `shouldBe` []
       length
         ( dependencyAdmissionInternalSourceViolations
-            ("src/Prodbox/CLI/Rke2.hs", internalImport)
+            ("src/Prodbox/CLI/Cluster.hs", internalImport)
         )
         `shouldBe` 1
       dependencyAdmissionInternalSourceViolations
-        ("src/Prodbox/CLI/Rke2.hs", "import Prodbox.Lifecycle.DependencyAdmission\n")
+        ("src/Prodbox/CLI/Cluster.hs", "import Prodbox.Lifecycle.DependencyAdmission\n")
         `shouldBe` []
 
     it "Sprint 4.64: only the reconcile executor may begin a run with no admissions" $ do
@@ -255,7 +255,7 @@ dependencyAdmissionSuite =
       --     removal would only have moved the reset one import away.
       length
         ( dependencyAdmissionInternalSourceViolations
-            ("src/Prodbox/CLI/Rke2.hs", internalImport)
+            ("src/Prodbox/CLI/Cluster.hs", internalImport)
         )
         `shouldBe` 1
       length

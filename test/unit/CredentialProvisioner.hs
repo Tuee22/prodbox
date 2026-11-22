@@ -455,7 +455,7 @@ credentialProvisionerSuite =
       providerRolePolicyOperationRevisionFor
         (providerRolePolicyOperationMutatedDocument counterexample)
         `shouldNotBe` providerRolePolicyOperationRevision
-      rke2Source <- readFile "src/Prodbox/CLI/Rke2.hs"
+      rke2Source <- readFile "src/Prodbox/CLI/Cluster.hs"
       lineageSource <- readFile "src/Prodbox/Lifecycle/CredentialProvisioner/HarnessCredential.hs"
       lineageSource
         `shouldContain` "providerRolePolicyOperationScope"

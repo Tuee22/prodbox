@@ -4,7 +4,7 @@
 --
 -- The home substrate mirrors required public images into the
 -- in-cluster Harbor via host-Docker + host-`ctr`
--- (`Prodbox.CLI.Rke2.mirrorClusterImagesOnce`). On EKS the operator
+-- (`Prodbox.CLI.Cluster.mirrorClusterImagesOnce`). On EKS the operator
 -- host has no network path into the EKS-side Harbor NodePort, so the
 -- equivalent step must run from inside the cluster.
 --
@@ -114,7 +114,7 @@ eksImageMirrorCopyScript config pairs =
     )
 
 -- | Sprint 7.32: the EKS-side counterpart of
--- 'Prodbox.CLI.Rke2.isRetryableHarborPublicationFailure'
+-- 'Prodbox.CLI.Cluster.isRetryableHarborPublicationFailure'
 -- (bootstrap_readiness_doctrine.md at 583443f, section 4). The EKS crane push exercises the same
 -- registry→MinIO S3 write edge as the home mirror, so its characteristic
 -- transient failure is a name-resolution error against

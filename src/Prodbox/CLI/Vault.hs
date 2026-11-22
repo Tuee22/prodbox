@@ -18,6 +18,9 @@ module Prodbox.CLI.Vault
   , decodeBrokerVaultSealStatus
   , brokerHostConnection
   , freshVaultIdempotencyKey
+  , brokerInitializeSelected
+  , brokerUnsealSelected
+  , brokerBaselineSelected
   )
 where
 
@@ -462,6 +465,92 @@ runBrokerVaultUnsealWithConnect connect repoRoot status payload =
     payload
     unsealVault
 
+-- | Initialize Vault through the Broker with an operator password supplied by
+-- the caller, in a cluster selected explicitly by its environment (no ambient
+-- context, no secrets fixture). The password is only bytes handed to the
+-- one-shot worker's standard input.
+brokerInitializeSelected :: FilePath -> [(String, String)] -> ByteString -> IO ExitCode
+brokerInitializeSelected repoRoot selected password = do
+  let environment = Just selected
+      connect = withBrokerHostConnection (BrokerHostConnection environment repoRoot)
+  observed <- queryObservedBrokerStatusWith connect
+  case observed of
+    Left err -> failBrokerCommand "Vault initialize" err
+    Right status
+      | observedInitialized status && not (observedInitializationPending status) -> do
+          writeOutput "Vault already initialized."
+          pure ExitSuccess
+      | observedInitializationAmbiguous status ->
+          failBrokerCommand "Vault initialize" "Broker reports an ambiguous initialization"
+      | otherwise -> case secretPayloadFromBytes password of
+          Left err -> failBrokerCommand "Vault initialize" err
+          Right payload ->
+            runSecretBrokerMutationSelected
+              environment
+              connect
+              repoRoot
+              BrokerVaultInitialize
+              (observedStorageGeneration status)
+              "initialize"
+              [ SecretWorkerPrepareInitialization
+              , SecretWorkerResumeInitialization
+              , SecretWorkerInitialize
+              , SecretWorkerFinalizeInitialization
+              ]
+              payload
+              initializeVault
+
+-- | Unseal an initialized, sealed Vault through the Broker with the operator
+-- password, in an explicitly selected cluster.
+brokerUnsealSelected :: FilePath -> [(String, String)] -> ByteString -> IO ExitCode
+brokerUnsealSelected repoRoot selected password = do
+  let environment = Just selected
+      connect = withBrokerHostConnection (BrokerHostConnection environment repoRoot)
+  observed <- queryObservedBrokerStatusWith connect
+  case observed of
+    Left err -> failBrokerCommand "Vault unseal" err
+    Right status
+      | not (observedInitialized status) -> failBrokerCommand "Vault unseal" "Vault is not initialized"
+      | not (observedSealed status) -> do
+          writeOutput "Vault already unsealed."
+          pure ExitSuccess
+      | otherwise -> case secretPayloadFromBytes password of
+          Left err -> failBrokerCommand "Vault unseal" err
+          Right payload ->
+            runSecretBrokerMutationSelected
+              environment
+              connect
+              repoRoot
+              BrokerVaultUnseal
+              (observedStorageGeneration status)
+              "unseal"
+              [SecretWorkerUnseal]
+              payload
+              unsealVault
+
+-- | Reconcile Vault's baseline (auth, policies, roles) through the Broker with
+-- the operator password, in an explicitly selected cluster.
+brokerBaselineSelected :: FilePath -> [(String, String)] -> ByteString -> IO ExitCode
+brokerBaselineSelected repoRoot selected password = do
+  let environment = Just selected
+      connect = withBrokerHostConnection (BrokerHostConnection environment repoRoot)
+  observed <- queryObservedBrokerStatusWith connect
+  case observed of
+    Left err -> failBrokerCommand "Vault baseline reconcile" err
+    Right status -> case secretPayloadFromBytes password of
+      Left err -> failBrokerCommand "Vault baseline reconcile" err
+      Right payload ->
+        runSecretBrokerMutationSelected
+          environment
+          connect
+          repoRoot
+          BrokerVaultBaselineReconcile
+          (observedStorageGeneration status)
+          "baseline-reconcile"
+          [SecretWorkerCompleteGeneratedRoot]
+          payload
+          reconcileVaultBaseline
+
 runBrokerVaultBaselineReconcile :: FilePath -> IO ExitCode
 runBrokerVaultBaselineReconcile repoRoot =
   runBrokerVaultBaselineReconcileUsing
@@ -788,7 +877,22 @@ runSecretBrokerMutationWith
   -> SecretPayload
   -> BrokerMutation
   -> IO ExitCode
-runSecretBrokerMutationWith connect repoRoot route generation actionBinding operations payload mutation =
+runSecretBrokerMutationWith = runSecretBrokerMutationSelected Nothing
+
+-- | The same mutation with an explicit environment for the host secret-worker
+-- attach (the cluster is selected by the caller, never ambient).
+runSecretBrokerMutationSelected
+  :: Maybe [(String, String)]
+  -> BrokerConnector
+  -> FilePath
+  -> BrokerRoute
+  -> VaultStorageGeneration
+  -> Text
+  -> [SecretWorkerOperation]
+  -> SecretPayload
+  -> BrokerMutation
+  -> IO ExitCode
+runSecretBrokerMutationSelected selectedEnvironment connect repoRoot route generation actionBinding operations payload mutation =
   case prepareBrokerAction route generation actionBinding of
     Left err -> failBrokerCommand label err
     Right (action, actionDigest, requestDigest) -> do
@@ -812,7 +916,7 @@ runSecretBrokerMutationWith connect repoRoot route generation actionBinding oper
               ( \endpoint context ->
                   withAsync (mutation endpoint context action) $ \pending ->
                     awaitSecretMutation
-                      (hostSecretWorkerConnection repoRoot)
+                      (hostSecretWorkerConnectionWith selectedEnvironment repoRoot)
                       expectations
                       payload
                       pending
@@ -945,10 +1049,10 @@ brokerHostConnection repoRoot =
     , brokerHostWorkingDirectory = repoRoot
     }
 
-hostSecretWorkerConnection :: FilePath -> HostSecretWorkerConnection
-hostSecretWorkerConnection repoRoot =
+hostSecretWorkerConnectionWith :: Maybe [(String, String)] -> FilePath -> HostSecretWorkerConnection
+hostSecretWorkerConnectionWith selectedEnvironment repoRoot =
   HostSecretWorkerConnection
-    { hostSecretWorkerEnvironment = Nothing
+    { hostSecretWorkerEnvironment = selectedEnvironment
     , hostSecretWorkerWorkingDirectory = repoRoot
     }
 

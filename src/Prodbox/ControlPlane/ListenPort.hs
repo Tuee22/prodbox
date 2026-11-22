@@ -26,6 +26,8 @@
 module Prodbox.ControlPlane.ListenPort
   ( controlPlaneListenPort
   , controlPlaneListenPortNumber
+  , authorityJournalReadPort
+  , authorityJournalReadPortNumber
   , controlPlaneClusterServiceUrl
   , controlPlaneClusterServiceUrlText
   )
@@ -48,6 +50,16 @@ controlPlaneListenPort = 8600
 -- Services do not name.
 controlPlaneListenPortNumber :: PortNumber
 controlPlaneListenPortNumber = fromIntegral controlPlaneListenPort
+
+-- | The Lifecycle Authority's narrow, pre-Vault journal-read listener. It is a
+-- separate listener of the same process so that it can serve before the
+-- Vault-dependent startup has completed; it carries no typed control-plane
+-- route and no mutation.
+authorityJournalReadPort :: Int
+authorityJournalReadPort = 8601
+
+authorityJournalReadPortNumber :: PortNumber
+authorityJournalReadPortNumber = fromIntegral authorityJournalReadPort
 
 -- | The in-cluster URL of a control-plane role's Service.
 --

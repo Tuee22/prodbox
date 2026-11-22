@@ -12,7 +12,7 @@ import Control.Monad (forM_)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf)
 import Data.Text qualified as Text
-import Prodbox.CLI.Rke2
+import Prodbox.CLI.Cluster
   ( RegistryProbeRunner
   , observeRegistryBackendRoundTripOnceWith
   , probeRegistryStorageBackendEdgeWith

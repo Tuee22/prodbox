@@ -65,3 +65,11 @@ All real AWS/public-edge qualification uses a separately identified unmodified b
 ## Phase closure
 
 A phase closes only after its real public cases, expected mutation failures, cleanup, documentation and owned removals pass. Missing external credentials/provider readiness may block the phase that needs them; incomplete later implementation cannot. The [development standards](../../DEVELOPMENT_PLAN/development_plan_standards.md) own queue and closure mechanics.
+
+## Implemented through Phase 1
+
+`prodbox test run phase-01` drives the public binary through two lifecycles on one retained root and publishes independently validated scenario reports under `<project>/.build/scenario-evidence/<run>/` (a private `.build` is required); claimed observations come from the public commands' own output and independent observations from direct reads, Docker and kubectl. `prodbox test run phase-01-mutation` snapshots the secret-filtered worktree into a no-network container, builds a baseline and a mutant, runs one designated test and classifies it Killed, Survived, Invalid or Inconclusive. Evidence and limits: [Phase 1 validation](../../DEVELOPMENT_PLAN/evidence/phase_01_validation.md).
+
+## Implemented through Phase 2
+
+`prodbox test run phase-02` runs eight cases (initialize, self-unseal, protected unlock including a real pseudo-terminal prompt, concurrent workers with policy allow/deny traffic and the no-registry check, backup/restore, Broker outage, adverse controls, recreation) and `test run phase-02-broker` runs the Broker-mediated cases; each records independent observations without secret values. The mutation catalog covers M01, M02, M03a and M03b with calibration controls and is re-run whenever the pinned `Unlock.hs` changes. Observation lists must stay the same length as their claim lists because the comparison pairs them positionally.

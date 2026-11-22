@@ -55,3 +55,11 @@ Never hash plaintext secrets into public evidence. Retain source/config projecti
 | `admin control purge-data` | Operator-only exact-root destruction after cloud retirement, no mounted consumers and typed confirmation |
 
 A failed or unobservable cleanup preserves its journal and required credentials. Only exact read-back can retire the corresponding obligation. [Lifecycle](lifecycle.md#deletion-order-and-completion)
+
+## Implemented through Phase 1
+
+A new test identity's retained root holds the generation record, imported artifacts, one operation's write-ahead records and a `history/` directory; a completed operation's records are moved (never deleted) into `history/<operation>/` before the next reconcile. Host-backed data (a marker written by a real Pod directly on the host root, and through a static PersistentVolume bound by name to a claim) survives node removal and recreation on the same root and generation, observed by direct reads. A root nested inside another scope's retained root, a symlinked or foreign root and a different generation are refused before any write. Evidence: [Phase 1 validation](../../DEVELOPMENT_PLAN/evidence/phase_01_validation.md).
+
+## Implemented through Phase 2
+
+Vault and MinIO data live in `vault-data` and `minio-data` under the retained root and survive kind recreation unchanged. `control backup` and `control restore` copy both trees with a manifest whose digest covers the sorted file list; a restore verifies the manifest first, refuses a mismatch and moves the current data aside as `replaced-<name>-*` rather than deleting it. The test unlock object is the only unlock material in MinIO and holds the unseal key and a limited client token; the initial root token is never stored there.

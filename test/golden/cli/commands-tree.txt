@@ -81,11 +81,23 @@ prodbox
     status
     plan
     reconcile
+    services
+    unlock
+    protected-unlock
+    vault-status
+    broker-init
+    broker-unseal
+    broker-baseline
+    lifecycle-status
+    authority-deploy
+    backup
+    restore
     delete
     import-artifact
     discard-artifact-staging
     inspect-node-archive
     inspect-image-attempt
+  delete
   config
     setup
     show

@@ -16,6 +16,39 @@ Render the selected kind configuration
 \fBreconcile\fR
 Create a new test environment's kind prerequisites and node attempt
 .TP
+\fBservices\fR
+Deploy the pinned MinIO and Vault into a created test environment
+.TP
+\fBunlock\fR
+Initialize or self-unseal the test environment's Vault and prove a secret round trip
+.TP
+\fBprotected-unlock\fR
+Unseal the test environment's Vault with an operator-supplied key
+.TP
+\fBvault-status\fR
+Read Vault's state through the Bootstrap Broker's authenticated route
+.TP
+\fBbroker-init\fR
+Initialize Vault through the Bootstrap Broker with an operator password
+.TP
+\fBbroker-unseal\fR
+Unseal Vault through the Bootstrap Broker with the operator password
+.TP
+\fBbroker-baseline\fR
+Reconcile Vault's baseline through the Bootstrap Broker with the operator password
+.TP
+\fBlifecycle-status\fR
+Read the local operation journal and report its admission verdict
+.TP
+\fBauthority-deploy\fR
+Deploy the Lifecycle Authority runtime into the test environment
+.TP
+\fBbackup\fR
+Back up the test environment's Vault and MinIO data inside its retained root
+.TP
+\fBrestore\fR
+Restore a backup of the test environment's Vault and MinIO data
+.TP
 \fBdelete\fR
 Remove a new test environment's recorded kind resources
 .TP

@@ -4755,12 +4755,12 @@
         "mode": "0o644"
       },
       {
-        "path": "src/Prodbox/CLI/Pulumi.hs",
+        "path": "src/Prodbox/CLI/AwsStack.hs",
         "sha256": "ebca01f07f180bd24d0352b54051596bef0e22a42e83a1d4723e82e0b4adbe56",
         "mode": "0o644"
       },
       {
-        "path": "src/Prodbox/CLI/Rke2.hs",
+        "path": "src/Prodbox/CLI/Cluster.hs",
         "sha256": "7f1179664a86e8e17e30498745855dd2af70d3bf27aa821394fccdf5e3d50a1e",
         "mode": "0o644"
       },

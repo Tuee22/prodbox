@@ -22,6 +22,11 @@ import Control.Concurrent (threadDelay)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.List (isInfixOf)
+import Prodbox.Control.ManagementPolicy
+  ( managementClientLabel
+  , managementPlaneLabel
+  , managementPolicyManifest
+  )
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
   , ProcessOutput (..)
@@ -96,7 +101,11 @@ serverManifest namespace =
       , "---"
       , "apiVersion: v1"
       , "kind: Pod"
-      , "metadata: {name: server, namespace: " ++ namespace ++ ", labels: {app: server}}"
+      , "metadata: {name: server, namespace: "
+          ++ namespace
+          ++ ", labels: {"
+          ++ managementPlaneLabelFlow
+          ++ "}}"
       , "spec:"
       , "  containers: [{name: s, image: "
           ++ serverImage
@@ -104,13 +113,23 @@ serverManifest namespace =
       , "  volumes: [{name: v, configMap: {name: corefile}}]"
       ]
 
+managementPlaneLabelFlow, managementClientLabelFlow :: String
+managementPlaneLabelFlow = managementPlaneLabel
+managementClientLabelFlow = managementClientLabel
+
 clientManifest :: String -> String -> String -> String -> ByteString.ByteString
 clientManifest namespace name role address =
   ByteString8.pack $
     unlines
       [ "apiVersion: v1"
       , "kind: Pod"
-      , "metadata: {name: " ++ name ++ ", namespace: " ++ namespace ++ ", labels: {role: " ++ role ++ "}}"
+      , "metadata: {name: "
+          ++ name
+          ++ ", namespace: "
+          ++ namespace
+          ++ ", labels: {"
+          ++ (if role == "allowed" then managementClientLabelFlow else "role: other")
+          ++ "}}"
       , "spec:"
       , "  restartPolicy: Never"
       , "  containers: [{name: c, image: "
@@ -121,17 +140,7 @@ clientManifest namespace name role address =
       ]
 
 policyManifest :: String -> ByteString.ByteString
-policyManifest namespace =
-  ByteString8.pack $
-    unlines
-      [ "apiVersion: networking.k8s.io/v1"
-      , "kind: NetworkPolicy"
-      , "metadata: {name: only-allowed, namespace: " ++ namespace ++ "}"
-      , "spec:"
-      , "  podSelector: {matchLabels: {app: server}}"
-      , "  policyTypes: [Ingress]"
-      , "  ingress: [{from: [{podSelector: {matchLabels: {role: allowed}}}]}]"
-      ]
+policyManifest = managementPolicyManifest
 
 -- | Run the whole sequence against the cluster the kubeconfig selects. The
 -- namespace name must be unique to this run.
@@ -231,7 +240,11 @@ observeNetworkEnforcement kubeconfig namespace = do
         removed <-
           step
             "policy delete"
-            (kubectl kubeconfig ["-n", namespace, "delete", "networkpolicy", "only-allowed"] ByteString.empty)
+            ( kubectl
+                kubeconfig
+                ["-n", namespace, "delete", "networkpolicy", "management-default-deny", "management-allow-clients"]
+                ByteString.empty
+            )
         case removed of
           Left reason -> failed reason
           Right _ -> do

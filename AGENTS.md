@@ -15,6 +15,19 @@ Do not resume the superseded fractional-sprint queue or import historical Done l
 
 A request restricted to Markdown authorizes Markdown edits only. It does not authorize changing Haskell, schemas, generated non-Markdown artifacts, runtime configuration or infrastructure. The documentation adoption leaves Phase 0 open for code-side checker/generated-artifact migration and its actual negative/mutation proof. A subsequent request to implement open phases includes that code work in order.
 
+## Blockers: resolve from the documents before stopping
+
+Ambiguity is not a blocker until the documents have been searched. Before stopping or asking the user anything:
+
+1. Search `documents/engineering/`, the active phase file, [acceptance_cases.md](DEVELOPMENT_PLAN/acceptance_cases.md), [mutation_cases.md](DEVELOPMENT_PLAN/mutation_cases.md) and [legacy_tracking_for_deletion.md](DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md) for the concept's exact terms, and use the question index in [CLAUDE.md](CLAUDE.md). Then look for a precedent in existing code.
+2. If they answer it, proceed, and record the decision with its citation (file and line) as a dated note in the phase file. Stopping to ask a question the documents answer is a defect.
+3. If they are silent, choose the option nearest the stated doctrine (fail closed; never infer absence; one writer; the same Authority; a cached projection is never authority; the smaller reversible change), record it as a decision note, and continue.
+4. If two passages contradict, quote both, take the stricter, record it, and continue unless the stricter reading makes the task impossible.
+
+Only these are the user's to decide: the operator decisions named in the plan (D1–D7 and any added later); credentials, accounts, domains or other external inputs that are not in the repository; outward-facing or irreversible actions not already authorized in this file; changes to the user's own files (for example `test-secrets.dhall` permissions); and a conflict the documents cannot resolve. A question must name the passage that leaves it open.
+
+Scale is not a blocker. A large remaining scope means taking the next smallest slice and reporting at slice boundaries, not stopping. An unfinished goal or a stop-hook reminder is not a reason to ask a question; it is a reason to continue.
+
 ## Target versus current behavior
 
 The accepted target retains local kind for Lifecycle Authority, Vault, MinIO and management roles. The canonical application service set remains available locally and on optional EKS. Target ordinary `prodbox delete --yes` removes all deployment-owned AWS resources, including SES/EBS/backing stores/generated IAM, and records absence on the retained control plane. Local control removal and local data purge are separate operations.

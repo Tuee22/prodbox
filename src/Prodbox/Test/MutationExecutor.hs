@@ -96,6 +96,48 @@ catalog =
       (reviewedAssertion M02MissingReport)
       []
       MutationKilled
+  , Case
+      "M03a"
+      (Reviewed M03ProductionUnlock)
+      (reviewedTestPath M03ProductionUnlock)
+      (reviewedAssertion M03ProductionUnlock)
+      []
+      MutationKilled
+  , Case
+      "M03b"
+      (Reviewed M03VaultIncarnation)
+      (reviewedTestPath M03VaultIncarnation)
+      (reviewedAssertion M03VaultIncarnation)
+      []
+      MutationKilled
+  , Case
+      "M04a"
+      (Reviewed M04UnknownAsFresh)
+      (reviewedTestPath M04UnknownAsFresh)
+      (reviewedAssertion M04UnknownAsFresh)
+      []
+      MutationKilled
+  , Case
+      "M04b"
+      (Reviewed M04MissingAsFresh)
+      (reviewedTestPath M04MissingAsFresh)
+      (reviewedAssertion M04MissingAsFresh)
+      []
+      MutationKilled
+  , Case
+      "M05"
+      (Reviewed M05PendingNoChange)
+      (reviewedTestPath M05PendingNoChange)
+      (reviewedAssertion M05PendingNoChange)
+      []
+      MutationKilled
+  , Case
+      "M04c"
+      (Reviewed M04MirrorGenesisAsFresh)
+      (reviewedTestPath M04MirrorGenesisAsFresh)
+      (reviewedAssertion M04MirrorGenesisAsFresh)
+      []
+      MutationKilled
   , -- Calibration: a compiled change the designated test cannot see survives.
     Case
       "calibration-survivor"

@@ -143,7 +143,7 @@ envoyGatewayDataPlaneTag = imageTag (envoyGatewayReleaseDataPlaneImage envoyGate
 -- equivalence ("the home local substrate and the AWS substrate stand up the
 -- same set of services") is enforced structurally by declaring the shared
 -- component set once here and requiring both installers
--- ('Prodbox.CLI.Rke2' / 'Prodbox.Lib.ChartPlatform' for home,
+-- ('Prodbox.CLI.Cluster' / 'Prodbox.Lib.ChartPlatform' for home,
 -- 'Prodbox.Lib.AwsSubstratePlatform' for AWS) to cover every entry. The
 -- genuinely substrate-specific LOWER layer (MetalLB vs the AWS Load Balancer
 -- Controller, the parent zone vs the delegated subzone, the node-local
@@ -200,12 +200,12 @@ harborPostgresOperatorImage =
 -- | Sprint 7.12: the Percona PostgreSQL operator Helm chart version, sourced
 -- from the single operator image tag so chart + image stay in lockstep. The
 -- Percona operator is a SHARED platform component, installed once by
--- 'Prodbox.CLI.Rke2.ensurePostgresOperatorRuntime' for both substrates.
+-- 'Prodbox.CLI.Cluster.ensurePostgresOperatorRuntime' for both substrates.
 postgresOperatorChartVersion :: String
 postgresOperatorChartVersion = imageTag harborPostgresOperatorImage
 
 -- | Sprint 7.12: the MinIO Helm chart version. MinIO is a SHARED platform
--- component installed once by 'Prodbox.CLI.Rke2.ensureMinioRuntime' for both
+-- component installed once by 'Prodbox.CLI.Cluster.ensureMinioRuntime' for both
 -- substrates; the chart version is its own pin (it does not track the MinIO
 -- image RELEASE tag), but it lives here as the single sanctioned source so it
 -- can never be re-pinned per substrate.

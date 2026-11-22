@@ -4,6 +4,9 @@ module Prodbox.TestRunner
   ( runTests
   , runSelectedPhaseScenario
   , runSelectedMutationCatalog
+  , runSelectedPhaseTwoScenario
+  , runSelectedPhaseTwoBrokerScenario
+  , runSelectedPhaseThreeScenario
   , renderNamedLocalTestList
   , ClusterEvidence (..)
   , TestGate (..)
@@ -81,6 +84,18 @@ import Prodbox.BuildSupport
   , canonicalOperatorBinaryPath
   , syncBuiltOperatorBinary
   )
+import Prodbox.CLI.Cluster
+  ( ensureBootstrapImagesSeeded
+  , ensureGatewayMinioBootstrap
+  , harnessPostCredentialRuntimeCommand
+  , reconcileAcmeEabFixture
+  , reconcileHarnessLifecycleProviderCredential
+  , reconcileHarnessSesSmtpCredential
+  , rke2InstallMarkers
+  , rke2InstallPresent
+  , runNativeHarnessBootstrapFloor
+  , runRke2Command
+  )
 import Prodbox.CLI.Command
   ( CoverageFlags (..)
   , IntegrationSuite (..)
@@ -95,18 +110,6 @@ import Prodbox.CLI.Output
   , writeError
   , writeOutput
   , writeOutputLine
-  )
-import Prodbox.CLI.Rke2
-  ( ensureBootstrapImagesSeeded
-  , ensureGatewayMinioBootstrap
-  , harnessPostCredentialRuntimeCommand
-  , reconcileAcmeEabFixture
-  , reconcileHarnessLifecycleProviderCredential
-  , reconcileHarnessSesSmtpCredential
-  , rke2InstallMarkers
-  , rke2InstallPresent
-  , runNativeHarnessBootstrapFloor
-  , runRke2Command
   )
 import Prodbox.CheckCode (runCheckCode)
 import Prodbox.Config.Tier0 qualified as Tier0
@@ -220,6 +223,9 @@ import Prodbox.Test.LifecycleCleanupClient
   )
 import Prodbox.Test.MutationExecutor (runMutationCatalog)
 import Prodbox.Test.Phase01Runner (runPhase01Scenario)
+import Prodbox.Test.Phase02BrokerRunner (runPhase02BrokerScenario)
+import Prodbox.Test.Phase02Runner (runPhase02Scenario)
+import Prodbox.Test.Phase03Runner (runPhase03Scenario)
 import Prodbox.TestPlan
   ( HarnessPreparationStep (..)
   , NativeSuitePlan (..)
@@ -377,6 +383,15 @@ renderNamedLocalTestList =
 
 -- | The explicit-config scenario runner. The selected path names the owned
 -- test identity; nothing is resolved from the environment.
+runSelectedPhaseThreeScenario :: FilePath -> IO ExitCode
+runSelectedPhaseThreeScenario = runPhase03Scenario
+
+runSelectedPhaseTwoBrokerScenario :: FilePath -> IO ExitCode
+runSelectedPhaseTwoBrokerScenario = runPhase02BrokerScenario
+
+runSelectedPhaseTwoScenario :: FilePath -> IO ExitCode
+runSelectedPhaseTwoScenario = runPhase02Scenario
+
 runSelectedMutationCatalog :: IO ExitCode
 runSelectedMutationCatalog = runMutationCatalog
 

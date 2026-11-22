@@ -172,6 +172,26 @@ deleteNewTestIdentity bootstrap
                   False
                   "a node create attempt exists without a recorded result; records are retained for recovery"
               ]
+      KindOperationCallbackReturned Nothing -> do
+        -- No node proposal was recoverable. Only an absent intent record (no
+        -- node effect was ever planned) is a disposition; a present but
+        -- unreadable one keeps its records for recovery.
+        planned <- recordPresent "kind-node-create-intent.json"
+        attempted <- recordPresent "kind-node-create-attempt.json"
+        pure $
+          if planned == Just False && attempted == Just False
+            then
+              [ DeleteStep
+                  "node"
+                  True
+                  "no node create intent was recorded, so no node effect was planned or started"
+              ]
+            else
+              [ DeleteStep
+                  "node"
+                  False
+                  "a node create record exists but its identity is unavailable; records are retained for recovery"
+              ]
       other -> pure [DeleteStep "node" False ("recorded node identity unavailable: " ++ show other)]
   -- The recorded node is not listed. That is only a disposition when the
   -- same inventory is shown able to see the field: a never-started control
@@ -207,14 +227,20 @@ deleteNewTestIdentity bootstrap
                           , Key.fromString "control_container" Aeson..= controlId
                           ]
                       )
+                  present <- recordPresent "kind-node-absence-observed.json"
+                  let settled = recorded || present == Just True
                   pure
                     [ DeleteStep
                         "node"
-                        recorded
+                        settled
                         ( if recorded
                             then
                               "the recorded node was not listed while a labelled control container was; absence recorded, not a removal by this command"
-                            else "absence observed but its record was not written"
+                            else
+                              if settled
+                                then
+                                  "absence re-observed with a control container; its record was already written by an earlier delete"
+                                else "absence observed but its record was not written"
                         )
                     ]
                 else
@@ -258,6 +284,18 @@ deleteNewTestIdentity bootstrap
       (DockerPeerCompleted (DockerConnectedInfoCompleted (NodeRemoveActionReturned _ _))) -> True
     _ -> False
   removeVolume operation = do
+    planned <- recordPresent "kind-node-var-volume-intent.json"
+    if planned == Just False
+      then
+        pure
+          (DeleteStep "volume" True "no volume create intent was recorded, so there is no volume to remove")
+      else do
+        removedBefore <- recordPresent "kind-node-var-volume-removal-result.json"
+        if removedBefore == Just True
+          then
+            pure (DeleteStep "volume" True "a volume removal result is already recorded for this operation")
+          else removeRecordedVolume operation
+  removeRecordedVolume operation = do
     removed <-
       withNewConnectedKindNodeVolumeRemoval
         bootstrap
@@ -266,6 +304,12 @@ deleteNewTestIdentity bootstrap
         (\session stable -> removeDockerSessionNodeVarVolume session bootstrap operation stable)
     pure (DeleteStep "volume" (volumeRemoved removed) (show removed))
   removeNetwork operation = do
+    removedBefore <- recordPresent "kind-network-removal-result.json"
+    if removedBefore == Just True
+      then
+        pure (DeleteStep "network" True "a network removal result is already recorded for this operation")
+      else removeRecordedNetwork operation
+  removeRecordedNetwork operation = do
     identifier <- withRecoveredKindOperation bootstrap operation $ \stable -> do
       proposal <- observeRecordedKindNetworkIntent bootstrap operation stable
       case proposal of
@@ -273,11 +317,20 @@ deleteNewTestIdentity bootstrap
           receipt <- observeNetworkReceipt bootstrap intent NetworkCreateReceipt stable
           pure $ case receipt of
             NetworkReceiptObserved (NetworkCreateTransport (DockerNetworkCreateReply 201 (Just networkId)))
-              | kindNetworkDaemon intent /= DockerDaemonUnobservable -> Just networkId
+              | kindNetworkDaemon intent /= DockerDaemonUnobservable -> Just (Right networkId)
+            NetworkReceiptObserved (NetworkCreateTransport (DockerNetworkCreateReply status Nothing))
+              | status /= 201 -> Just (Left status)
             _ -> Nothing
         _ -> pure Nothing
     case identifier of
-      KindOperationCallbackReturned (Just networkId) -> do
+      KindOperationCallbackReturned (Just (Left status)) ->
+        pure
+          ( DeleteStep
+              "network"
+              True
+              ("the network create was refused with status " ++ show status ++ ", so no network was created")
+          )
+      KindOperationCallbackReturned (Just (Right networkId)) -> do
         removed <-
           withNewConnectedKindNetworkRecordedRemoval bootstrap operation networkId $ \session stable ->
             removeDockerSessionKindNetwork session networkId stable

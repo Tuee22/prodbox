@@ -56,3 +56,11 @@ Status reports independently observable component facts even when Broker or Auth
 ## Required evidence
 
 Phase 1 proves real mounts, kind node recreation, context isolation, management policy enforcement and worker capacity. Phase 2 proves same-Vault recovery and secret-worker behavior. Phase 3 proves Authority admission/restart and obligation-aware local removal. EKS availability is not a prerequisite for any of these proofs. [Numerical phases](../../DEVELOPMENT_PLAN/README.md#resume-here)
+
+## Implemented through Phase 1
+
+`control reconcile` admits a test identity only after, in order, host capacity (the compiled controller envelope against the observed CPU affinity, memory and device), the absence of Docker resources already bearing the scope's cluster name, and free declared host ports; each refusal happens before any archive, image, network, volume or node effect. The confined kind controller runs as a transient unit in its own slice. The pinned management NetworkPolicy lives in `Prodbox.Control.ManagementPolicy` (digest pinned by a unit test) and enforcement is observed with real sockets under the shipped kindnet CNI, never inferred from a successful apply. Authority admission, Vault and the secret workers are Phase 2 and later. Evidence: [Phase 1 validation](../../DEVELOPMENT_PLAN/evidence/phase_01_validation.md).
+
+## Implemented through Phase 2
+
+`control services` deploys, from locally imported pinned artifacts and with every container's pull policy `Never`, a source-built MinIO, Vault and the MinIO client in the management namespace plus the Bootstrap Broker (Deployment, Service and RBAC in its own namespace, with a ServiceAccount for the Broker and another for its one-shot secret worker). Vault runs as its own ServiceAccount bound to `system:auth-delegator`, which is what lets its Kubernetes authentication validate the Broker's tokens. `control status` reads each component directly and names an unobservable one as such. The Broker mutations the public surface drives are `control broker-init`, `broker-unseal` and `broker-baseline`; the post-unseal handoff needs the control-plane Authority and is a Phase 3 consumer.

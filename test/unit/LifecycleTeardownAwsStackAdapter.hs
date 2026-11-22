@@ -394,7 +394,7 @@ lifecycleTeardownAwsStackAdapterSuite =
       unlines moduleHeader `shouldNotContain` "AwsStackDestroyRequest (..)"
       unlines moduleHeader `shouldNotContain` "CompleteAwsStackDestroy (..)"
       source `shouldNotContain` "Prodbox.ControlPlane.ProviderProduction"
-      source `shouldNotContain` "Prodbox.CLI.Rke2"
+      source `shouldNotContain` "Prodbox.CLI.Cluster"
       source `shouldNotContain` "Prodbox.TestRunner"
       source `shouldNotContain` "IO "
       source `shouldNotContain` "FilePath"

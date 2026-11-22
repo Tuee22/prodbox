@@ -57,13 +57,59 @@ The reviewed M01 overlapping-root variant is bound to
 and `context.rejects_root_alias`. It changes the root-overlap check in
 `src/Prodbox/Config/DeploymentScope.hs` so it cannot reject valid API ports.
 The required source SHA-256 is
-`e38d6ca4908cfe91172784dc124fc46777e9ef94a3ff456b88543f28e808515a`;
+`119f96fc9f9afef3ad91feb98eba09e69c43da5b33a489f8c4521dd7af99992d`;
 the domain-separated binding digest is
-`c289b3516dd857de5a183e22f5029af04bd315a70f6d965e0ddc7590a0a30a94`
+`c9cc0766a2858ea045b32a881ef28b485e058bcca9a83a91f9f9c323bb4c3f71`
 and the candidate source SHA-256 is
-`50cebd8ad38611570c2e90e2554b2a640df9b449e4d36bb5bf43d0060de6bbb6`.
+`cd21a91e35cb4c76fbc620915d28dbf23804a23d2f4724454571306efa4b9444`.
 The baseline assertion and preparation passed; isolated compilation, actual
 assertion failure, cleanup and M01 acceptance remain open.
+
+### Phase 3 assertion bindings
+
+The reviewed M04 and M05 variants are three source-bound candidates in
+`src/Prodbox/Lifecycle/AdmissionHistory.hs`; all require source SHA-256
+`03844695f0097ed3338ca2a28f99ef9a3b5dde528d1f0b1a1325e0cc12f202da`.
+
+M04a is bound to `prodbox-unit.admission history.never recodes an unobservable journal as never admitted for the mutation catalog` and `lifecycle.unknown_requires_recovery`. Its
+domain-separated binding digest is `5708c5477913f657a8f5077021e9a676c2b392559e74b01341fffb292e927c18` and the candidate source
+SHA-256 is `fab80904d0ef111244fdc4455cf472025c7245858ef8cfc77760e5f7197f0360`.
+
+M04b is bound to `prodbox-unit.admission history.never relabels missing existing history as never admitted for the mutation catalog` and `lifecycle.missing_history_is_not_fresh`. Its
+domain-separated binding digest is `76183f982bf9ec7e5fe7f9d968be73784815e719c1ec77d4c2b816706c18f5ea` and the candidate source
+SHA-256 is `7f3fa1d0c2dfe552abc4f9d6ad349daa20b744f4cd88dfb61fb588055a000db7`.
+
+M05 is bound to `prodbox-unit.admission history.blocks a no-change answer while an intent is unresolved for the mutation catalog` and `lifecycle.pending_intent_blocks_noop`. Its
+domain-separated binding digest is `1317a84b87b354520515cb814a370b8766926673f1e0893587f717fd70039ed0` and the candidate source
+SHA-256 is `b93fa4e240eb4a0dfd4ca1e4e0f2c14a13fff72a72bcefb15d2357c6f32eac84`.
+
+The M04c variant is bound to `prodbox-unit.admission history.never reads a journal mirror without its genesis record as never admitted for the mutation catalog`
+and `lifecycle.uninitialized_mirror_is_not_fresh` in `src/Prodbox/ControlPlane/AdmissionJournalMirror.hs` (source SHA-256 `cb15a8c10fc6de27285f597760830385515331f54eb355fc547a75f3e43e63d6`): it makes a
+journal mirror with no genesis record read as an empty, successfully read journal,
+that is as never admitted. Its binding digest is `b47816515089cc9bfa61cb0ee36f522fbe7c14b99aed274b191b1c9b6798f861` and the candidate source
+SHA-256 is `88e548df6f6953a733bed25a54e7b21843d7a1c3194ea8dd8f3db3563d55087e`.
+
+### Phase 2 assertion bindings
+
+The reviewed M03 variants are two source-bound candidates in
+`src/Prodbox/Control/Unlock.hs`, one per assertion of the catalog row. Both
+require source SHA-256 `29374f1c8e05b8c25bc7a6155c07cdbd76685f4772efb19380bf8f5e72df5f07`.
+The M03a variant (production policy) is bound to
+`bootstrap unlock policy.never selects the test self-unseal policy for production for the mutation catalog`
+and `bootstrap.production_rejects_test_unlock`: it makes `unlockPolicyFor`
+select the test self-unseal policy for every environment. Its domain-separated
+binding digest is
+`e1572dd06b951f229274e1ccd496129b05f386ddebe65bf97cc2faabbd7dd8a4` and the
+candidate source SHA-256 is
+`2b8e7c6024f54dc564517b8fe321a83f85d99c4201f428f66d837ccec60bf425`.
+The M03b variant (Vault incarnation) is bound to
+`bootstrap unlock policy.initializes only an uninitialized Vault with no unlock object or pending record for the mutation catalog`
+and `bootstrap.preserves_vault_incarnation`: it makes `initialisationAllowed`
+ignore a recorded unlock object, so an initialization over a storage-identity
+disagreement is permitted. Its binding digest is
+`3e462bd1190041842d02d340ce09a7bfd5b2fdf73d0956dc2a0ef022a65d6155` and the
+candidate source SHA-256 is
+`7740a14fa6a30349bc497ef258c442608d720fb9aaeebdd5ede3c0e2325c46df`.
 
 ### Phase 0 assertion bindings
 

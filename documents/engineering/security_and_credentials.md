@@ -55,3 +55,7 @@ SES receiving has one active rule-set container per account/region. A dedicated 
 Do not log secrets or hash plaintext secrets into public evidence. Report logical operation/capability causes and metadata allowed by this contract, not credential bodies or raw provider payloads. Keep synthetic fixtures unmistakably synthetic and real inputs out of source/build contexts. Preserve `.gitignore`/container-context exclusions when files move.
 
 Real init/unseal/restart, prompt/fixture IAM creation/use/revocation and same-generation delivery evidence belong to their introducing phases. Mutants that admit test unlock in production, omit write-ahead IAM intent or retire credentials too early must trigger the intended unchanged assertion. [Mutation policy](testing.md#targeted-mutation-testing)
+
+## Implemented through Phase 2
+
+Test and production unlock policies are distinct and a production identity cannot select the test self-unseal policy. The test path reads one object through a per-environment reader credential scoped to `GetObject` on that object; production uses `control protected-unlock`, which takes the unseal key at a hidden prompt (or one line of standard input), never touches MinIO and treats absent input as a distinct needs-input result. The initial root token is used once in memory to mint a limited, policy-scoped client token and is then revoked; it is never recorded in MinIO. Vault's Kubernetes authentication binds the Broker's roles to named ServiceAccounts, and the worker role is refused for the Broker's own account.

@@ -15,15 +15,15 @@ module HarnessSesSmtp (harnessSesSmtpSuite) where
 import Data.Either (isLeft)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
-import Prodbox.CLI.Command
-  ( IntegrationSuite (..)
-  , TestScope (..)
-  )
-import Prodbox.CLI.Rke2
+import Prodbox.CLI.Cluster
   ( HarnessCredentialRequest (..)
   , harnessRetainedIntentIsLive
   , resolveHarnessCredentialIntent
   , sesSmtpCredentialRequest
+  )
+import Prodbox.CLI.Command
+  ( IntegrationSuite (..)
+  , TestScope (..)
   )
 import Prodbox.ControlPlane.AuthorityBackupReconcileProduction
   ( GenesisAwsAdminIntentParameters (..)

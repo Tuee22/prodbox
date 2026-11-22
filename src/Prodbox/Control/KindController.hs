@@ -15,6 +15,7 @@ module Prodbox.Control.KindController
   ( launchKindController
   , runKindControllerEntry
   , kindControllerEnvelope
+  , kindHostCapacityRefusal
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -149,6 +150,13 @@ kindControllerEnvelope retainedRoot = do
           (sealedToolRuntimePlan (kindWorkerKindBudget budgets))
           (Host.HostExecutionDemand 1000000 500000 100000 64 16 8 (64 * mib) (16 * mib) 1 0)
     pure (plan, budgets)
+
+-- | Refuse with the compiled envelope's own reason when the observed host
+-- cannot fund the declared controller and worker envelope.
+kindHostCapacityRefusal :: FilePath -> IO (Maybe String)
+kindHostCapacityRefusal retainedRoot = do
+  envelope <- kindControllerEnvelope retainedRoot
+  pure (either Just (const Nothing) envelope)
 
 controllerKey :: String -> Maybe Subprocess.HostExecutionKey
 controllerKey operation = Subprocess.hostExecutionKeyFromText (take 64 (operation <> operation <> operation))

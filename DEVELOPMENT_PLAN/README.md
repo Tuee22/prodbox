@@ -14,9 +14,9 @@ Read [AGENTS.md](../AGENTS.md), the [Development Plan Standards](development_pla
 | Phase | Contract | State | Next work / entry condition |
 |---:|---|---|---|
 | 0 | [Contracts and documentation](phase_00_contracts_and_documentation.md) | Complete | Checker, negative fixtures, M00 and owned removals validated; see [evidence](evidence/phase_00_validation.md). |
-| 1 | [CLI contexts, kind and evidence](phase_01_cli_contexts_kind_and_evidence.md) | Active — Next | Actual kind mounts, isolation and bounded evidence/mutation runner. |
-| 2 | [Vault, MinIO and bootstrap](phase_02_vault_minio_and_bootstrap.md) | Planned | Phase 1 complete; real protected-production and test self-unseal policies. |
-| 3 | [Authority and local lifecycle](phase_03_authority_and_local_lifecycle.md) | Planned | Phase 2 complete; shared public lifecycle engine and honest never-admitted/no-op deletion. |
+| 1 | [CLI contexts, kind and evidence](phase_01_cli_contexts_kind_and_evidence.md) | Complete | Real kind mounts, isolation, capacity and bounded evidence/mutation runner validated; see [evidence](evidence/phase_01_validation.md). |
+| 2 | [Vault, MinIO and bootstrap](phase_02_vault_minio_and_bootstrap.md) | Complete | Real MinIO, Vault and Broker, protected and test unlock, recovery and policy traffic validated; see [evidence](evidence/phase_02_validation.md). |
+| 3 | [Authority and local lifecycle](phase_03_authority_and_local_lifecycle.md) | Active — Next | Phase 2 complete; shared public lifecycle engine and honest never-admitted/no-op deletion. |
 | 4 | [Ephemeral credentials](phase_04_ephemeral_credentials.md) | Planned | Phase 3 complete plus real AWS test account/elevated fixture. |
 | 5 | [First complete AWS lifecycle](phase_05_first_complete_aws_lifecycle.md) | Planned | Phase 4 complete; cheap real resource create/recover/delete/read-back. |
 | 6 | [Local platform and applications](phase_06_local_platform_and_applications.md) | Planned | Phase 5 complete; canonical local services, registry, storage and application behavior. |

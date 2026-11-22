@@ -3790,7 +3790,7 @@ hostLifecycleContextRequiredFragments =
     , ["vaultAddressForDeploymentContext (validatedDeploymentContext settings)"]
     )
   ,
-    ( "src/Prodbox/CLI/Rke2.hs"
+    ( "src/Prodbox/CLI/Cluster.hs"
     ,
       [ "resolveVaultLifecycle repoRoot context"
       , "vaultLifecycleFromBasics basics >>= bindVaultLifecycleContext context"
@@ -3799,7 +3799,7 @@ hostLifecycleContextRequiredFragments =
       ]
     )
   ,
-    ( "src/Prodbox/CLI/Pulumi.hs"
+    ( "src/Prodbox/CLI/AwsStack.hs"
     ,
       [ "probePulumiVaultGate repoRoot"
       , "vaultSealStatus (VaultAddress (basicsVaultAddress basics))"
@@ -4017,7 +4017,7 @@ harnessDeploymentConfigRetiredFragments =
 --
 -- Reads of an /unvalidated/ 'Prodbox.Settings.ConfigFile' are deliberately not
 -- registered. @Prodbox.Aws@ builds a config from operator answers and
--- @Prodbox.CLI.Rke2.resolveRetainedManualPvRoot@ reads one that
+-- @Prodbox.CLI.Cluster.resolveRetainedManualPvRoot@ reads one that
 -- 'Prodbox.Settings.validateConfig' has not seen and cannot see; in both, raw
 -- is the only thing there is to read, and there is no discarded decision.
 checkTier0CoordinateReads :: FilePath -> IO [String]
@@ -7977,7 +7977,7 @@ checkSubstrateImagePinning repoRoot =
 substrateInstallerPaths :: [FilePath]
 substrateInstallerPaths =
   [ "src/Prodbox/Lib/AwsSubstratePlatform.hs"
-  , "src/Prodbox/CLI/Rke2.hs"
+  , "src/Prodbox/CLI/Cluster.hs"
   , "src/Prodbox/Lib/ChartPlatform.hs"
   ]
 
@@ -8238,9 +8238,9 @@ checkPlanOptionsHonored repoRoot =
   -- destructive `PlanOptions`-carrying constructors dispatched elsewhere; the
   -- CLI modules that own them are now scanned too.
   scopedPaths =
-    [ "src/Prodbox/CLI/Rke2.hs"
+    [ "src/Prodbox/CLI/Cluster.hs"
     , "src/Prodbox/CLI/Nuke.hs"
-    , "src/Prodbox/CLI/Pulumi.hs"
+    , "src/Prodbox/CLI/AwsStack.hs"
     , "src/Prodbox/CLI/Charts.hs"
     , "src/Prodbox/CLI/Users.hs"
     , "src/Prodbox/Aws.hs"
@@ -8502,7 +8502,7 @@ retryClassifierDefinitionName sourceLine
 -- where prodbox actually originates new AWS/cluster resources:
 --
 --   1. Pulumi stack creation: the @Pulumi<Word>Resources@ constructors
---      of the @PulumiCommand@ ADT in @src/Prodbox/CLI/Command.hs@. Each
+--      of the @AwsStackCommand@ ADT in @src/Prodbox/CLI/Command.hs@. Each
 --      must map (via 'pulumiCreateSiteOwners') to a registered stack
 --      name.
 --   2. Operational IAM user creation: the AWS CLI verbs in
@@ -9192,24 +9192,24 @@ productionEnvVarRegistry =
       "Plan-file destination for `prodbox nuke --dry-run`."
   , ProductionEnvVarRead
       "PRODBOX_PULUMI_METALLB_POOL"
-      ["src/Prodbox/CLI/Rke2.hs"]
+      ["src/Prodbox/CLI/Cluster.hs"]
       "Substitutes for live LAN detection when rendering the MetalLB pool. \
       \Load-bearing for host networking on the home substrate."
   , ProductionEnvVarRead
       "PRODBOX_PULUMI_EDGE_LB_IP"
-      ["src/Prodbox/CLI/Rke2.hs"]
+      ["src/Prodbox/CLI/Cluster.hs"]
       "Substitutes for live LAN detection when rendering the edge LB address."
   , ProductionEnvVarRead
       "PRODBOX_PULUMI_INGRESS_LB_IP"
-      ["src/Prodbox/CLI/Rke2.hs"]
+      ["src/Prodbox/CLI/Cluster.hs"]
       "Substitutes for live LAN detection when rendering the ingress LB address."
   , ProductionEnvVarRead
       "PRODBOX_RKE2_ENDPOINT_STATUS_ROOT"
-      ["src/Prodbox/CLI/Rke2.hs"]
+      ["src/Prodbox/CLI/Cluster.hs"]
       "Relocates the Calico endpoint-status root the teardown path sweeps."
   , ProductionEnvVarRead
       "PRODBOX_RKE2_CONTAINERD_SOCKET"
-      ["src/Prodbox/CLI/Rke2.hs"]
+      ["src/Prodbox/CLI/Cluster.hs"]
       "Relocates the containerd socket the registry-mirror config targets."
   , ProductionEnvVarRead
       "PRODBOX_PULUMI_AWS_ACCESS_KEY_ID"

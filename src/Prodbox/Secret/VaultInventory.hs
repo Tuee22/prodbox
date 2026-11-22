@@ -307,7 +307,7 @@ chartVaultSecretConsumers =
   , -- Sprint 7.15: the ACME EAB material (ZeroSSL external-account-binding
     -- key ID + HMAC key) lives at secret/acme/eab. The in-cluster EAB
     -- secret materializer (SA acme-eab-secret-materializer in cert-manager,
-    -- rendered by Prodbox.CLI.Rke2.acmeEabMaterializerManifests) reads it via
+    -- rendered by Prodbox.CLI.Cluster.acmeEabMaterializerManifests) reads it via
     -- Vault Kubernetes auth (policy/role "acme") and materializes the
     -- acme-eab-credentials Secret that the ZeroSSL ClusterIssuer references.
     VaultSecretConsumer

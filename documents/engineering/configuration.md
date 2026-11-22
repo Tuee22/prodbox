@@ -293,3 +293,11 @@ Component desired-state deletion updates the selected specification and Authorit
 Prerequisites are typed capabilities derived from the selected operation, not a global all-services gate. Observe and classify unavailable, needs-input and unobservable separately. Acquire only required tools, caller identities, unlock material and provider credentials. Read-only status never repairs state implicitly; mutation commands own their visible recovery steps.
 
 Phase 1 proves source partition/path selection. Later phases extend projections and the same shared builder, not replace the context contract. [Acceptance cases](../../DEVELOPMENT_PLAN/acceptance_cases.md)
+
+## Implemented through Phase 1
+
+The selected bootstrap document (schema version 3) fixes the project anchor, identity, generation, ports, node image and artifact digests; roots, kind names and kubeconfigs derive from it. No ambient `KUBECONFIG`, `DOCKER_HOST` or RKE2 setting selects a target in the new control modules (a unit test scans them), and a decoy kubeconfig named in the environment receives no connection. Cross-environment declarations, an unavailable node image and a sibling scope on the same host ports or kind name are refused before effects. Evidence: [Phase 1 validation](../../DEVELOPMENT_PLAN/evidence/phase_01_validation.md).
+
+## Implemented through Phase 2
+
+The MinIO bootstrap root credential is a compiled bootstrap-floor constant because the Broker's object-store code requires it; per-environment access is the random unlock-reader user. Service Pod limits are Vault 128Mi/512Mi, MinIO 256Mi/1Gi and the client 32Mi/512Mi, and the management NetworkPolicy is a pinned default-deny with an allow from pods labelled `prodbox.io/management-client: "true"` and from the Broker namespace.

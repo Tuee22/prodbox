@@ -4,7 +4,7 @@ _prodbox() {
   local -a words
   case "$CURRENT" in
     2)
-      words=("admin-action" "aws" "bootstrap-broker" "credential-provisioner" "lifecycle-authority" "provider-worker" "authority-backup" "tls-retention" "target-secret-agent" "charts" "cluster" "commands" "control" "config" "dev" "dns" "edge" "gateway" "help" "host" "internal-kind-controller" "internal-rpc-birth-controller" "nuke" "test" "users" "vault" "workload")
+      words=("admin-action" "aws" "bootstrap-broker" "credential-provisioner" "lifecycle-authority" "provider-worker" "authority-backup" "tls-retention" "target-secret-agent" "charts" "cluster" "commands" "control" "delete" "config" "dev" "dns" "edge" "gateway" "help" "host" "internal-kind-controller" "internal-rpc-birth-controller" "nuke" "test" "users" "vault" "workload")
       _describe 'command group' words
       ;;
     3)
@@ -186,7 +186,7 @@ _prodbox() {
     3)
       case "$words[2,2]" in
         "control")
-          words=("status" "plan" "reconcile" "delete" "import-artifact" "discard-artifact-staging" "inspect-node-archive" "inspect-image-attempt")
+          words=("status" "plan" "reconcile" "services" "unlock" "protected-unlock" "vault-status" "broker-init" "broker-unseal" "broker-baseline" "lifecycle-status" "authority-deploy" "backup" "restore" "delete" "import-artifact" "discard-artifact-staging" "inspect-node-archive" "inspect-image-attempt")
           _describe 'subcommand' words
           ;;
       esac

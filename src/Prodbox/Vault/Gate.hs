@@ -4,7 +4,7 @@
 -- @prodbox aws stack ...@ operation consults before touching Pulumi state.
 -- The decision is pure (it folds a 'SealStatus' probe, or its failure, into a
 -- typed verdict) so it is unit-tested without a live Vault; the apply-path
--- wiring in 'Prodbox.CLI.Pulumi' runs the probe and refuses before any real
+-- wiring in 'Prodbox.CLI.AwsStack' runs the probe and refuses before any real
 -- stack action starts. The live deployed-Vault proof lands after the
 -- in-cluster Vault is deployable (Sprint 3.17). See
 -- @documents/engineering/vault_doctrine.md at 583443f, section 10 (Pulumi backend under Vault).

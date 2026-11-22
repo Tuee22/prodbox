@@ -9,7 +9,7 @@
 -- adapters in 'ComponentReadinessTarget' are injected by the owning lifecycle
 -- consumer, which lets those consumers reuse their existing kubectl, Vault,
 -- registry, and gateway primitives without introducing a dependency from this
--- low-level module back into @Prodbox.CLI.Rke2@.
+-- low-level module back into @Prodbox.CLI.Cluster@.
 module Prodbox.Lifecycle.ReadinessObservation
   ( BackendRoundTripResult (..)
   , ComponentReadinessTarget (..)

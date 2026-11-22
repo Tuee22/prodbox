@@ -25,7 +25,7 @@ module Prodbox.CLI.Command
   , HostCommand (..)
   , HostFitMode (..)
   , IntegrationSuite (..)
-  , K8sCommand (..)
+  , ClusterK8sCommand (..)
   , LintCommand (..)
   , NativeCommand (..)
   , NukeOptions (..)
@@ -33,10 +33,10 @@ module Prodbox.CLI.Command
   , parseNukeLocalDataDisposition
   , Plan (..)
   , PolicyTier (..)
-  , PulumiCommand (..)
+  , AwsStackCommand (..)
   , AdoptableLegacyStack (..)
   , PerRunPruneTarget (..)
-  , Rke2Command (..)
+  , ClusterCommand (..)
   , Rke2DeleteFlags (..)
   , PlanOptions (..)
   , runPlanWithOptions
@@ -81,8 +81,20 @@ import System.Exit
 data CommandRequest
   = RunNative NativeCommand
   | RunControlStatus
+  | RunControlLifecycleStatus
+  | RunOrdinaryDelete
+  | RunControlAuthorityDeploy
   | RunControlPlan
   | RunControlReconcile
+  | RunControlServices
+  | RunControlUnlock
+  | RunControlProtectedUnlock
+  | RunControlVaultStatus
+  | RunControlBrokerInit
+  | RunControlBrokerUnseal
+  | RunControlBrokerBaseline
+  | RunControlBackup
+  | RunControlRestore String
   | RunControlDelete
   | RunControlArtifactImport String FilePath
   | RunControlArtifactDiscard String
@@ -107,24 +119,24 @@ data NativeCommand
   | NativeControlPlane RuntimeRole ControlPlaneLaunchOptions
   | NativeCredentialProvisioner CredentialProvisionerCommand
   | NativeCharts ChartsCommand
-  | NativeCheckCode
+  | NativeDevCheck
   | NativeConfig ConfigCommand
   | NativeDns DnsCommand
-  | NativeDocs DocsCommand
+  | NativeDevDocs DocsCommand
   | NativeEdge EdgeCommand
   | NativeGateway GatewayCommand
   | NativeHost HostCommand
   | NativeRpcBirthController !HostControllerArguments
-  | NativeK8s K8sCommand
-  | NativeLint LintCommand
+  | NativeClusterK8s ClusterK8sCommand
+  | NativeDevLint LintCommand
   | -- | Sprint 4.13: total teardown command. TTY-only, no @--yes@,
     -- typed-confirmation literal. Carries a 'NukeOptions' for the
     -- @--dry-run@ / @--plan-file@ flags but no other arguments.
     NativeNuke NukeOptions
-  | NativePulumi PulumiCommand
-  | NativeRke2 Rke2Command
+  | NativeAwsStack AwsStackCommand
+  | NativeCluster ClusterCommand
   | NativeTest TestCommand
-  | NativeTlaCheck
+  | NativeDevTla
   | NativeUsers UsersCommand
   | NativeVault VaultCommand
   | NativeWorkload WorkloadCommand
@@ -189,7 +201,7 @@ data HostCommand
   | HostInfo
   | HostFirewallGatewayRestrict Int
   | HostFirewallGatewayUnrestrict Int
-  | HostPublicEdge Substrate
+  | EdgeStatusCommand Substrate
   deriving (Eq, Show)
 
 data DnsCommand
@@ -200,7 +212,7 @@ data DnsCommand
 -- is the AWS-gated edge-only reconcile (the same plan @cluster reconcile
 -- --with-edge@ appends); it fails fast naming @prodbox aws setup@ when
 -- operational @aws.*@ is empty. @edge status@ reuses the existing
--- public-edge readiness check via 'HostPublicEdge'.
+-- public-edge readiness check via 'EdgeStatusCommand'.
 data EdgeCommand
   = EdgeReconcile PlanOptions
   deriving (Eq, Show)
@@ -289,7 +301,7 @@ data WorkloadCommand
   = WorkloadStart WorkloadOptions
   deriving (Eq, Show)
 
-data K8sCommand
+data ClusterK8sCommand
   = K8sHealth
   | K8sWait Int [String]
   | K8sLogs [String] Int
@@ -421,7 +433,7 @@ data PulumiResiduePolicy
   | BypassPerRunResidueForHarnessRefresh
   deriving (Eq, Show)
 
-data PulumiCommand
+data AwsStackCommand
   = PulumiEksResources PlanOptions
   | PulumiStackDiff AwsStackTarget
   | PulumiEksPurgeDependents ProviderNetworkPurgeMode
@@ -472,7 +484,7 @@ data Rke2DeleteFlags = Rke2DeleteFlags
   }
   deriving (Eq, Show)
 
-data Rke2Command
+data ClusterCommand
   = Rke2Status
   | Rke2Start
   | Rke2Stop

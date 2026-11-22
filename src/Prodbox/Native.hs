@@ -17,7 +17,9 @@ import Prodbox.Aws
   , runInteractiveConfigSetupWithPlan
   )
 import Prodbox.Bootstrap.Broker (runBootstrapBrokerCommand)
+import Prodbox.CLI.AwsStack (runPulumiCommand)
 import Prodbox.CLI.Charts (runChartsCommand)
+import Prodbox.CLI.Cluster (runEdgeCommand, runRke2Command)
 import Prodbox.CLI.Command
   ( AdminActionCommand (..)
   , AwsCommand (..)
@@ -38,8 +40,6 @@ import Prodbox.CLI.Output
   ( writeError
   , writeOutput
   )
-import Prodbox.CLI.Pulumi (runPulumiCommand)
-import Prodbox.CLI.Rke2 (runEdgeCommand, runRke2Command)
 import Prodbox.CLI.Users (runUsersCommand)
 import Prodbox.CLI.Vault (runVaultCommand)
 import Prodbox.Capacity.Config (ResourcePlan (host_capacity), ResourceVector, resource_plan)
@@ -166,10 +166,10 @@ runNonRuntimeCommand repoRoot command =
     NativeCredentialProvisioner credentialCommand ->
       runCredentialProvisionerCommand credentialCommand
     NativeCharts chartsCommand -> runChartsCommand repoRoot chartsCommand
-    NativeCheckCode -> runCheckCode repoRoot
+    NativeDevCheck -> runCheckCode repoRoot
     NativeConfig configCommand -> runConfigCommand repoRoot configCommand
     NativeDns dnsCommand -> runDnsCommand repoRoot dnsCommand
-    NativeDocs docsCommand -> runDocsCommand repoRoot docsCommand
+    NativeDevDocs docsCommand -> runDocsCommand repoRoot docsCommand
     NativeEdge edgeCommand -> runEdgeCommand repoRoot edgeCommand
     NativeGateway gatewayCommand@GatewayDaemonCommand {} ->
       gatewayCommand `seq` runtimeProjectionInvariantViolation
@@ -184,13 +184,13 @@ runNonRuntimeCommand repoRoot command =
         Right _ -> do
           writeOutput "RPC birth commitment observed.\n"
           pure ExitSuccess
-    NativeK8s k8sCommand -> runK8sCommand repoRoot k8sCommand
-    NativeLint lintCommand -> runLintCommand repoRoot lintCommand
+    NativeClusterK8s k8sCommand -> runK8sCommand repoRoot k8sCommand
+    NativeDevLint lintCommand -> runLintCommand repoRoot lintCommand
     NativeNuke nukeOptions -> runNukeCommand repoRoot nukeOptions
-    NativePulumi pulumiCommand -> runPulumiCommand repoRoot pulumiCommand
-    NativeRke2 rke2Command -> runRke2Command repoRoot rke2Command
+    NativeAwsStack pulumiCommand -> runPulumiCommand repoRoot pulumiCommand
+    NativeCluster rke2Command -> runRke2Command repoRoot rke2Command
     NativeTest testCommand -> runTests repoRoot testCommand
-    NativeTlaCheck -> runTlaCheck repoRoot
+    NativeDevTla -> runTlaCheck repoRoot
     NativeUsers usersCommand -> runUsersCommand repoRoot usersCommand
     NativeVault vaultCommand -> runVaultCommand repoRoot vaultCommand
     NativeWorkload workloadCommand -> runWorkloadCommand workloadCommand
@@ -234,11 +234,11 @@ commandPrerequisites command =
     NativeCredentialProvisioner _ -> []
     -- Chart reconcile/delete apply against the active cluster.
     NativeCharts _ -> [K8sClusterReachable]
-    NativeCheckCode -> []
+    NativeDevCheck -> []
     NativeConfig _ -> []
     -- Route 53 inspection needs validated AWS credentials + zone access.
     NativeDns _ -> [Route53Accessible]
-    NativeDocs _ -> []
+    NativeDevDocs _ -> []
     -- Edge reconcile attaches Route 53 DNS + ZeroSSL TLS to a running cluster.
     NativeEdge (EdgeReconcile _) -> [K8sClusterReachable, AwsCredentialsValid]
     NativeGateway gatewayCommand ->
@@ -250,18 +250,18 @@ commandPrerequisites command =
     NativeHost _ -> []
     NativeRpcBirthController _ -> []
     -- `cluster health/wait/workload-logs` operate on a reachable cluster.
-    NativeK8s _ -> [K8sClusterReachable]
-    NativeLint _ -> []
+    NativeClusterK8s _ -> [K8sClusterReachable]
+    NativeDevLint _ -> []
     -- Empty-record pattern (not a `_` binder) so the checkPlanOptionsHonored
     -- lint does not mistake this classification arm for a dispatch arm that
     -- drops --dry-run; nuke carries no upstream prerequisite here.
     NativeNuke {} -> []
-    NativePulumi _ -> [AwsCredentialsValid]
+    NativeAwsStack _ -> [AwsCredentialsValid]
     -- `cluster` service ops + reconcile (which creates the cluster) carry no
     -- cluster precondition; the test harness owns its own prerequisite DAG.
-    NativeRke2 _ -> []
+    NativeCluster _ -> []
     NativeTest _ -> []
-    NativeTlaCheck -> []
+    NativeDevTla -> []
     NativeUsers _ -> []
     -- `vault status` self-handles an unreachable Vault (reports it); the
     -- mutating subcommands act against the in-cluster Vault and gate on a

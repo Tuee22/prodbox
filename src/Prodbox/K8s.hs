@@ -7,7 +7,7 @@ where
 
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
-import Prodbox.CLI.Command (K8sCommand (..))
+import Prodbox.CLI.Command (ClusterK8sCommand (..))
 import Prodbox.CLI.Output
   ( writeError
   , writeOutputLine
@@ -31,7 +31,7 @@ import System.Exit (ExitCode (..))
 defaultInfrastructureNamespaces :: [String]
 defaultInfrastructureNamespaces = ["metallb-system", "envoy-gateway-system", "cert-manager", "postgres-operator"]
 
-runK8sCommand :: FilePath -> K8sCommand -> IO ExitCode
+runK8sCommand :: FilePath -> ClusterK8sCommand -> IO ExitCode
 runK8sCommand repoRoot command =
   case command of
     K8sHealth -> do

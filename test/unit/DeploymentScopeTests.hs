@@ -518,6 +518,22 @@ deploymentScopeSuite = describe "deployment scope coordinates" $ do
       observeScopeGeneration firstScope (replicate 32 'a') `shouldReturn` Right ScopeGenerationMatches
       observeScopeGeneration secondScope (replicate 32 'b') `shouldReturn` Right ScopeGenerationMatches
 
+  it "refuses a root declared inside another scope's retained root and writes nothing there" $
+    withSystemTempDirectory "prodbox-nested-scope" $ \anchor -> do
+      createDirectory (anchor </> ".test-data")
+      case deploymentScope anchor Test "outer" 26445 of
+        Left failure -> fail (show failure)
+        Right outer -> do
+          prepareFreshScope outer (replicate 32 'a') `shouldReturn` FreshScopePrepared
+          -- The inner project anchor is the outer scope's retained root.
+          case deploymentScope (scopeRoot outer) Test "inner" 26446 of
+            Left failure -> fail (show failure)
+            Right inner -> do
+              prepareFreshScope inner (replicate 32 'b')
+                `shouldReturn` FreshScopeNestedInRetainedRoot (scopeRoot outer)
+              doesDirectoryExist (scopeRoot outer </> ".test-data") `shouldReturn` False
+              observeScopeGeneration outer (replicate 32 'a') `shouldReturn` Right ScopeGenerationMatches
+
   it "prepares only a fresh retained root and preserves existing or staged roots" $
     withSystemTempDirectory "prodbox-fresh-scope" $ \anchor -> do
       createDirectory (anchor </> ".test-data")

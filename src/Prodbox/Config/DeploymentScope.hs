@@ -181,6 +181,7 @@ data FreshScopeResult
   | FreshScopeStagingExists !FilePath
   | FreshScopeIncomplete !FilePath
   | FreshScopeUnobservable
+  | FreshScopeNestedInRetainedRoot !FilePath
   deriving (Eq, Show)
 
 data DeploymentScope = DeploymentScope
@@ -262,10 +263,25 @@ prepareScope :: Bool -> DeploymentScope -> String -> IO FreshScopeResult
 prepareScope includeConfig scope generation
   | not (validRootGeneration generation) = pure FreshScopeInvalidGeneration
   | otherwise = do
-      owner <- getEffectiveUserID
-      outcome <- try (walkParent True owner $ \parent identities -> prepare owner parent identities)
-      pure $ either (const FreshScopeUnobservable) id (outcome :: Either IOException FreshScopeResult)
+      -- A root declared inside another scope's retained root would create
+      -- records in a root this scope does not own: refuse before any write.
+      enclosing <- enclosingRetainedRoot (anchorPath : ancestors anchorPath)
+      case enclosing of
+        Just found -> pure (FreshScopeNestedInRetainedRoot found)
+        Nothing -> do
+          owner <- getEffectiveUserID
+          outcome <- try (walkParent True owner $ \parent identities -> prepare owner parent identities)
+          pure $ either (const FreshScopeUnobservable) id (outcome :: Either IOException FreshScopeResult)
  where
+  ancestors path = let parent = takeDirectory path in if parent == path then [] else parent : ancestors parent
+  enclosingRetainedRoot [] = pure Nothing
+  enclosingRetainedRoot (directory : rest) = do
+    marker <- try (getSymbolicLinkStatus (directory </> "scope-generation.json"))
+    case marker of
+      Right _ -> pure (Just directory)
+      Left (failure :: IOException)
+        | isDoesNotExistError failure -> enclosingRetainedRoot rest
+        | otherwise -> pure (Just directory)
   parentPath = takeDirectory (scopeRoot scope)
   anchorPath = takeDirectory parentPath
   parentName = takeFileName parentPath

@@ -14,6 +14,9 @@ module Prodbox.Bootstrap.Broker.TokenReview
   , BrokerTokenReviewResult (..)
   , BrokerTokenReviewUser (..)
   , tokenReviewRequestValue
+  , tokenReviewRequestValueFor
+  , inClusterTokenReviewerForAudience
+  , readProjectedNamespace
   , decideBrokerTokenReview
   , tokenReviewBrokerAuthenticator
   , productionBrokerAuthenticator
@@ -158,7 +161,12 @@ instance FromJSON TokenReviewResponse where
 -- | Build the exact TokenReview request. The returned value contains the
 -- credential, so callers must never render or log it.
 tokenReviewRequestValue :: ByteString -> Either Text Value
-tokenReviewRequestValue credential = do
+tokenReviewRequestValue = tokenReviewRequestValueFor brokerTokenReviewAudience
+
+-- | The same request for an explicit audience, so a different narrow capability
+-- never reuses the Broker's audience.
+tokenReviewRequestValueFor :: Text -> ByteString -> Either Text Value
+tokenReviewRequestValueFor audience credential = do
   canonicalCredential <- validateBearerToken credential
   credentialText <-
     either
@@ -172,7 +180,7 @@ tokenReviewRequestValue credential = do
         , "spec"
             .= object
               [ "token" .= credentialText
-              , "audiences" .= [brokerTokenReviewAudience]
+              , "audiences" .= [audience]
               ]
         ]
     )
@@ -249,13 +257,16 @@ productionBrokerAuthenticator _settings = do
         )
 
 inClusterTokenReviewer :: IO (Either String BrokerTokenReviewer)
-inClusterTokenReviewer = do
+inClusterTokenReviewer = inClusterTokenReviewerForAudience brokerTokenReviewAudience
+
+inClusterTokenReviewerForAudience :: Text -> IO (Either String BrokerTokenReviewer)
+inClusterTokenReviewerForAudience audience = do
   managerResult <- inClusterManager
   pure $ do
     manager <- managerResult
     Right
       BrokerTokenReviewer
-        { reviewBrokerToken = requestTokenReview manager
+        { reviewBrokerToken = requestTokenReview manager audience
         }
 
 inClusterManager :: IO (Either String Manager)
@@ -278,10 +289,11 @@ inClusterManager = do
 
 requestTokenReview
   :: Manager
+  -> Text
   -> ByteString
   -> Deadline
   -> IO (Either Text BrokerTokenReviewResult)
-requestTokenReview manager credential deadline = do
+requestTokenReview manager audience credential deadline = do
   now <- realMonotonicNow
   case deadlineObservation now deadline of
     DeadlineExpired -> pure (Left "TokenReview deadline expired before dispatch")
@@ -290,7 +302,7 @@ requestTokenReview manager credential deadline = do
       case ownTokenResult of
         Left detail -> pure (Left detail)
         Right ownToken -> do
-          case tokenReviewRequestValue credential of
+          case tokenReviewRequestValueFor audience credential of
             Left detail -> pure (Left detail)
             Right reviewValue -> do
               parsed <- tryJust catchSynchronousHttp (parseRequest tokenReviewUrl)

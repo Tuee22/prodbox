@@ -86,3 +86,7 @@ Plans are reviewable observations, not universal future guarantees. Execution re
 ## Validation
 
 The actual public binary, generated artifacts, phase manifests and old-to-new dispositions must agree. Test parser rejection of removed flags, useful degraded status, prompt/noninteractive results, exact deletion scope, no-op repetition and stable resume. Targeted source mutants must fail the intended unchanged assertions. [Testing contract](testing.md)
+
+## Implemented through Phase 1
+
+Observed on the public binary on 2026-11-19 (evidence in [Phase 1 validation](../../DEVELOPMENT_PLAN/evidence/phase_01_validation.md)): `control status`, `control reconcile`, `control delete --yes` and the internal `internal-kind-controller` leaf are active for explicit test identities selected with `--config`; production identities and `control reconcile` for them are refused. `test run phase-01` runs the real scenario (six independent reports) and `test run phase-01-mutation` the bounded mutation catalog. Every later capability remains unavailable rather than stubbed. The generated [command reference](../cli/commands.md) is authoritative for the current help.

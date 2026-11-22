@@ -11,6 +11,8 @@
 
 The target is retained local kind management with the same service set locally and on optional EKS. The target ordinary delete removes deployment-owned AWS resources while retaining management. Documentation adoption has not changed the existing binary, RKE2-era behavior or old checker grammar. Current executable help and generated command reference establish availability; the phase evidence establishes completion.
 
+Before you stop or ask a question, follow [AGENTS.md → Blockers](AGENTS.md#blockers-resolve-from-the-documents-before-stopping): search the documents first, and ask only what that section reserves to the user.
+
 | Need | Canonical owner |
 |---|---|
 | Agent rules, live validation, security and Git restrictions | [AGENTS.md](AGENTS.md) |
@@ -23,6 +25,11 @@ The target is retained local kind management with the same service set locally a
 | Obsolete path's remover and replacement proof | [Legacy ledger](DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md) |
 | Documentation/evidence scope | [Documentation standards](documents/documentation_standards.md) |
 | Historical material | [History navigation](documents/history/README.md) |
+| What the journal is, what counts as NeverAdmitted, reading history with Vault sealed | [Lifecycle](documents/engineering/lifecycle.md), [Control plane](documents/engineering/control_plane.md), [Storage](documents/engineering/storage.md) |
+| The declarative specification and who records its digest | [Configuration](documents/engineering/configuration.md) |
+| Unlock policies and who may unseal what | [Security and credentials](documents/engineering/security_and_credentials.md), [AGENTS.md](AGENTS.md) (test self-unseal only) |
+| Whether live AWS, Vault or cluster work is authorized | [AGENTS.md → Live Infrastructure Deployment Is Authorized](AGENTS.md#live-infrastructure-deployment-is-authorized) |
+| Which command exists today versus the target | [CLI surface](documents/engineering/cli_command_surface.md) and the installed binary's help |
 
 Preserve the difference between source behavior, accepted target behavior and actually observed execution. A failure is attributed only to a boundary the command reached. Do not infer AWS absence from a missing checkpoint or blank Vault, or treat a fabricated witness, timeout, test count or old receipt as current external evidence.
 

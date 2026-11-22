@@ -4,7 +4,7 @@
 --
 -- The home substrate's chart-platform install (MetalLB, Envoy Gateway,
 -- cert-manager, ACME ClusterIssuer, Percona operator) lives in
--- `src/Prodbox/CLI/Rke2.hs::ensureClusterPlatformRuntime` and is
+-- `src/Prodbox/CLI/Cluster.hs::ensureClusterPlatformRuntime` and is
 -- specialized to the operator's home cluster — including Harbor-mirrored
 -- image references and MetalLB-based LoadBalancer IPs. The AWS substrate
 -- (EKS) keeps a different install path but stands up the SAME shared
@@ -16,7 +16,7 @@
 -- `127.0.0.1:30080/prodbox/...` resolve on EKS, mirroring the home
 -- NodePort-on-`127.0.0.1` pattern), and cert-manager scoped to the
 -- per-substrate Route 53 subzone (rendered by
--- `acmeClusterIssuerSpec SubstrateAws` in `Prodbox.CLI.Rke2`). The shared
+-- `acmeClusterIssuerSpec SubstrateAws` in `Prodbox.CLI.Cluster`). The shared
 -- platform-component pins (Envoy Gateway, cert-manager, Harbor, MinIO,
 -- Percona, Vault) come from the single `Prodbox.ContainerImage` SSoT; there
 -- is no per-substrate chart-version / image re-pin.
@@ -86,11 +86,7 @@ import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Numeric.Natural (Natural)
 import Prodbox.Aws.SigV4 (hexSha256)
-import Prodbox.CLI.Output
-  ( writeError
-  , writeOutputLine
-  )
-import Prodbox.CLI.Rke2
+import Prodbox.CLI.Cluster
   ( AuthorityBackupReadinessStage (..)
   , KubernetesReadinessCheck (..)
   , MinioImageSource (..)
@@ -119,6 +115,10 @@ import Prodbox.CLI.Rke2
   , observeVaultUnsealedOnce
   , retainedStorageInventoryEntries
   , vaultNamespace
+  )
+import Prodbox.CLI.Output
+  ( writeError
+  , writeOutputLine
   )
 import Prodbox.CLI.Vault (runVaultBootstrapViaBroker)
 import Prodbox.Config.ComponentGraph
@@ -1815,7 +1815,7 @@ requireAwsComponentReadiness repoRoot dag endpoint component =
         Left reason -> awsRefuseWith (Text.unpack reason)
         Right target -> do
           -- Sprint 1.61: same shared capability-handle routing as the native
-          -- driver (see 'Prodbox.CLI.Rke2.requireNativeComponentReadiness'); the
+          -- driver (see 'Prodbox.CLI.Cluster.requireNativeComponentReadiness'); the
           -- AWS probe I/O ('awsComponentReadinessTarget') is unchanged.
           let client =
                 newReadinessObservationClient

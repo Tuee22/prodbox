@@ -2,7 +2,7 @@
 -- host-fitting derivation.
 --
 -- The observation reader ('observeHostCapacity') was factored out of
--- @Prodbox.CLI.Rke2@ so both the reconcile Ring-3 check (which imports it) and
+-- @Prodbox.CLI.Cluster@ so both the reconcile Ring-3 check (which imports it) and
 -- @prodbox config generate@ (which cannot import the CLI without an import cycle)
 -- share a single owner. It reads @nproc@ / procfs meminfo / @df -Pm@ into an
 -- 'ObservedHostRoot', honouring the documented @PRODBOX_TEST_HOST_CAPACITY@

@@ -93,6 +93,42 @@ scenarioEvidenceSuite = describe "scenario evidence comparison" $ do
           (\digest -> section `shouldSatisfy` Text.isInfixOf digest)
       _ -> fail "missing or repeated Phase 1 mutation binding sections"
 
+  it "keeps the Phase 2 mutation bindings aligned with the reviewed candidates" $ do
+    manifest <- TextIO.readFile "DEVELOPMENT_PLAN/mutation_cases.md"
+    let section = case Text.splitOn "### Phase 2 assertion bindings" manifest of
+          [_, remainder] -> case Text.splitOn "### Phase 0 assertion bindings" remainder of
+            (body : _) -> body
+            _ -> ""
+          _ -> ""
+    forM_ [M03ProductionUnlock, M03VaultIncarnation] $ \mutation -> do
+      source <- captureSourceCandidate "." [] (reviewedSourcePath mutation) >>= either (fail . show) pure
+      prepared <-
+        either (fail . show) pure (prepareReviewedMutation mutation (sourceCandidateBytes source))
+      forM_
+        [ reviewedSourceDigest mutation
+        , publicEvidenceDigestText (reviewedPatchDigest mutation)
+        , publicEvidenceDigestText (preparedMutantDigest prepared)
+        ]
+        (\digest -> section `shouldSatisfy` Text.isInfixOf digest)
+
+  it "keeps the Phase 3 mutation bindings aligned with the reviewed candidates" $ do
+    manifest <- TextIO.readFile "DEVELOPMENT_PLAN/mutation_cases.md"
+    let section = case Text.splitOn "### Phase 3 assertion bindings" manifest of
+          [_, remainder] -> case Text.splitOn "### Phase 2 assertion bindings" remainder of
+            (body : _) -> body
+            _ -> ""
+          _ -> ""
+    forM_ [M04UnknownAsFresh, M04MissingAsFresh, M05PendingNoChange, M04MirrorGenesisAsFresh] $ \mutation -> do
+      source <- captureSourceCandidate "." [] (reviewedSourcePath mutation) >>= either (fail . show) pure
+      prepared <-
+        either (fail . show) pure (prepareReviewedMutation mutation (sourceCandidateBytes source))
+      forM_
+        [ reviewedSourceDigest mutation
+        , publicEvidenceDigestText (reviewedPatchDigest mutation)
+        , publicEvidenceDigestText (preparedMutantDigest prepared)
+        ]
+        (\digest -> section `shouldSatisfy` Text.isInfixOf digest)
+
   it "prepares the one reviewed M02 source change only from its pinned preimage" $ do
     source <-
       captureSourceCandidate "." [] (reviewedSourcePath M02MissingReport) >>= either (fail . show) pure

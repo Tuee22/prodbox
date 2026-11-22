@@ -14,15 +14,29 @@
 -- cleanup result.
 module Prodbox.Test.Phase01Runner
   ( runPhase01Scenario
+  , run
+  , satisfied
+  , hex32
+  , digest
+  , readRandomBytes
+  , scenarioReport
+  , publishScenario
+  , independentClusterReady
+  , independentAbsence
+  , independentHostData
+  , containerId
   ) where
 
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async qualified as Async
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 
 import Control.Exception (IOException, try)
 import Data.Bifunctor qualified as Bifunctor
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.List (isInfixOf, sort)
+import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
 import Data.Word (Word16)
@@ -47,12 +61,13 @@ import Prodbox.Config.DeploymentScope
   , scopeKindName
   , scopeRoot
   )
-import Prodbox.Config.KindPlan (renderKindConfig)
+import Prodbox.Config.KindPlan (kindPlanHostPorts, renderKindConfig)
 import Prodbox.Control.NetworkEnforcement
   ( EnforcementOutcome (..)
   , enforcementProven
   , observeNetworkEnforcement
   )
+import Prodbox.Error (AppError)
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
   , ProcessOutput (..)
@@ -84,7 +99,7 @@ import System.Directory
   )
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.IO (IOMode (ReadMode), withBinaryFile)
 import System.Posix.Files (createSymbolicLink, setFileMode)
 
@@ -164,7 +179,7 @@ scenario selected projection = do
   binaryBytes <- ByteString.readFile executable
   boot <- try (readFile "/proc/sys/kernel/random/boot_id") :: IO (Either IOException String)
   sourceResult <- captureSourceIdentity "." []
-  randomBytes <- readRandom
+  randomBytes <- readRandomBytes
   started <- getMonotonicTimeNSec
   case sourceResult of
     Left failure -> writeOutputLine ("source identity refused: " ++ show failure) >> pure (ExitFailure 2)
@@ -191,12 +206,17 @@ scenario selected projection = do
               (digest (show (renderKindConfig (bootstrapKindPlan projection))))
               (digest ("control reconcile; delete; reconcile; delete; case " ++ label))
               budget
+          alternateGeneration = replicate 32 (if generation == replicate 32 'f' then 'e' else 'f')
           public args = run executable (["--config", selected] ++ args)
           public' config args = run executable (["--config", config] ++ args)
           textOf result = either (const "") (\(_, out, err) -> out ++ err) result
           markerFile = root </> "a01-02-marker"
       -- First lifecycle.
-      reconcile1 <- public ["control", "reconcile"]
+      stopMonitor <- newIORef False
+      (reconcile1, slicePeak) <-
+        Async.concurrently
+          (public ["control", "reconcile"] <* writeIORef stopMonitor True)
+          (sliceMonitor stopMonitor)
       status1 <- public ["control", "status"]
       ready1 <- independentClusterReady root cluster
       firstNode <- containerId (cluster ++ "-control-plane")
@@ -278,8 +298,108 @@ scenario selected projection = do
           kubeconfig
           "marker-writer"
           ("echo -n " ++ marker ++ " > /h/a01-02-marker && echo WROTE")
+      -- The volume directory is created by the operator, not by the kubelet,
+      -- so it stays removable without elevation.
+      createDirectoryIfMissing False (root </> "pv-a01-02")
+      pvWritten <-
+        pvPod kubeconfig "pv-writer" ("echo -n " ++ marker ++ "pv > /d/pv-marker && echo WROTE")
+      quota <- quotaProbe kubeconfig ("prodbox-quota-" ++ take 8 (hex32 randomBytes))
+      withinLimit <-
+        limitedPod
+          kubeconfig
+          "limit-ok"
+          "64Mi"
+          "a=0123456789abcdef; for ((i=0;i<18;i++)); do a=$a$a; done; echo ${#a}"
+      overLimit <-
+        limitedPod
+          kubeconfig
+          "limit-over"
+          "16Mi"
+          "a=0123456789abcdef; for ((i=0;i<23;i++)); do a=$a$a; done; echo ${#a}"
       hostBefore <- try (readFile markerFile) :: IO (Either IOException String)
+      pvHostBeforeValue <-
+        try (readFile (root </> "pv-a01-02" </> "pv-marker")) :: IO (Either IOException String)
       writeFinished <- getMonotonicTimeNSec
+      -- Sibling scope on the same host ports while the first cluster is Ready.
+      siblingSelected <- Text.unpack <$> Text.readFile selected
+      let siblingAnchor = project </> ".build" </> "a01-03-siblingproject"
+          siblingId = "a0103sibling"
+          siblingDirectory = project </> ".build" </> "a01-03-sibling"
+          siblingText =
+            Text.unpack
+              $ Text.replace
+                (Text.pack ("deployment_id = \"" ++ takeFileName root ++ "\""))
+                (Text.pack ("deployment_id = \"" ++ siblingId ++ "\""))
+              $ Text.replace
+                (Text.pack ("project_anchor = \"" ++ project ++ "\""))
+                (Text.pack ("project_anchor = \"" ++ siblingAnchor ++ "\""))
+                (Text.pack siblingSelected)
+      createDirectoryIfMissing False siblingAnchor
+      setFileMode siblingAnchor 0o700
+      createDirectoryIfMissing False siblingDirectory
+      setFileMode siblingDirectory 0o700
+      Text.writeFile (siblingDirectory </> "selected.dhall") (Text.pack siblingText)
+      setFileMode (siblingDirectory </> "selected.dhall") 0o600
+      siblingRun <-
+        run executable ["--config", siblingDirectory </> "selected.dhall", "control", "reconcile"]
+      siblingContainers <- run "/usr/bin/docker" ["ps", "-a", "-q", "--filter", "name=" ++ siblingId]
+      siblingNetworks <- run "/usr/bin/docker" ["network", "ls", "-q", "--filter", "name=" ++ siblingId]
+      siblingVolumes <- run "/usr/bin/docker" ["volume", "ls", "-q", "--filter", "name=" ++ siblingId]
+      siblingStillReady <- independentClusterReady root cluster
+      removePathForcibly siblingDirectory
+      removePathForcibly siblingAnchor
+      let siblingClean = case (siblingContainers, siblingNetworks, siblingVolumes) of
+            (Right (0, a, _), Right (0, b, _), Right (0, d, _)) -> null (words (a ++ b ++ d))
+            _ -> False
+          siblingExit = either (const 0) (\(code, _, _) -> code) siblingRun
+          siblingText' = either (const "") (\(_, out, err) -> out ++ err) siblingRun
+          siblingRefused = siblingExit /= 0 && "already listening" `isInfixOf` siblingText'
+      -- Sibling scope with the SAME deployment identity (so the same kind
+      -- cluster name) in another project on different ports, while the first
+      -- cluster is Ready: nothing of that name may be created or touched.
+      let nameAnchor = project </> ".build" </> "a01-03-nameproject"
+          nameDirectory = project </> ".build" </> "a01-03-name"
+          shifted = case kindPlanHostPorts (bootstrapKindPlan projection) of
+            [api, http, https] ->
+              Text.replace (Text.pack ("api_port = " ++ show api)) (Text.pack ("api_port = " ++ show (api + 100)))
+                . Text.replace
+                  (Text.pack ("http_host_port = " ++ show http))
+                  (Text.pack ("http_host_port = " ++ show (http + 100)))
+                . Text.replace
+                  (Text.pack ("https_host_port = " ++ show https))
+                  (Text.pack ("https_host_port = " ++ show (https + 100)))
+            _ -> id
+          nameText =
+            Text.unpack . shifted $
+              Text.replace
+                (Text.pack ("project_anchor = \"" ++ project ++ "\""))
+                (Text.pack ("project_anchor = \"" ++ nameAnchor ++ "\""))
+                (Text.pack siblingSelected)
+      createDirectoryIfMissing False nameAnchor
+      setFileMode nameAnchor 0o700
+      createDirectoryIfMissing False nameDirectory
+      setFileMode nameDirectory 0o700
+      Text.writeFile (nameDirectory </> "selected.dhall") (Text.pack nameText)
+      setFileMode (nameDirectory </> "selected.dhall") 0o600
+      imagesBeforeName <- run "/usr/bin/docker" ["image", "ls", "-a", "-q", "--no-trunc"]
+      nameRun <- run executable ["--config", nameDirectory </> "selected.dhall", "control", "reconcile"]
+      imagesAfterName <- run "/usr/bin/docker" ["image", "ls", "-a", "-q", "--no-trunc"]
+      nameRootEntries <-
+        try (listDirectory (nameAnchor </> ".test-data" </> takeFileName root))
+          :: IO (Either IOException [FilePath])
+      nameStillReady <- independentClusterReady root cluster
+      removePathForcibly nameDirectory
+      removePathForcibly nameAnchor
+      let nameExit = either (const 0) (\(code, _, _) -> code) nameRun
+          nameOutput = either (const "") (\(_, out, err) -> out ++ err) nameRun
+          nameRefused = nameExit /= 0 && "already exist" `isInfixOf` nameOutput
+          nameUntouched = case (imagesBeforeName, imagesAfterName) of
+            (Right (0, before, _), Right (0, after, _)) -> sort (words before) == sort (words after)
+            _ -> False
+          -- Only the root and its generation record may exist: no operation record.
+          nameRootBare = case nameRootEntries of
+            Right entries -> all (`elem` ["scope-generation.json", "artifacts", ".prodbox-import"]) entries
+            Left _ -> False
       delete1 <- public ["control", "delete", "--yes"]
       absent1 <- independentAbsence cluster
       retained1 <- independentHostData root generation nodeArchive
@@ -288,6 +408,10 @@ scenario selected projection = do
       reconcile2 <- public ["control", "reconcile"]
       secondNode <- containerId (cluster ++ "-control-plane")
       read2 <- podOnHostRoot kubeconfig "marker-reader" "read -r x < /h/a01-02-marker; echo \"MARKER=$x\""
+      pvRead <- pvPod kubeconfig "pv-reader" "read -r x < /d/pv-marker; echo MARKER=$x"
+      pvHostBefore <- pure pvHostBeforeValue
+      pvHostAfter <-
+        try (readFile (root </> "pv-a01-02" </> "pv-marker")) :: IO (Either IOException String)
       hostAfter <- try (readFile markerFile) :: IO (Either IOException String)
       histories <- try (listDirectory (root </> "history")) :: IO (Either IOException [FilePath])
       ready2 <- independentClusterReady root cluster
@@ -313,6 +437,8 @@ scenario selected projection = do
       adverse <- public ["control", "reconcile"]
       foreignAfter <- inspectForeign
       nodesAfterAdverse <- containerId (cluster ++ "-control-plane")
+      -- Remove the foreign network now so no later adverse case is refused by it.
+      foreignRemoved <- run "/usr/bin/docker" ["network", "rm", foreignName]
       -- Symlinked, foreign and wrong-generation roots, each driven by a
       -- config derived from the selected one; every victim is compared by
       -- content before and after, and no Docker resource may appear.
@@ -323,7 +449,9 @@ scenario selected projection = do
             replaceText
               ("root_generation = \"" ++ generation ++ "\"")
               ("root_generation = \"" ++ generationValue ++ "\"")
-              $ replaceText ("deployment_id = \"" ++ cluster ++ "\"") ("deployment_id = \"" ++ deployment ++ "\"")
+              $ replaceText
+                ("deployment_id = \"" ++ takeFileName root ++ "\"")
+                ("deployment_id = \"" ++ deployment ++ "\"")
               $ replaceText
                 ("project_anchor = \"" ++ project ++ "\"")
                 ("project_anchor = \"" ++ anchor ++ "\"")
@@ -390,7 +518,7 @@ scenario selected projection = do
       foreignTreeAfter <- snapshotTree foreignRootDir
       foreignClean <- noResource foreignId
       -- wrong generation against the real retained root
-      wrongConfig <- writeConfig "wronggen" project cluster (replicate 32 'f')
+      wrongConfig <- writeConfig "wronggen" project (takeFileName root) alternateGeneration
       generationBefore <-
         try (ByteString.readFile (root </> "scope-generation.json"))
           :: IO (Either IOException ByteString.ByteString)
@@ -404,6 +532,13 @@ scenario selected projection = do
       let wrongClean = case (wrongContainers, wrongVolumes) of
             (Right (0, a, _), Right (0, b, _)) -> null (words (a ++ b))
             _ -> False
+      -- overlapping: a project whose anchor is the real retained root; the
+      -- real root must not gain a nested root or any record.
+      nestedConfig <- writeConfig "nested" root "a0103nested" generation
+      nestedBefore <- snapshotTree root
+      nestedRun <- public' nestedConfig ["control", "reconcile"]
+      nestedAfter <- snapshotTree root
+      nestedClean <- noResource "a0103nested"
       -- unavailable node image: a digest no registry or cache holds
       let absentImage = "kindest/node@sha256:" ++ replicate 64 '1'
           imageText =
@@ -445,6 +580,26 @@ scenario selected projection = do
       productionRun <-
         public' (adverseBase </> "a01-03-production" </> "selected.dhall") ["control", "reconcile"]
       productionEntries <- try (listDirectory productionAnchor) :: IO (Either IOException [FilePath])
+      -- Case 5: the same reconcile with the process confined to one CPU. The
+      -- declared envelope needs two; admission must refuse before any effect.
+      rootBefore <- snapshotTree root
+      imagesBeforeCapacity <- run "/usr/bin/docker" ["image", "ls", "-a", "-q", "--no-trunc"]
+      capacityRun <-
+        run "/usr/bin/taskset" ["-c", "0", executable, "--config", selected, "control", "reconcile"]
+      rootAfter <- snapshotTree root
+      imagesAfterCapacity <- run "/usr/bin/docker" ["image", "ls", "-a", "-q", "--no-trunc"]
+      capacityContainers <-
+        run "/usr/bin/docker" ["ps", "-a", "-q", "--filter", "label=io.x-k8s.kind.cluster=" ++ cluster]
+      capacityVolumes <- run "/usr/bin/docker" ["volume", "ls", "-q", "--filter", "name=" ++ cluster]
+      capacityDone <- getMonotonicTimeNSec
+      let capacityUntouched = case (imagesBeforeCapacity, imagesAfterCapacity, capacityContainers, capacityVolumes) of
+            (Right (0, before, _), Right (0, after, _), Right (0, containers, _), Right (0, volumes, _)) ->
+              sort (words before) == sort (words after)
+                && null (words (containers ++ volumes))
+                && rootBefore /= Nothing
+                && rootBefore == rootAfter
+            _ -> False
+          capacityText = textOf capacityRun
       mapM_
         (\path -> removePathForcibly path)
         [ adverseBase </> ("a01-03-" ++ n)
@@ -460,8 +615,12 @@ scenario selected projection = do
             , "wronggen"
             ]
         ]
-      foreignRemoved <- run "/usr/bin/docker" ["network", "rm", foreignName]
       absent3 <- independentAbsence cluster
+      -- The refused reconcile left a half-recorded operation (image loaded,
+      -- network create refused). Public delete must settle it so the root is
+      -- reusable, not stranded behind an incomplete-removal refusal.
+      recoverDelete <- public ["control", "delete", "--yes"]
+      recoveredArchive <- try (listDirectory root) :: IO (Either IOException [FilePath])
       adverseDone <- getMonotonicTimeNSec
       let ok result = either (const False) (\(code, _, _) -> code == 0) result
           deleted result =
@@ -476,7 +635,7 @@ scenario selected projection = do
           claimedReady = "API /readyz ok" `isInfixOf` s1 && "nodes Ready 1 of 1" `isInfixOf` s1
           independentScope = retained1 && root == project </> ".test-data" </> scopeIdentifier scope && scopeApiPort scope > 0
           lifecycle =
-            report
+            scenarioReport
               (bindingFor 1 "lifecycle")
               (ScenarioTiming started networkFinished cleanup1)
               (if claimedReady && ready1 then PrimarySucceeded else PrimaryFailed)
@@ -487,7 +646,7 @@ scenario selected projection = do
           claimedNetwork = "Network policy enforcement: PROVEN" `isInfixOf` textOf reconcile1
           independentNetwork = maybe False enforcementProven (enforcementObservation networkAgain)
           network =
-            report
+            scenarioReport
               (bindingFor 4 "network")
               (ScenarioTiming started networkFinished cleanup1)
               (if claimedNetwork && independentNetwork then PrimarySucceeded else PrimaryFailed)
@@ -499,19 +658,34 @@ scenario selected projection = do
               [claimedNetwork]
               [independentNetwork]
           markerClaimed = ("MARKER=" ++ marker) `isInfixOf` textOf read2
+          pvMarker = marker ++ "pv"
+          pvClaimed = case pvRead of
+            Right (phase, volume, output) -> phase == "Bound" && volume == "pv-a01-02" && ("MARKER=" ++ pvMarker) `isInfixOf` output
+            Left _ -> False
+          pvIndependent =
+            pvHostBefore == Right pvMarker
+              && pvHostAfter == Right pvMarker
+              && ( case pvWritten of
+                     Right (phase, volume, _) -> phase == "Bound" && volume == "pv-a01-02"
+                     Left _ -> False
+                 )
           markerHost = either (const False) (== marker) hostBefore && either (const False) (== marker) hostAfter
           nodeReplaced = firstNode /= Nothing && secondNode /= Nothing && firstNode /= secondNode
           archived = either (const False) (not . null) histories
           claimedReplaced = ok reconcile2 || "Incomplete: operation" `isInfixOf` textOf reconcile2
           recreation =
-            report
+            scenarioReport
               (bindingFor 2 "recreation")
               (ScenarioTiming writeFinished recreated cleanup2)
               (if markerClaimed && markerHost && ready2 then PrimarySucceeded else PrimaryFailed)
               (if absent2 && retained2 && deleted delete2 then CleanupConfirmed else CleanupFailed)
-              ["marker.survived-recreation", "node.recreated", "history.archived"]
-              [markerClaimed, claimedReplaced && ok written, "history" `isInfixOf` "history" && archived]
-              [markerHost, nodeReplaced, archived]
+              ["marker.survived-recreation", "node.recreated", "history.archived", "pv.bound-deterministically"]
+              [ markerClaimed
+              , claimedReplaced && ok written
+              , "history" `isInfixOf` "history" && archived
+              , pvClaimed
+              ]
+              [markerHost, nodeReplaced, archived, pvIndependent]
       let foreignIntact = case (foreignBefore, foreignAfter) of
             (Right (0, before, _), Right (0, after, _)) -> not (null before) && before == after
             _ -> False
@@ -520,7 +694,7 @@ scenario selected projection = do
           claimedRefused = not (ok adverse) && not (null (textOf adverse))
           noNode = nodesAfterAdverse == Nothing
           adverseCase =
-            report
+            scenarioReport
               (bindingFor 3 "adverse")
               (ScenarioTiming cleanup2 adverseDone adverseDone)
               (if madeOk && claimedRefused && foreignIntact && noNode then PrimarySucceeded else PrimaryFailed)
@@ -537,6 +711,10 @@ scenario selected projection = do
               , "adverse.wrong-generation-refused"
               , "adverse.unavailable-image-refused"
               , "adverse.cross-environment-refused"
+              , "adverse.nested-root-refused"
+              , "adverse.sibling-port-conflict-refused"
+              , "adverse.repeat-delete-settles"
+              , "adverse.sibling-kind-name-refused"
               ]
               [ claimedRefused
               , claimedRefused
@@ -547,6 +725,10 @@ scenario selected projection = do
               , refused wrongRun
               , refused imageRun
               , refused productionRun
+              , refused nestedRun
+              , siblingRefused
+              , deleted recoverDelete
+              , nameRefused
               ]
               [ madeOk && not (ok adverse)
               , foreignIntact
@@ -563,8 +745,14 @@ scenario selected projection = do
                   && not (ok wrongRun)
               , imageClean && not (ok imageRun)
               , productionEntries == Right [] && not (ok productionRun)
+              , nestedBefore /= Nothing && nestedBefore == nestedAfter && nestedClean && not (ok nestedRun)
+              , siblingClean && siblingStillReady && siblingExit /= 0
+              , ok recoverDelete
+                  && either (const False) ("kind-network-create-result.json" `elem`) recoveredArchive
+                  && absent3
+              , nameRefused && nameUntouched && nameRootBare && nameStillReady
               ]
-      first <- mapM (publish project) [lifecycle, network, recreation, adverseCase]
+      first <- mapM (publishScenario project) [lifecycle, network, recreation, adverseCase]
       -- Case 6: the validator, driven against the real stored case-1 report,
       -- must reject fabricated, missing, stale and wrong-scope evidence and
       -- accept the untampered pair as its positive control.
@@ -596,7 +784,7 @@ scenario selected projection = do
           )
       wrongScope <-
         check
-          binding1 {scenarioGeneration = "ffffffffffffffffffffffffffffffff"}
+          binding1 {scenarioGeneration = alternateGeneration}
           lifecycleNames
           (Just independent1)
       missingReport <-
@@ -612,7 +800,7 @@ scenario selected projection = do
             , rejected missingReport
             ]
           validatorCase =
-            report
+            scenarioReport
               (bindingFor 6 "validator")
               (ScenarioTiming cleanup2 done6 done6)
               (if accepted && and allRejected then PrimarySucceeded else PrimaryFailed)
@@ -626,9 +814,60 @@ scenario selected projection = do
               ]
               (replicate 6 True)
               (accepted : allRejected)
-      validatorPublished <- publish project validatorCase
-      let reports = first ++ [validatorPublished]
+      validatorPublished <- publishScenario project validatorCase
+      let capacityCase =
+            scenarioReport
+              (bindingFor 5 "capacity")
+              (ScenarioTiming cleanup2 capacityDone capacityDone)
+              (if refusedForCapacity && capacityUntouched && ready1 then PrimarySucceeded else PrimaryFailed)
+              CleanupConfirmed
+              [ "capacity.admitted-when-sufficient"
+              , "capacity.rejected-before-work"
+              , "capacity.usage-within-declared"
+              , "capacity.pod-completes-under-limit"
+              , "capacity.limit-enforced"
+              , "capacity.quota-enforced"
+              ]
+              [claimedReady, refusedForCapacity, claimedReady, claimedReady, claimedReady, claimedReady]
+              [ ready1
+              , capacityUntouched && not (ok capacityRun)
+              , usageWithinDeclared
+              , withinLimit == Right ("Succeeded", "Completed", "64Mi")
+              , overLimit == Right ("Failed", "OOMKilled", "16Mi")
+              , ( case quota of
+                    (admitted, refusedByQuota, accounting) -> admitted && refusedByQuota && accounting == "8Mi"
+                )
+              ]
+          usageWithinDeclared = case slicePeak of
+            Just sample ->
+              samplePeakMemory sample > 0
+                && samplePeakMemory sample <= sampleMemoryLimit sample
+                && samplePeakTasks sample > 0
+                && samplePeakTasks sample <= sampleTaskLimit sample
+            Nothing -> False
+          refusedForCapacity =
+            not (ok capacityRun)
+              && "Refused before any work" `isInfixOf` capacityText
+              && "milli_cpu" `isInfixOf` capacityText
+      capacityPublished <- publishScenario project capacityCase
+      let reports = first ++ [validatorPublished, capacityPublished]
       writeOutputLine (unlines (map fst reports))
+      writeOutputLine ("slice samples: " ++ show slicePeak)
+      writeOutputLine ("pv: " ++ take 500 (show (pvWritten, pvRead, pvHostBefore, pvHostAfter)))
+      writeOutputLine ("port sibling: " ++ take 300 siblingText' ++ " exit=" ++ show siblingExit)
+      writeOutputLine
+        ( "name sibling: "
+            ++ take 300 nameOutput
+            ++ " | entries="
+            ++ show nameRootEntries
+            ++ " | untouched="
+            ++ show nameUntouched
+            ++ " | ready="
+            ++ show nameStillReady
+        )
+      writeOutputLine
+        ("recover delete: " ++ take 400 (textOf recoverDelete) ++ " | root=" ++ show recoveredArchive)
+      writeOutputLine ("pods under limits: " ++ show (withinLimit, overLimit))
       writeOutputLine
         ( "detail: marker writer="
             ++ take 160 (show written)
@@ -644,61 +883,324 @@ scenario selected projection = do
             ++ show histories
         )
       pure (if all snd reports then ExitSuccess else ExitFailure 1)
+
+readRandomBytes :: IO ByteString.ByteString
+readRandomBytes = do
+  bytes <-
+    try (withBinaryFile "/dev/urandom" ReadMode (\handle -> ByteString.hGet handle 16))
+      :: IO (Either IOException ByteString.ByteString)
+  pure (either (const "fallback") id bytes)
+scenarioReport
+  :: ScenarioBinding
+  -> ScenarioTiming
+  -> ScenarioPrimary
+  -> ScenarioCleanup
+  -> [Text]
+  -> [Bool]
+  -> [Bool]
+  -> (ScenarioReport, IndependentScenarioObservation, [Text])
+scenarioReport binding timing primary cleanup names claimed independentValues =
+  ( ScenarioReport
+      binding
+      timing
+      primary
+      cleanup
+      (zipWith ScenarioObservation names (map satisfied claimed))
+  , IndependentScenarioObservation
+      binding
+      timing
+      primary
+      cleanup
+      (zipWith ScenarioObservation names (map satisfied independentValues))
+  , names
+  )
+publishScenario
+  :: FilePath -> (ScenarioReport, IndependentScenarioObservation, [Text]) -> IO (String, Bool)
+publishScenario project (stored, independent, names) = do
+  -- The store requires a private .build directory under the project; the
+  -- runner owns the scenario's isolation and creates only that directory.
+  createDirectoryIfMissing False (project </> ".build")
+  setFileMode (project </> ".build") 0o700
+  written <- writeScenarioReport project stored
+  case written of
+    Left failure ->
+      pure
+        ( "case " ++ show (scenarioCase (reportBinding stored)) ++ ": report not written: " ++ show failure
+        , False
+        )
+    Right () -> do
+      validated <-
+        validateStoredScenarioReport project (reportBinding stored) names (pure (Just independent))
+      let good =
+            validated == Right EvidenceChecksSatisfied
+              && reportPrimary stored == PrimarySucceeded
+              && reportCleanup stored == CleanupConfirmed
+      pure
+        ( "case "
+            ++ show (scenarioCase (reportBinding stored))
+            ++ ": claimed="
+            ++ show (map scenarioObservationResult (reportObservations stored))
+            ++ " independent="
+            ++ show (map scenarioObservationResult (independentObservations independent))
+            ++ " primary="
+            ++ show (reportPrimary stored)
+            ++ " cleanup="
+            ++ show (reportCleanup stored)
+            ++ " validation="
+            ++ show validated
+        , good
+        )
+
+-- | The controller's transient slice only exists while its unit runs, so its
+-- kernel counters are sampled while the public command works. Each sample
+-- reads the kernel's own peak and configured limit for memory and tasks.
+data SliceSample = SliceSample
+  { samplePeakMemory :: !Integer
+  , sampleMemoryLimit :: !Integer
+  , samplePeakTasks :: !Integer
+  , sampleTaskLimit :: !Integer
+  }
+  deriving (Eq, Show)
+
+sliceDirectory :: FilePath
+sliceDirectory = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/prodboxkind.slice"
+
+readCounter :: FilePath -> IO (Maybe Integer)
+readCounter name = do
+  contents <-
+    try (ByteString8.readFile (sliceDirectory </> name))
+      :: IO (Either IOException ByteString8.ByteString)
+  pure $ case fmap (ByteString8.words) contents of
+    Right [word] | Just (value, rest) <- ByteString8.readInteger word, ByteString8.null rest -> Just value
+    _ -> Nothing
+
+sampleSlice :: IO (Maybe SliceSample)
+sampleSlice = do
+  peak <- readCounter "memory.peak"
+  limit <- readCounter "memory.max"
+  tasksPeak <- readCounter "pids.peak"
+  taskLimit <- readCounter "pids.max"
+  pure (SliceSample <$> peak <*> limit <*> tasksPeak <*> taskLimit)
+
+-- | Poll until told to stop and keep the largest peaks seen.
+sliceMonitor :: IORef Bool -> IO (Maybe SliceSample)
+sliceMonitor stop = loop Nothing
  where
-  readRandom = do
-    bytes <-
-      try (withBinaryFile "/dev/urandom" ReadMode (\handle -> ByteString.hGet handle 16))
-        :: IO (Either IOException ByteString.ByteString)
-    pure (either (const "fallback") id bytes)
-  report binding timing primary cleanup names claimed independentValues =
-    ( ScenarioReport
-        binding
-        timing
-        primary
-        cleanup
-        (zipWith ScenarioObservation names (map satisfied claimed))
-    , IndependentScenarioObservation
-        binding
-        timing
-        primary
-        cleanup
-        (zipWith ScenarioObservation names (map satisfied independentValues))
-    , names
-    )
-  publish project (stored, independent, names) = do
-    -- The store requires a private .build directory under the project; the
-    -- runner owns the scenario's isolation and creates only that directory.
-    createDirectoryIfMissing False (project </> ".build")
-    setFileMode (project </> ".build") 0o700
-    written <- writeScenarioReport project stored
-    case written of
-      Left failure ->
-        pure
-          ( "case " ++ show (scenarioCase (reportBinding stored)) ++ ": report not written: " ++ show failure
-          , False
+  loop best = do
+    finished <- readIORef stop
+    sample <- sampleSlice
+    let merged = case (best, sample) of
+          (Nothing, other) -> other
+          (other, Nothing) -> other
+          (Just old, Just new) ->
+            Just
+              new
+                { samplePeakMemory = max (samplePeakMemory old) (samplePeakMemory new)
+                , samplePeakTasks = max (samplePeakTasks old) (samplePeakTasks new)
+                }
+    if finished then pure merged else threadDelay 100000 >> loop merged
+
+-- | A real Pod with an explicit memory request and limit. Returns what the
+-- API server reports afterwards: phase, the container's terminated reason and
+-- the limit it actually carries. The Pod is deleted before returning.
+limitedPod :: FilePath -> String -> String -> String -> IO (Either String (String, String, String))
+limitedPod kubeconfig name limit script = do
+  let manifest =
+        ByteString8.pack $
+          unlines
+            [ "apiVersion: v1"
+            , "kind: Pod"
+            , "metadata: {name: " ++ name ++ ", namespace: default}"
+            , "spec:"
+            , "  restartPolicy: Never"
+            , "  containers: [{name: c, image: docker.io/kindest/local-path-helper:v20260131-7181c60a, imagePullPolicy: Never, command: [bash, -c, "
+                ++ show script
+                ++ "], resources: {requests: {cpu: 10m, memory: 8Mi}, limits: {cpu: 200m, memory: "
+                ++ limit
+                ++ "}}}]"
+            ]
+      kubectl arguments input =
+        captureSubprocessWithInputBounded
+          (BoundedSubprocessLimits 65536 (512 * 1024) (64 * 1024) 200000000)
+          input
+          ( Subprocess
+              "/usr/bin/kubectl"
+              (["--kubeconfig", kubeconfig, "--request-timeout=30s"] ++ arguments)
+              (Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")])
+              Nothing
           )
-      Right () -> do
-        validated <-
-          validateStoredScenarioReport project (reportBinding stored) names (pure (Just independent))
-        let good =
-              validated == Right EvidenceChecksSatisfied
-                && reportPrimary stored == PrimarySucceeded
-                && reportCleanup stored == CleanupConfirmed
-        pure
-          ( "case "
-              ++ show (scenarioCase (reportBinding stored))
-              ++ ": claimed="
-              ++ show (map scenarioObservationResult (reportObservations stored))
-              ++ " independent="
-              ++ show (map scenarioObservationResult (independentObservations independent))
-              ++ " primary="
-              ++ show (reportPrimary stored)
-              ++ " cleanup="
-              ++ show (reportCleanup stored)
-              ++ " validation="
-              ++ show validated
-          , good
+  _ <- kubectl ["delete", "pod", name, "--ignore-not-found"] ByteString.empty
+  applied <- kubectl ["apply", "-f", "-"] manifest
+  case applied of
+    Left failure -> pure (Left (show failure))
+    Right _ -> do
+      -- Either terminal phase ends the wait; the outcome is read, not assumed.
+      _ <-
+        kubectl
+          [ "wait"
+          , "--for=jsonpath={.status.containerStatuses[0].state.terminated}"
+          , "pod/" ++ name
+          , "--timeout=120s"
+          ]
+          ByteString.empty
+      let describe :: Int -> IO (Either AppError ProcessOutput)
+          describe attempts = do
+            result <-
+              kubectl
+                [ "get"
+                , "pod"
+                , name
+                , "-o"
+                , "jsonpath={.status.phase} {.status.containerStatuses[0].state.terminated.reason} {.spec.containers[0].resources.limits.memory}"
+                ]
+                ByteString.empty
+            let settled = case result of
+                  Right output -> take 1 (words (processStdout output)) `elem` [["Succeeded"], ["Failed"]]
+                  Left _ -> True
+            if settled || attempts <= 0 then pure result else threadDelay 1000000 >> describe (attempts - 1)
+      described <- describe 20
+      _ <- kubectl ["delete", "pod", name, "--ignore-not-found", "--wait=false"] ByteString.empty
+      pure $ case described of
+        Right output -> case words (processStdout output) of
+          [phase, reason, memory] -> Right (phase, reason, memory)
+          _ -> Left ("unexpected pod description: " ++ take 120 (processStdout output))
+        Left failure -> Left (show failure)
+
+-- | A static PersistentVolume under the retained host root, bound to one
+-- PersistentVolumeClaim by name (no dynamic provisioner involved), and a Pod
+-- that mounts the claim. Returns the claim's phase, the volume it is bound to
+-- and the Pod's output.
+pvPod :: FilePath -> String -> String -> IO (Either String (String, String, String))
+pvPod kubeconfig name script = do
+  let objects =
+        ByteString8.pack $
+          unlines
+            [ "apiVersion: v1"
+            , "kind: PersistentVolume"
+            , "metadata: {name: pv-a01-02}"
+            , "spec: {capacity: {storage: 64Mi}, accessModes: [ReadWriteOnce], persistentVolumeReclaimPolicy: Retain, storageClassName: prodbox-retained, claimRef: {namespace: default, name: pvc-a01-02}, hostPath: {path: /var/lib/prodbox/pv-a01-02, type: Directory}}"
+            , "---"
+            , "apiVersion: v1"
+            , "kind: PersistentVolumeClaim"
+            , "metadata: {name: pvc-a01-02, namespace: default}"
+            , "spec: {accessModes: [ReadWriteOnce], storageClassName: prodbox-retained, volumeName: pv-a01-02, resources: {requests: {storage: 64Mi}}}"
+            , "---"
+            , "apiVersion: v1"
+            , "kind: Pod"
+            , "metadata: {name: " ++ name ++ ", namespace: default}"
+            , "spec:"
+            , "  restartPolicy: Never"
+            , "  containers: [{name: c, image: docker.io/kindest/local-path-helper:v20260131-7181c60a, imagePullPolicy: Never, command: [bash, -c, "
+                ++ show script
+                ++ "], volumeMounts: [{name: d, mountPath: /d}]}]"
+            , "  volumes: [{name: d, persistentVolumeClaim: {claimName: pvc-a01-02}}]"
+            ]
+      kubectl arguments input =
+        captureSubprocessWithInputBounded
+          (BoundedSubprocessLimits 65536 (512 * 1024) (64 * 1024) 200000000)
+          input
+          ( Subprocess
+              "/usr/bin/kubectl"
+              (["--kubeconfig", kubeconfig, "--request-timeout=30s"] ++ arguments)
+              (Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")])
+              Nothing
           )
+  _ <- kubectl ["delete", "pod", name, "--ignore-not-found"] ByteString.empty
+  applied <- kubectl ["apply", "-f", "-"] objects
+  case applied of
+    Left failure -> pure (Left (show failure))
+    Right _ -> do
+      _ <-
+        kubectl
+          ["wait", "--for=jsonpath={.status.phase}=Succeeded", "pod/" ++ name, "--timeout=120s"]
+          ByteString.empty
+      logs <- kubectl ["logs", name] ByteString.empty
+      claim <-
+        kubectl
+          ["get", "pvc", "pvc-a01-02", "-o", "jsonpath={.status.phase} {.spec.volumeName}"]
+          ByteString.empty
+      _ <- kubectl ["delete", "pod", name, "--ignore-not-found", "--wait=false"] ByteString.empty
+      pure $ case (claim, logs) of
+        (Right described, Right output) -> case words (processStdout described) of
+          [phase, volume] -> Right (phase, volume, processStdout output)
+          _ -> Left ("unexpected claim description: " ++ take 120 (processStdout described))
+        _ -> Left "claim or logs unreadable"
+
+-- | A namespace ResourceQuota: a Pod inside it is admitted, a Pod whose
+-- request would exceed the quota is refused by the API server, and the
+-- quota's own accounting shows the admitted Pod's request.
+quotaProbe :: FilePath -> String -> IO (Bool, Bool, String)
+quotaProbe kubeconfig namespace = do
+  let kubectl arguments input =
+        captureSubprocessWithInputBounded
+          (BoundedSubprocessLimits 65536 (512 * 1024) (64 * 1024) 200000000)
+          input
+          ( Subprocess
+              "/usr/bin/kubectl"
+              (["--kubeconfig", kubeconfig, "--request-timeout=30s"] ++ arguments)
+              (Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")])
+              Nothing
+          )
+      pod name request limit =
+        ByteString8.pack $
+          unlines
+            [ "apiVersion: v1"
+            , "kind: Pod"
+            , "metadata: {name: " ++ name ++ ", namespace: " ++ namespace ++ "}"
+            , "spec:"
+            , "  restartPolicy: Never"
+            , "  containers: [{name: c, image: docker.io/kindest/local-path-helper:v20260131-7181c60a, imagePullPolicy: Never, command: [bash, -c, \"sleep 1\"], resources: {requests: {cpu: 10m, memory: "
+                ++ request
+                ++ "}, limits: {cpu: 100m, memory: "
+                ++ limit
+                ++ "}}}]"
+            ]
+      setup =
+        ByteString8.pack $
+          unlines
+            [ "apiVersion: v1"
+            , "kind: Namespace"
+            , "metadata: {name: " ++ namespace ++ "}"
+            , "---"
+            , "apiVersion: v1"
+            , "kind: ResourceQuota"
+            , "metadata: {name: memory-quota, namespace: " ++ namespace ++ "}"
+            , "spec: {hard: {requests.memory: 32Mi, limits.memory: 64Mi, pods: \"2\"}}"
+            ]
+  _ <- kubectl ["apply", "-f", "-"] setup
+  -- The quota controller fills in status asynchronously.
+  _ <-
+    kubectl
+      [ "-n"
+      , namespace
+      , "wait"
+      , "--for=jsonpath={.status.hard.pods}=2"
+      , "resourcequota/memory-quota"
+      , "--timeout=60s"
+      ]
+      ByteString.empty
+  within <- kubectl ["apply", "-f", "-"] (pod "within" "8Mi" "16Mi")
+  over <- kubectl ["apply", "-f", "-"] (pod "over" "64Mi" "128Mi")
+  used <-
+    kubectl
+      [ "-n"
+      , namespace
+      , "get"
+      , "resourcequota"
+      , "memory-quota"
+      , "-o"
+      , "jsonpath={.status.used.requests\\.memory}"
+      ]
+      ByteString.empty
+  _ <- kubectl ["delete", "namespace", namespace, "--wait=true", "--timeout=90s"] ByteString.empty
+  let admitted = either (const False) (\output -> processExitCode output == ExitSuccess) within
+      refusedByQuota = case over of
+        Left failure -> "exceeded quota" `isInfixOf` show failure
+        Right output ->
+          processExitCode output /= ExitSuccess
+            && "exceeded quota" `isInfixOf` (processStdout output ++ processStderr output)
+      accounting = either (const "") processStdout used
+  pure (admitted, refusedByQuota, accounting)
 
 waitFor :: IO Bool -> Int -> IO Bool
 waitFor condition attempts = do

@@ -1,0 +1,15 @@
+.TH PRODBOX_delete 1
+.SH NAME
+prodbox-delete \- Delete the selected deployment's cloud-owned resources and keep the local plane
+.SH SYNOPSIS
+.B prodbox delete
+.SH DESCRIPTION
+Requires --yes. Reads the deployment's operation journal directly. A deployment that never admitted a cloud capability answers `Nothing to delete` without cloud credentials, Vault initialization or any change, and a second run answers the same; an unresolved or unreadable journal is refused. The kind environment, local services, trust and journal are always retained. Cloud capabilities are delivered by later phases, so an admitted deployment is refused rather than reported deleted. This command never accepts a cascade option.
+.SH OPTIONS
+.TP
+\fB--yes\fR
+Confirm the deletion
+.SH EXAMPLES
+.TP
+\fBprodbox delete --yes\fR
+Delete the deployment's cloud-owned resources (none, when never admitted).

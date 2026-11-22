@@ -19,9 +19,12 @@ import Prodbox.CLI.Command
   ( AdminActionCommand (..)
   , AdoptableLegacyStack (..)
   , AwsCommand (..)
+  , AwsStackCommand (..)
   , BootstrapBrokerCommand (..)
   , BrokerLaunchOptions (..)
   , ChartsCommand (..)
+  , ClusterCommand (..)
+  , ClusterK8sCommand (..)
   , CommandListingFormat (..)
   , CommandRequest (..)
   , ConfigCommand (..)
@@ -36,13 +39,10 @@ import Prodbox.CLI.Command
   , HostCommand (..)
   , HostFitMode (..)
   , IntegrationSuite (..)
-  , K8sCommand (..)
   , LintCommand (..)
   , NativeCommand (..)
   , PerRunPruneTarget (..)
   , PlanOptions (..)
-  , PulumiCommand (..)
-  , Rke2Command (..)
   , TestCommand (..)
   , TestScope (..)
   , UsersCommand (..)
@@ -93,6 +93,12 @@ parserSuite =
       "every leaf example roundtrips to its registered command path"
       leafParserRoundtripProperty
     mapM_ happyCase (collectLeafExamples commandRegistry)
+    it "the new control surface offers no cascade flag on any leaf" $
+      [ commandPath
+      | (commandPath@("control" : _), exampleSpec) <- collectLeafExamples commandRegistry
+      , isRight (parseArgs (exampleCommand exampleSpec ++ ["--cascade"]))
+      ]
+        `shouldBe` []
     mapM_ unhappyCase (collectLeafExamples commandRegistry)
     mapM_ forbiddenCase forbiddenArgvCases
     it "preserves the explicit global configuration selection" $
@@ -364,8 +370,20 @@ commandPathOfRequest request =
   case request of
     RunTestList -> ["test", "list"]
     RunControlStatus -> ["control", "status"]
+    RunControlLifecycleStatus -> ["control", "lifecycle-status"]
+    RunOrdinaryDelete -> ["delete"]
+    RunControlAuthorityDeploy -> ["control", "authority-deploy"]
     RunControlPlan -> ["control", "plan"]
     RunControlReconcile -> ["control", "reconcile"]
+    RunControlServices -> ["control", "services"]
+    RunControlUnlock -> ["control", "unlock"]
+    RunControlProtectedUnlock -> ["control", "protected-unlock"]
+    RunControlVaultStatus -> ["control", "vault-status"]
+    RunControlBrokerInit -> ["control", "broker-init"]
+    RunControlBrokerUnseal -> ["control", "broker-unseal"]
+    RunControlBrokerBaseline -> ["control", "broker-baseline"]
+    RunControlBackup -> ["control", "backup"]
+    RunControlRestore _ -> ["control", "restore"]
     RunControlDelete -> ["control", "delete"]
     RunControlArtifactImport _ _ -> ["control", "import-artifact"]
     RunControlArtifactDiscard _ -> ["control", "discard-artifact-staging"]
@@ -411,7 +429,7 @@ commandPathOfRequest request =
               ChartsStatus _ -> ["status"]
               ChartsDeploy {} -> ["reconcile"]
               ChartsDelete {} -> ["delete"]
-        NativeCheckCode -> ["dev", "check"]
+        NativeDevCheck -> ["dev", "check"]
         NativeConfig configCommand ->
           "config"
             : case configCommand of
@@ -425,7 +443,7 @@ commandPathOfRequest request =
           "dns"
             : case dnsCommand of
               DnsCheck -> ["check"]
-        NativeDocs docsCommand ->
+        NativeDevDocs docsCommand ->
           ["dev", "docs"]
             ++ case docsCommand of
               DocsCheck -> ["check"]
@@ -445,19 +463,19 @@ commandPathOfRequest request =
             HostFirewallGatewayRestrict _ -> ["host", "firewall", "gateway-restrict"]
             HostFirewallGatewayUnrestrict _ -> ["host", "firewall", "gateway-unrestrict"]
             -- Regrouped under `edge status` (Phase 5); the handler still
-            -- routes through 'HostPublicEdge'.
-            HostPublicEdge _ -> ["edge", "status"]
+            -- routes through 'EdgeStatusCommand'.
+            EdgeStatusCommand _ -> ["edge", "status"]
         NativeEdge edgeCommand ->
           "edge"
             : case edgeCommand of
               EdgeReconcile _ -> ["reconcile"]
-        NativeK8s k8sCommand ->
+        NativeClusterK8s k8sCommand ->
           "cluster"
             : case k8sCommand of
               K8sHealth -> ["health"]
               K8sWait _ _ -> ["wait"]
               K8sLogs _ _ -> ["workload-logs"]
-        NativeLint lintCommand ->
+        NativeDevLint lintCommand ->
           ["dev", "lint"]
             ++ case lintCommand of
               LintAll -> ["all"]
@@ -465,7 +483,7 @@ commandPathOfRequest request =
               LintDocs _ -> ["docs"]
               LintHaskell _ -> ["haskell"]
               LintChart -> ["chart"]
-        NativePulumi pulumiCommand ->
+        NativeAwsStack pulumiCommand ->
           ["aws", "stack"]
             ++ case pulumiCommand of
               PulumiStackDiff target -> [awsStackCliName target, "diff"]
@@ -488,7 +506,7 @@ commandPathOfRequest request =
                 [adoptStackSegment stack, "adopt-legacy", "plan"]
               PulumiAdoptLegacyApply stack _ _ ->
                 [adoptStackSegment stack, "adopt-legacy", "apply"]
-        NativeRke2 rke2Command ->
+        NativeCluster rke2Command ->
           "cluster"
             : case rke2Command of
               Rke2Status -> ["status"]
@@ -545,7 +563,7 @@ commandPathOfRequest request =
                     IntegrationKeycloakInvite -> ["keycloak-invite"]
                     IntegrationSealedVault -> ["sealed-vault"]
         NativeNuke _ -> ["nuke"]
-        NativeTlaCheck -> ["dev", "tla-check"]
+        NativeDevTla -> ["dev", "tla-check"]
         NativeUsers usersCommand ->
           "users"
             : case usersCommand of

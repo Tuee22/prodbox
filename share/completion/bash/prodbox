@@ -5,7 +5,7 @@ _prodbox()
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   if (( COMP_CWORD <= 1 )); then
-    words="admin-action aws bootstrap-broker credential-provisioner lifecycle-authority provider-worker authority-backup tls-retention target-secret-agent charts cluster commands control config dev dns edge gateway help host internal-kind-controller internal-rpc-birth-controller nuke test users vault workload"
+    words="admin-action aws bootstrap-broker credential-provisioner lifecycle-authority provider-worker authority-backup tls-retention target-secret-agent charts cluster commands control delete config dev dns edge gateway help host internal-kind-controller internal-rpc-birth-controller nuke test users vault workload"
   else
     key="${COMP_WORDS[@]:1:COMP_CWORD-1}"
     case "$key" in
@@ -76,7 +76,7 @@ _prodbox()
         words="register"
         ;;
       "control")
-        words="status plan reconcile delete import-artifact discard-artifact-staging inspect-node-archive inspect-image-attempt"
+        words="status plan reconcile services unlock protected-unlock vault-status broker-init broker-unseal broker-baseline lifecycle-status authority-deploy backup restore delete import-artifact discard-artifact-staging inspect-node-archive inspect-image-attempt"
         ;;
       "config")
         words="setup show validate schema generate"

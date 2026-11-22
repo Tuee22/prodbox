@@ -39,7 +39,7 @@ import Data.Vector qualified as Vector
 import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
-import Prodbox.CLI.Rke2 (externalMaterialRequestForObservation)
+import Prodbox.CLI.Cluster (externalMaterialRequestForObservation)
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
   ( AuthenticatedRoleHandler (..)
   )

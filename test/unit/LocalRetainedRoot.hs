@@ -218,7 +218,7 @@ localRetainedRootSuite =
           source `shouldNotContain` "AuthorityBoundRetainedRoot"
 
     it "makes normal reconcile fail closed when marker reconciliation refuses" $ do
-      rke2 <- readFile "src/Prodbox/CLI/Rke2.hs"
+      rke2 <- readFile "src/Prodbox/CLI/Cluster.hs"
       rke2
         `shouldContain` "markerResult <- reconcileAuthorityBoundRetainedRootMarker repoRoot"
       rke2

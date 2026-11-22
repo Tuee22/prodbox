@@ -16,6 +16,7 @@ import SesInviteEvidence (sesInviteEvidenceSuite)
 import AbsenceStratumWitness (absenceStratumWitnessSuite)
 import AdminActionLifecycle (adminActionLifecycleSuite)
 import AdminActionQuotaJournal (adminActionQuotaJournalSuite)
+import AdmissionHistoryTests (admissionHistorySuite)
 import Allocation (allocationSuite)
 import AuthorityLogicalObjectTaxonomy (authorityLogicalObjectTaxonomySuite)
 import AuthorityObjectCoreCas (authorityObjectCoreCasSuite)
@@ -625,83 +626,15 @@ import Prodbox.Bootstrap.Broker.Readiness
   )
 import Prodbox.Bootstrap.Broker.Routes (BrokerRoute (BrokerVaultStatus), brokerRoutePath)
 import Prodbox.Bootstrap.Broker.Settings qualified as BrokerSettings
+import Prodbox.CLI.AwsStack
+  ( renderPulumiPlan
+  , runPulumiCommandWithGate
+  )
 import Prodbox.CLI.Charts
   ( renderChartDeletePlan
   , renderChartDeploymentPlan
   )
-import Prodbox.CLI.Command
-  ( AwsAuditStack (..)
-  , AwsCommand (..)
-  , AwsTeardownFlags (..)
-  , ChartsCommand (..)
-  , CommandRequest (..)
-  , ConfigCommand (..)
-  , CoverageFlags (..)
-  , DaemonLaunchOptions (..)
-  , DaemonStatusOptions (..)
-  , DnsCommand (..)
-  , EdgeCommand (..)
-  , FederationRegisterOptions (..)
-  , GatewayCommand (..)
-  , HostCommand (..)
-  , HostFitMode (..)
-  , IntegrationSuite (..)
-  , K8sCommand (..)
-  , NativeCommand (..)
-  , NukeLocalDataDisposition (..)
-  , NukeOptions (..)
-  , PerRunPruneTarget (..)
-  , PlanOptions (..)
-  , PolicyTier (..)
-  , PulumiCommand (..)
-  , PulumiResiduePolicy (..)
-  , Rke2Command (..)
-  , Rke2DeleteFlags (..)
-  , TestCommand (..)
-  , TestScope (..)
-  , VaultCommand (..)
-  , WorkloadCommand (..)
-  , WorkloadOptions (..)
-  , buildPlan
-  , parseNukeLocalDataDisposition
-  , runPlanWithOptions
-  )
-import Prodbox.CLI.Docs
-  ( renderCommandHelp
-  , renderCommandSurfaceMatrix
-  , renderCommandSurfaceTopLevel
-  )
-import Prodbox.CLI.Interactive
-  ( InteractiveGuard (..)
-  , allowNonTtyInteractiveEnvVar
-  , awsCheckQuotasGuard
-  , awsRequestQuotasGuard
-  , awsSetupGuard
-  , awsTeardownGuard
-  , chartsDeleteGuard
-  , configSetupGuard
-  , renderNonTtyError
-  )
-import Prodbox.CLI.Json (renderCommandJson)
-import Prodbox.CLI.Nuke qualified as Nuke
-import Prodbox.CLI.Output
-  ( ColorMode (..)
-  , OutputFormat (..)
-  , OutputOptions (..)
-  , defaultOutputOptions
-  , renderError
-  , renderOutput
-  )
-import Prodbox.CLI.Parser
-  ( Options (..)
-  , parserInfo
-  , validateCommandArgv
-  )
-import Prodbox.CLI.Pulumi
-  ( renderPulumiPlan
-  , runPulumiCommandWithGate
-  )
-import Prodbox.CLI.Rke2
+import Prodbox.CLI.Cluster
   ( AuthorityBackupReadinessStage (..)
   , CascadeAwsScope (..)
   , CascadePhaseOutcome (..)
@@ -780,6 +713,74 @@ import Prodbox.CLI.Rke2
   , retainedStorageInventoryEntries
   , selectManagedDanglingRuntimeImageIds
   , stepsForComponent
+  )
+import Prodbox.CLI.Command
+  ( AwsAuditStack (..)
+  , AwsCommand (..)
+  , AwsStackCommand (..)
+  , AwsTeardownFlags (..)
+  , ChartsCommand (..)
+  , ClusterCommand (..)
+  , ClusterK8sCommand (..)
+  , CommandRequest (..)
+  , ConfigCommand (..)
+  , CoverageFlags (..)
+  , DaemonLaunchOptions (..)
+  , DaemonStatusOptions (..)
+  , DnsCommand (..)
+  , EdgeCommand (..)
+  , FederationRegisterOptions (..)
+  , GatewayCommand (..)
+  , HostCommand (..)
+  , HostFitMode (..)
+  , IntegrationSuite (..)
+  , NativeCommand (..)
+  , NukeLocalDataDisposition (..)
+  , NukeOptions (..)
+  , PerRunPruneTarget (..)
+  , PlanOptions (..)
+  , PolicyTier (..)
+  , PulumiResiduePolicy (..)
+  , Rke2DeleteFlags (..)
+  , TestCommand (..)
+  , TestScope (..)
+  , VaultCommand (..)
+  , WorkloadCommand (..)
+  , WorkloadOptions (..)
+  , buildPlan
+  , parseNukeLocalDataDisposition
+  , runPlanWithOptions
+  )
+import Prodbox.CLI.Docs
+  ( renderCommandHelp
+  , renderCommandSurfaceMatrix
+  , renderCommandSurfaceTopLevel
+  )
+import Prodbox.CLI.Interactive
+  ( InteractiveGuard (..)
+  , allowNonTtyInteractiveEnvVar
+  , awsCheckQuotasGuard
+  , awsRequestQuotasGuard
+  , awsSetupGuard
+  , awsTeardownGuard
+  , chartsDeleteGuard
+  , configSetupGuard
+  , renderNonTtyError
+  )
+import Prodbox.CLI.Json (renderCommandJson)
+import Prodbox.CLI.Nuke qualified as Nuke
+import Prodbox.CLI.Output
+  ( ColorMode (..)
+  , OutputFormat (..)
+  , OutputOptions (..)
+  , defaultOutputOptions
+  , renderError
+  , renderOutput
+  )
+import Prodbox.CLI.Parser
+  ( Options (..)
+  , parserInfo
+  , validateCommandArgv
   )
 import Prodbox.CLI.Spec
   ( ArgumentSpec (..)
@@ -952,7 +953,7 @@ import Prodbox.Config.ComponentGraph
   , resolveCapabilityProviders
   , validateComponentGraph
   )
-import Prodbox.Config.DeploymentScope (DeploymentEnvironment (Test), deploymentScope)
+import Prodbox.Config.DeploymentScope (DeploymentEnvironment (Production, Test), deploymentScope)
 import Prodbox.Config.RetainedArtifacts
   ( RetainedArtifactDeclaration (..)
   , RetainedArtifactsSection (..)
@@ -998,8 +999,15 @@ import Prodbox.Control.KindNodeBootstrap
   , BootstrapStep (..)
   , classifyBootstrapRequest
   )
+import Prodbox.Control.ManagementPolicy (managementPolicyDigest, managementPolicyManifest)
 import Prodbox.Control.NetworkEnforcement (EnforcementObservation (..), enforcementProven)
 import Prodbox.Control.Reconcile (kindUlaSubnet)
+import Prodbox.Control.Unlock
+  ( UnlockPolicy (..)
+  , VaultState (..)
+  , initialisationAllowed
+  , unlockPolicyFor
+  )
 import Prodbox.ControlPlane.AuthenticatedRuntime qualified as AuthenticatedRuntime
 import Prodbox.ControlPlane.AuthenticationRegistry
   ( controlPlaneSigningKeyInventory
@@ -3250,10 +3258,71 @@ kindNodeBootstrapSuite =
 -- | Enforcement is proven only by a working observer, a held allow, a real deny
 -- and a restored connection once the policy is gone. Each broken observation
 -- is a distinct negative control.
+-- | Phase 2 bootstrap law: the test MinIO self-unseal policy is never selected
+-- for a production environment, and Vault is initialized at most once per
+-- retained identity. Each assertion carries a stable marker for the mutation
+-- catalog (M03).
+bootstrapUnlockPolicySuite :: SuiteBuilder ()
+bootstrapUnlockPolicySuite =
+  describe "bootstrap unlock policy" $ do
+    it "never selects the test self-unseal policy for production for the mutation catalog" $
+      assertMutationInvariant
+        "bootstrap.production_rejects_test_unlock"
+        ( unlockPolicyFor Production == ProtectedProduction
+            && unlockPolicyFor Test == TestSelfUnseal
+        )
+    it
+      "initializes only an uninitialized Vault with no unlock object or pending record for the mutation catalog"
+      $ assertMutationInvariant
+        "bootstrap.preserves_vault_incarnation"
+        ( initialisationAllowed VaultUninitialized False False
+            && not (initialisationAllowed VaultUninitialized True False)
+            && not (initialisationAllowed VaultUninitialized False True)
+            && not (initialisationAllowed VaultSealed False False)
+            && not (initialisationAllowed VaultSealed True False)
+            && not (initialisationAllowed VaultUnsealed False False)
+            && not (initialisationAllowed (VaultUnobservable "x") False False)
+        )
+
+-- | The new local-management surface (the control modules and the phase
+-- scenario runners) never selects an ambient kubeconfig, rewrites a production
+-- config, or depends on an RKE2 service. This is the new-path half of the L04
+-- and L05 absence checks; the legacy routes belong to later phases.
+newSurfaceIsolationSuite :: SuiteBuilder ()
+newSurfaceIsolationSuite =
+  describe "new management surface isolation" $ do
+    it "reads no ambient kubeconfig or environment selection and names no RKE2 service" $ do
+      controlNames <- listDirectory "src/Prodbox/Control"
+      let controlFiles = ["src/Prodbox/Control" </> name | name <- controlNames, ".hs" `isSuffixOf` name]
+          runnerFiles = ["src/Prodbox/Test/Phase01Runner.hs", "src/Prodbox/Test/MutationExecutor.hs"]
+      offenders <- concat <$> mapM offending (controlFiles ++ runnerFiles)
+      offenders `shouldBe` []
+ where
+  offending path = do
+    contents <- BS8.unpack <$> BS8.readFile path
+    let codeLines = filter (not . ("--" `isPrefixOf`) . dropWhile (== ' ')) (lines contents)
+    pure [path | any (\line -> any (`isInfixOf` line) forbidden) codeLines]
+  forbidden =
+    [ "lookupEnv \"KUBECONFIG\""
+    , "getEnv \"KUBECONFIG\""
+    , "lookupEnv \"DOCKER_HOST\""
+    , "systemctl"
+    , "rke2-server"
+    , "/etc/rancher"
+    ]
+
+-- | Enforcement is proven only by a working observer, a held allow, a real deny
+-- and a restored connection once the policy is gone. Each broken observation
+-- is a distinct negative control.
 networkEnforcementVerdictSuite :: SuiteBuilder ()
 networkEnforcementVerdictSuite =
   describe "network enforcement verdict" $ do
     let proven = EnforcementObservation True True True False True
+    it "pins the management policy bytes and substitutes only the namespace" $ do
+      managementPolicyDigest `shouldBe` "01637648d7d445213cadf8d78762ee02a536224027232a2ede4633305a0083a7"
+      let rendered = BS8.unpack (managementPolicyManifest "prodbox-management")
+      ("NAMESPACE" `isInfixOf` rendered) `shouldBe` False
+      ("namespace: prodbox-management" `isInfixOf` rendered) `shouldBe` True
     it "accepts only the complete observation" $ do
       enforcementProven proven `shouldBe` True
     it "rejects a blind observer, a lost allow, a missing deny and an unrestored connection" $ do
@@ -3519,6 +3588,8 @@ unitSuite :: SuiteBuilder ()
 unitSuite = do
   controlReconcileSubnetSuite
   networkEnforcementVerdictSuite
+  newSurfaceIsolationSuite
+  bootstrapUnlockPolicySuite
   kindNodeBootstrapSuite
   kindKubeadmShapeSuite
   targetSecretAgentStartupDiagnosticSuite
@@ -3529,6 +3600,7 @@ unitSuite = do
   qualificationEvidenceSuite
   qualificationSourceIdentitySuite
   scenarioEvidenceSuite
+  admissionHistorySuite
   awsLifecycleDrillLedgerSuite
   sealedConstructorsSuite
   qualificationCreateInterruptedCounterexampleSuite
@@ -5496,7 +5568,7 @@ unitSuite = do
       "AUTHORITY-BACKUP-POST-ESTABLISHMENT-SERVICE-ROUTING-2026-09-07 waits for Service routing before config"
       $ do
         repoRoot <- getCurrentDirectory
-        source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
+        source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Cluster.hs")
         let sourceLines = lines source
             blockFromTo startMarker endMarker =
               takeWhile
@@ -6121,7 +6193,7 @@ unitSuite = do
       "uses pre-seed settings for Authority Backup establishment before in-force loading (Sprint 2.101)"
       $ do
         repoRoot <- getCurrentDirectory
-        source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
+        source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Cluster.hs")
         let sourceLines = lines source
             blockFromTo startMarker endMarker =
               takeWhile
@@ -6217,7 +6289,7 @@ unitSuite = do
             expectNativeTarget
     it "keeps both phase step executors total and wildcard-free" $ do
       repoRoot <- getCurrentDirectory
-      source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
+      source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Cluster.hs")
       let sourceLines = lines source
           blockFromTo startMarker endMarker =
             takeWhile
@@ -6993,7 +7065,7 @@ unitSuite = do
       defaultObjectStoreBucket `shouldNotBe` "prodbox-test-pulumi-backends"
     it "routes gateway MinIO bootstrap to the same generic bucket" $ do
       repoRoot <- getCurrentDirectory
-      source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
+      source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Cluster.hs")
       source `shouldContain` "mc mb --ignore-existing local/\" ++ defaultObjectStoreBucket"
       source `shouldContain` "s3:DeleteObject"
       source `shouldNotContain` "gatewayMinioBucket"
@@ -7350,11 +7422,11 @@ unitSuite = do
 
     it "routes edge status through the native Haskell runtime" $ do
       parseArgs ["edge", "status"]
-        `shouldBe` Right (Options False Nothing (RunNative (NativeHost (HostPublicEdge SubstrateHomeLocal))))
+        `shouldBe` Right (Options False Nothing (RunNative (NativeHost (EdgeStatusCommand SubstrateHomeLocal))))
 
     it "routes edge status --substrate aws to the AWS-substrate diagnostic" $ do
       parseArgs ["edge", "status", "--substrate", "aws"]
-        `shouldBe` Right (Options False Nothing (RunNative (NativeHost (HostPublicEdge SubstrateAws))))
+        `shouldBe` Right (Options False Nothing (RunNative (NativeHost (EdgeStatusCommand SubstrateAws))))
 
     it "routes dns check through the native Haskell runtime" $ do
       parseArgs ["dns", "check"]
@@ -7481,7 +7553,7 @@ unitSuite = do
 
     it "routes tla-check through the native Haskell runtime" $ do
       parseArgs ["dev", "tla-check"]
-        `shouldBe` Right (Options False Nothing (RunNative NativeTlaCheck))
+        `shouldBe` Right (Options False Nothing (RunNative NativeDevTla))
 
     it "routes vault status through the native Haskell runtime" $ do
       parseArgs ["vault", "status"]
@@ -7621,7 +7693,7 @@ unitSuite = do
               False
               Nothing
               ( RunNative
-                  ( NativeRke2
+                  ( NativeCluster
                       ( Rke2Delete
                           ( Rke2DeleteFlags
                               { rke2DeleteYes = True
@@ -7641,7 +7713,7 @@ unitSuite = do
               False
               Nothing
               ( RunNative
-                  ( NativeRke2
+                  ( NativeCluster
                       ( Rke2Delete
                           ( Rke2DeleteFlags
                               { rke2DeleteYes = True
@@ -7661,7 +7733,7 @@ unitSuite = do
               False
               Nothing
               ( RunNative
-                  ( NativeRke2
+                  ( NativeCluster
                       ( Rke2FederationRegister
                           "child-a"
                           ( FederationRegisterOptions
@@ -7681,12 +7753,12 @@ unitSuite = do
     it "routes aws stack commands through the native Haskell runtime" $ do
       parseArgs ["aws", "stack", "test", "reconcile"]
         `shouldBe` Right
-          (Options False Nothing (RunNative (NativePulumi (PulumiTestResources (PlanOptions False Nothing)))))
+          (Options False Nothing (RunNative (NativeAwsStack (PulumiTestResources (PlanOptions False Nothing)))))
 
       mapM_
         ( \target ->
             parseArgs ["aws", "stack", AwsRemedyPolicy.awsStackCliName target, "diff"]
-              `shouldBe` Right (Options False Nothing (RunNative (NativePulumi (PulumiStackDiff target))))
+              `shouldBe` Right (Options False Nothing (RunNative (NativeAwsStack (PulumiStackDiff target))))
         )
         [minBound .. maxBound]
       parseArgs ["aws", "stack", "eks", "purge-dependents"]
@@ -7694,7 +7766,7 @@ unitSuite = do
           ( Options
               False
               Nothing
-              (RunNative (NativePulumi (PulumiEksPurgeDependents RepairProvider.NetworkPurgePlan)))
+              (RunNative (NativeAwsStack (PulumiEksPurgeDependents RepairProvider.NetworkPurgePlan)))
           )
       let repairArgs = ["aws", "stack", "eks", "purge-dependents"]
           repairDigest = replicate 64 'a'
@@ -7704,7 +7776,9 @@ unitSuite = do
               False
               Nothing
               ( RunNative
-                  (NativePulumi (PulumiEksPurgeDependents (RepairProvider.NetworkPurgeApply (Text.pack repairDigest))))
+                  ( NativeAwsStack
+                      (PulumiEksPurgeDependents (RepairProvider.NetworkPurgeApply (Text.pack repairDigest)))
+                  )
               )
           )
       mapM_
@@ -7715,7 +7789,7 @@ unitSuite = do
           ( Options
               False
               Nothing
-              (RunNative (NativePulumi (PulumiEksDestroy True (PlanOptions False Nothing))))
+              (RunNative (NativeAwsStack (PulumiEksDestroy True (PlanOptions False Nothing))))
           )
 
       -- Sprint 7.22: the per-run corrupt-checkpoint prune recovery leaf.
@@ -7724,7 +7798,7 @@ unitSuite = do
           ( Options
               False
               Nothing
-              (RunNative (NativePulumi (PulumiPruneCorruptCheckpoint PrunePerRunEks True)))
+              (RunNative (NativeAwsStack (PulumiPruneCorruptCheckpoint PrunePerRunEks True)))
           )
 
       parseArgs ["aws", "stack", "test", "prune-corrupt-checkpoint"]
@@ -7732,7 +7806,7 @@ unitSuite = do
           ( Options
               False
               Nothing
-              (RunNative (NativePulumi (PulumiPruneCorruptCheckpoint PrunePerRunTest False)))
+              (RunNative (NativeAwsStack (PulumiPruneCorruptCheckpoint PrunePerRunTest False)))
           )
 
     it "routes charts commands through the native Haskell runtime" $ do
@@ -7753,7 +7827,7 @@ unitSuite = do
               False
               Nothing
               ( RunNative
-                  ( NativeK8s
+                  ( NativeClusterK8s
                       ( K8sLogs
                           ["metallb-system", "envoy-gateway-system", "cert-manager", "postgres-operator"]
                           10
@@ -8189,7 +8263,7 @@ unitSuite = do
 
     it "restores read-write registry service after collector failure or interruption" $ do
       repoRoot <- getCurrentDirectory
-      source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
+      source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Cluster.hs")
       let sourceLines = lines source
           retentionBlock =
             takeWhile
@@ -9627,7 +9701,7 @@ unitSuite = do
       repoRoot <- getCurrentDirectory
       awsEksMain <- readFile (repoRoot </> "pulumi" </> "aws-eks" </> "Main.yaml")
       awsTestMain <- readFile (repoRoot </> "pulumi" </> "aws-test" </> "Main.yaml")
-      pulumiCli <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Pulumi.hs")
+      pulumiCli <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "AwsStack.hs")
       awsEksInfra <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsEksTestStack.hs")
       awsTestInfra <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsTestStack.hs")
       providerProduction <-
@@ -11219,7 +11293,7 @@ unitSuite = do
 
     it "waits for stable Harbor endpoints before lifecycle image reconcile begins" $ do
       repoRoot <- getCurrentDirectory
-      rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
+      rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Cluster.hs")
 
       -- Sprint 7.46: every wait names the vantage it probes from. The AWS runtime
       -- takes its vantage from the substrate and the home retention path names the
@@ -11251,7 +11325,7 @@ unitSuite = do
 
     it "Harbor bucket-init uses static MinIO root cred; gateway Job reads Vault (7.25)" $ do
       repoRoot <- getCurrentDirectory
-      rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
+      rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Cluster.hs")
 
       rke2Source `shouldContain` "resolveHarborStorageCredentials repoRoot"
       -- The gateway MinIO bootstrap Job runs AFTER Vault init/unseal and still
@@ -11298,7 +11372,7 @@ unitSuite = do
 
     it "retries transient Harbor publication failures during custom and mirrored image publication" $ do
       repoRoot <- getCurrentDirectory
-      rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
+      rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Cluster.hs")
 
       -- Sprint 1.77 moved every compiled schedule into `Prodbox.Retry` so the
       -- hidden constructor could stay total, so the schedule is asserted as a
@@ -11318,7 +11392,7 @@ unitSuite = do
 
     it "keeps postgres-operator runtime on explicit Percona chart values" $ do
       repoRoot <- getCurrentDirectory
-      rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
+      rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Cluster.hs")
 
       rke2Source `shouldContain` "\"operatorImageRepository\""
       rke2Source `shouldContain` "\"watchAllNamespaces\" .= True"
@@ -12200,7 +12274,7 @@ unitSuite = do
         ]
         ( \classifierName ->
             inlineRetrySubstringListViolations
-              "src/Prodbox/CLI/Rke2.hs"
+              "src/Prodbox/CLI/Cluster.hs"
               (inlineClassifier classifierName)
               `shouldNotBe` []
         )
@@ -12241,7 +12315,7 @@ unitSuite = do
         )
         `shouldNotBe` []
       inlineRetrySubstringListViolations
-        "src/Prodbox/CLI/Rke2.hs"
+        "src/Prodbox/CLI/Cluster.hs"
         "isRetryableNewRke2Failure detail = \"busy\" `isInfixOf` detail"
         `shouldNotBe` []
       inlineRetrySubstringListViolations
@@ -16711,7 +16785,7 @@ unitSuite = do
   describe "Sprint 4.26 checkPlanOptionsHonored lint" $ do
     it "fires when Rke2Delete binds its PlanOptions to a _ wildcard" $ do
       let offending = "    Rke2Delete flags _planOptions ->\n      foo\n"
-      planOptionsHonoredViolations "src/Prodbox/CLI/Rke2.hs" offending
+      planOptionsHonoredViolations "src/Prodbox/CLI/Cluster.hs" offending
         `shouldSatisfy` (not . null)
 
     it "fires when NativeNuke binds its NukeOptions to a _ wildcard" $ do
@@ -16724,12 +16798,12 @@ unitSuite = do
             "    Rke2Delete flags planOptions ->\n"
               ++ "      runPlanWithOptions planOptions plan apply\n"
               ++ "    NativeNuke nukeOptions -> runNukeCommand repoRoot nukeOptions\n"
-      planOptionsHonoredViolations "src/Prodbox/CLI/Rke2.hs" honest `shouldBe` []
+      planOptionsHonoredViolations "src/Prodbox/CLI/Cluster.hs" honest `shouldBe` []
 
     it "the live Rke2.hs / Nuke.hs / Native.hs dispatch arms are clean" $ do
-      rke2Source <- readFile "src/Prodbox/CLI/Rke2.hs"
+      rke2Source <- readFile "src/Prodbox/CLI/Cluster.hs"
       nativeSource <- readFile "src/Prodbox/Native.hs"
-      planOptionsHonoredViolations "src/Prodbox/CLI/Rke2.hs" rke2Source `shouldBe` []
+      planOptionsHonoredViolations "src/Prodbox/CLI/Cluster.hs" rke2Source `shouldBe` []
       planOptionsHonoredViolations "src/Prodbox/Native.hs" nativeSource `shouldBe` []
 
     it "Sprint 0.28: covers every destructive arm, not just the original two" $ do
@@ -20024,7 +20098,7 @@ unitSuite = do
         `shouldBe` []
     it "checkSubstrateImagePinning does NOT fire on the legitimate lower-layer MetalLB pin" $
       substrateImagePinningViolations
-        "src/Prodbox/CLI/Rke2.hs"
+        "src/Prodbox/CLI/Cluster.hs"
         "metallbChartVersion = \"0.14.9\"\n"
         `shouldBe` []
 
@@ -21315,7 +21389,7 @@ unitSuite = do
             ++ ResourceClass.resourceNamesOfClass ResourceClass.LongLived
         commandWithKnownConstructors =
           unlines
-            [ "data PulumiCommand"
+            [ "data AwsStackCommand"
             , "  = PulumiEksResources PlanOptions"
             , "  | PulumiTestResources PlanOptions"
             , "  | PulumiAwsSubzoneResources PlanOptions"
@@ -21744,7 +21818,7 @@ unitSuite = do
 
       it "resolves a registered name to its owner modules" $ do
         productionEnvVarOwnersFor "PRODBOX_PULUMI_METALLB_POOL"
-          `shouldBe` Just ["src/Prodbox/CLI/Rke2.hs"]
+          `shouldBe` Just ["src/Prodbox/CLI/Cluster.hs"]
         productionEnvVarOwnersFor "PRODBOX_KIND_BRIDGE"
           `shouldBe` Just
             [ "src/Prodbox/Control/KindDockerClient.hs"
@@ -21759,7 +21833,7 @@ unitSuite = do
         length
           [ entry
           | entry <- productionEnvVarRegistry
-          , productionEnvVarOwners entry == ["src/Prodbox/CLI/Rke2.hs"]
+          , productionEnvVarOwners entry == ["src/Prodbox/CLI/Cluster.hs"]
           ]
           `shouldBe` 5
 
@@ -23653,7 +23727,7 @@ unitSuite = do
           ("src/Prodbox/Lifecycle/CapabilityReadinessBarrier.hs", "mintRoundTripWitness version now")
           `shouldSatisfy` ((== 1) . length)
         Prodbox.CheckCode.roundTripWitnessInternalSourceViolations
-          ( "src/Prodbox/CLI/Rke2.hs"
+          ( "src/Prodbox/CLI/Cluster.hs"
           , "import Prodbox.ControlPlane.Observation.Internal (mintRoundTripWitness)"
           )
           `shouldSatisfy` ((== 2) . length)
@@ -24264,7 +24338,7 @@ unitSuite = do
         let ownershipPaths =
               [ "src/Prodbox/Vault/Host.hs"
               , "src/Prodbox/Host.hs"
-              , "src/Prodbox/CLI/Rke2.hs"
+              , "src/Prodbox/CLI/Cluster.hs"
               , "src/Prodbox/Config/Tier0.hs"
               , "src/Prodbox/ControlPlane/LifecycleAuthorityAuthentication.hs"
               , "src/Prodbox/Infra/LongLivedPulumiBackend.hs"
@@ -24414,7 +24488,7 @@ unitSuite = do
         -- The site this sprint deleted: `prodbox cluster status` built a record
         -- validateConfig had never produced, and got its plan by `error`-ing.
         Prodbox.CheckCode.validatedSettingsMinterViolations
-          ("src/Prodbox/CLI/Rke2.hs", "ValidatedSettings\n  { validatedConfig = defaultConfigFile\n  }")
+          ("src/Prodbox/CLI/Cluster.hs", "ValidatedSettings\n  { validatedConfig = defaultConfigFile\n  }")
           `shouldSatisfy` ((== 1) . length)
         -- A record UPDATE forges the same claim and is caught by the same rule,
         -- which is why the predicate keys on field assignment rather than on the
@@ -25317,10 +25391,10 @@ unitSuite = do
             , NativeCharts ChartsList
             , NativeDns DnsCheck
             , NativeEdge (EdgeReconcile (PlanOptions False Nothing))
-            , NativeK8s K8sHealth
-            , NativePulumi (PulumiEksResources (PlanOptions False Nothing))
-            , NativeCheckCode
-            , NativeTlaCheck
+            , NativeClusterK8s K8sHealth
+            , NativeAwsStack (PulumiEksResources (PlanOptions False Nothing))
+            , NativeDevCheck
+            , NativeDevTla
             ]
           referenced = concatMap commandPrerequisites sampleCommands
       all (`Map.member` prerequisiteRegistry) referenced `shouldBe` True
@@ -25330,7 +25404,7 @@ unitSuite = do
         `shouldBe` [K8sClusterReachable, AwsCredentialsValid]
 
     it "keeps the local cluster lifecycle commands prerequisite-free at the SSoT layer" $
-      commandPrerequisites (NativeRke2 (Rke2Reconcile (PlanOptions False Nothing) False))
+      commandPrerequisites (NativeCluster (Rke2Reconcile (PlanOptions False Nothing) False))
         `shouldBe` []
 
   describe "Sprint 4.34 autoscaler runtime and federation-scoped placement" $ do

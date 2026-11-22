@@ -230,7 +230,7 @@ substratePublicRouteUrl servedHost route =
 -- matches the issuer's actual @acmeRoute53Solver@ (DNS-01 via Route 53),
 -- not the historically-inaccurate HTTP-01-claiming name it replaced
 -- (Sprint @7.13@). Must match the issuer name rendered by
--- @Prodbox.CLI.Rke2.acmeRuntimeManifestWith@. Rebuild cycles avoid
+-- @Prodbox.CLI.Cluster.acmeRuntimeManifestWith@. Rebuild cycles avoid
 -- re-ordering the certificate through the S3-backed retention store
 -- ('publicEdgeTlsRetentionKey') — keyed on substrate + the exact canonical
 -- certificate scope set, not on the issuer name — so an exact-scope retained

@@ -21,7 +21,7 @@ import Data.List.NonEmpty qualified as NonEmpty
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.Aws.Region (awsGlobalServiceRegion)
-import Prodbox.CLI.Rke2
+import Prodbox.CLI.Cluster
   ( CascadeUninstallGate (..)
   , cascadeSweepCredentialAbsentExit
   , decideCascadeUninstallGate

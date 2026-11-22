@@ -18,7 +18,12 @@ module Prodbox.Control.Recreate
 
 import Control.Exception (IOException, bracket, try)
 import Control.Monad (forM)
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString qualified as ByteString
 import Data.List (isPrefixOf)
+import Data.Text qualified as Text
 import Foreign.C.Error (throwErrnoIfMinus1_)
 import Foreign.C.String (CString, withCString)
 import Foreign.C.Types (CInt (..))
@@ -97,6 +102,8 @@ archiveCompletedOperation bootstrap = do
       present <- forM removalResults $ \name -> exists root name
       absent <- exists root "kind-node-absence-observed.json"
       attempted <- exists root "kind-node-create-attempt.json"
+      volumePlanned <- exists root "kind-node-var-volume-intent.json"
+      networkRefused <- networkNeverCreated root
       -- An observed absence with its control (written by `control delete`), or
       -- a node whose create attempt was never recorded, stands in for the node
       -- removal result and nothing else.
@@ -104,6 +111,8 @@ archiveCompletedOperation bootstrap = do
             [ name
             | (name, False) <- zip removalResults present
             , not ((absent || not attempted) && name == "kind-node-remove-result.json")
+            , not (not volumePlanned && name == "kind-node-var-volume-removal-result.json")
+            , not (networkRefused && name == "kind-network-removal-result.json")
             ]
       if not (null missing)
         then pure (ArchiveNotCompletelyRemoved (unwords missing))
@@ -137,6 +146,22 @@ archiveCompletedOperation bootstrap = do
         status <-
           try (Files.getSymbolicLinkStatus ("/proc/self/fd/" ++ show (fdNumber root) ++ "/" ++ name))
         pure (either (\(_ :: IOException) -> False) (const True) status)
+  -- The network create result records a refused reply (a name collision) and
+  -- no network id: there was no network to remove.
+  networkNeverCreated root = do
+    contents <-
+      try
+        (ByteString.readFile ("/proc/self/fd/" ++ show (fdNumber root) ++ "/kind-network-create-result.json"))
+    pure $ case contents of
+      Left (_ :: IOException) -> False
+      Right bytes -> case Aeson.decodeStrict bytes of
+        Just (Aeson.Object record) -> case KeyMap.lookup (Key.fromString "transport") record of
+          Just (Aeson.Object transport) ->
+            KeyMap.lookup (Key.fromString "network_id") transport == Just Aeson.Null
+              && KeyMap.lookup (Key.fromString "status") transport /= Just (Aeson.Number 201)
+              && KeyMap.lookup (Key.fromString "state") transport == Just (Aeson.String (Text.pack "reply"))
+          _ -> False
+        _ -> False
   existsNested root name = do
     status <-
       try (Files.getSymbolicLinkStatus ("/proc/self/fd/" ++ show (fdNumber root) ++ "/" ++ name))

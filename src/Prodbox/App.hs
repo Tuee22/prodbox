@@ -52,6 +52,11 @@ import Prodbox.CLI.Parser
   )
 import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry, findCommandSpec)
 import Prodbox.CLI.Tree (renderCommandTree)
+import Prodbox.CLI.Vault
+  ( brokerBaselineSelected
+  , brokerInitializeSelected
+  , brokerUnsealSelected
+  )
 import Prodbox.Config.BootstrapProjection
   ( BootstrapProjection
   , bootstrapKindPlan
@@ -63,10 +68,11 @@ import Prodbox.Config.BootstrapSetup (runSelectedBootstrapSetup)
 import Prodbox.Config.DeploymentScope
   ( DeploymentEnvironment (Test)
   , scopeEnvironment
+  , scopeKindName
   , scopeRoot
   , validRootGeneration
   )
-import Prodbox.Config.KindPlan (kindPlanNodeImage, renderKindConfig)
+import Prodbox.Config.KindPlan (kindPlanHostPorts, kindPlanNodeImage, renderKindConfig)
 import Prodbox.Config.SchemaDhall (materializeSchemaFilesIfStale)
 import Prodbox.Control.ArtifactImport
   ( ArtifactDiscardResult (..)
@@ -75,6 +81,10 @@ import Prodbox.Control.ArtifactImport
   , discardBootstrapArtifactStaging
   , importBootstrapArtifact
   )
+import Prodbox.Control.AuthorityDeploy (deployAuthority)
+import Prodbox.Control.AuthorityJournalClient (AdmissionSource (..), currentAdmission)
+import Prodbox.Control.Backup (backupServices, renderBackupOutcome, restoreServices)
+import Prodbox.Control.BrokerClientCommand (brokerVaultStatus)
 import Prodbox.Control.Delete (DeleteStep (..), deleteNewTestIdentity)
 import Prodbox.Control.DockerConnectedInfo
   ( DockerConnectedInfoFailure
@@ -83,7 +93,12 @@ import Prodbox.Control.DockerConnectedInfo
   , DockerImageLoadStream (..)
   )
 import Prodbox.Control.DockerPeer (DockerPeer (..), DockerPeerResult (..), withConnectedDockerPeer)
-import Prodbox.Control.KindController (launchKindController, runKindControllerEntry)
+import Prodbox.Control.HostPorts (dockerNameRefusal, hostPortRefusal)
+import Prodbox.Control.KindController
+  ( kindHostCapacityRefusal
+  , launchKindController
+  , runKindControllerEntry
+  )
 import Prodbox.Control.KindDockerClient (runKindDockerClient)
 import Prodbox.Control.KindLease (KindOperationOutcome (..))
 import Prodbox.Control.KindRuntimeConfig (renderKindConfigForArchive)
@@ -111,7 +126,11 @@ import Prodbox.Control.NodeImageOperation
   , NodeImageRecoveryPoint (..)
   , observeRecoveredConnectedNodeImage
   )
+import Prodbox.Control.OperatorInput (readSecretLine)
+import Prodbox.Control.ProtectedUnlock (protectedUnlock, renderProtectedOutcome)
 import Prodbox.Control.Reconcile (ReconcileOutcome (..), reconcileNewPrerequisites)
+import Prodbox.Control.ServiceSupport (ServiceStep (..))
+import Prodbox.Control.Services (observeServices, reconcileServices, renderServicesOutcome)
 import Prodbox.Control.Status
   ( ControlObservation (controlRuntime)
   , ImageArchiveComparison (..)
@@ -124,7 +143,13 @@ import Prodbox.Control.Status
   , renderControlObservation
   , renderControlStatusError
   )
+import Prodbox.Control.Unlock (renderUnlockOutcome, unlockVault)
 import Prodbox.Error (fatalError)
+import Prodbox.Lifecycle.AdmissionHistory
+  ( AdmissionVerdict (..)
+  , noChangeAllowed
+  , renderVerdict
+  )
 import Prodbox.Native (runNativeCommand)
 import Prodbox.Repo (findRepoRoot, resolveTier0ConfigPath)
 import Prodbox.Settings (SelectedSettingsValidation (..), validateSelectedSettingsAtPath)
@@ -133,6 +158,9 @@ import Prodbox.TestRunner
   ( renderNamedLocalTestList
   , runSelectedMutationCatalog
   , runSelectedPhaseScenario
+  , runSelectedPhaseThreeScenario
+  , runSelectedPhaseTwoBrokerScenario
+  , runSelectedPhaseTwoScenario
   )
 import System.Directory (doesFileExist)
 import System.Environment (getArgs, getProgName)
@@ -194,8 +222,20 @@ main = do
 runSelectedCommand :: FilePath -> CommandRequest -> IO ()
 runSelectedCommand selected request = case request of
   RunControlStatus -> runControlStatus selected
+  RunControlLifecycleStatus -> runControlLifecycleStatus selected
+  RunOrdinaryDelete -> runOrdinaryDelete selected
+  RunControlAuthorityDeploy -> runControlAuthorityDeploy selected
   RunControlPlan -> runControlPlan selected
   RunControlReconcile -> runControlReconcile selected
+  RunControlServices -> runControlServices selected
+  RunControlUnlock -> runControlUnlock selected
+  RunControlProtectedUnlock -> runControlProtectedUnlock selected
+  RunControlVaultStatus -> runControlVaultStatus selected
+  RunControlBrokerInit -> runControlBrokerSecret BrokerInitAction selected
+  RunControlBrokerUnseal -> runControlBrokerSecret BrokerUnsealAction selected
+  RunControlBrokerBaseline -> runControlBrokerSecret BrokerBaselineAction selected
+  RunControlBackup -> runControlBackup selected
+  RunControlRestore name -> runControlRestore selected name
   RunControlDelete -> runControlDelete selected
   RunControlArtifactImport role source -> runControlArtifactImport selected role source
   RunControlArtifactDiscard role -> runControlArtifactDiscard selected role
@@ -203,6 +243,9 @@ runSelectedCommand selected request = case request of
   RunControlInspectImageAttempt operation -> runControlInspectImageAttempt selected operation
   RunNative (NativeConfig (ConfigSetup options)) -> runSelectedBootstrapSetup selected options >>= exitWith
   RunNative (NativeTest (TestCommand (TestRun "phase-01") _ _ _)) -> runSelectedPhaseScenario selected >>= exitWith
+  RunNative (NativeTest (TestCommand (TestRun "phase-02") _ _ _)) -> runSelectedPhaseTwoScenario selected >>= exitWith
+  RunNative (NativeTest (TestCommand (TestRun "phase-02-broker") _ _ _)) -> runSelectedPhaseTwoBrokerScenario selected >>= exitWith
+  RunNative (NativeTest (TestCommand (TestRun "phase-03") _ _ _)) -> runSelectedPhaseThreeScenario selected >>= exitWith
   RunNative (NativeTest (TestCommand (TestRun "phase-01-mutation") _ _ _)) -> runSelectedMutationCatalog >>= exitWith
   RunNative (NativeConfig ConfigValidate) -> do
     result <- validateSelectedSettingsAtPath selected
@@ -222,8 +265,20 @@ runCommandRequest request =
   case request of
     RunTestList -> writeOutput renderNamedLocalTestList
     RunControlStatus -> resolveTier0ConfigPath "." >>= runControlStatus
+    RunControlLifecycleStatus -> resolveTier0ConfigPath "." >>= runControlLifecycleStatus
+    RunOrdinaryDelete -> resolveTier0ConfigPath "." >>= runOrdinaryDelete
+    RunControlAuthorityDeploy -> resolveTier0ConfigPath "." >>= runControlAuthorityDeploy
     RunControlPlan -> resolveTier0ConfigPath "." >>= runControlPlan
     RunControlReconcile -> resolveTier0ConfigPath "." >>= runControlReconcile
+    RunControlServices -> resolveTier0ConfigPath "." >>= runControlServices
+    RunControlUnlock -> resolveTier0ConfigPath "." >>= runControlUnlock
+    RunControlProtectedUnlock -> resolveTier0ConfigPath "." >>= runControlProtectedUnlock
+    RunControlVaultStatus -> resolveTier0ConfigPath "." >>= runControlVaultStatus
+    RunControlBrokerInit -> resolveTier0ConfigPath "." >>= runControlBrokerSecret BrokerInitAction
+    RunControlBrokerUnseal -> resolveTier0ConfigPath "." >>= runControlBrokerSecret BrokerUnsealAction
+    RunControlBrokerBaseline -> resolveTier0ConfigPath "." >>= runControlBrokerSecret BrokerBaselineAction
+    RunControlBackup -> resolveTier0ConfigPath "." >>= runControlBackup
+    RunControlRestore name -> resolveTier0ConfigPath "." >>= \selected -> runControlRestore selected name
     RunControlDelete -> resolveTier0ConfigPath "." >>= runControlDelete
     RunControlArtifactImport role source -> resolveTier0ConfigPath "." >>= \selected -> runControlArtifactImport selected role source
     RunControlArtifactDiscard role -> resolveTier0ConfigPath "." >>= \selected -> runControlArtifactDiscard selected role
@@ -263,6 +318,73 @@ runCommandRequest request =
     exitCode <- runNativeCommand repoRoot command
     exitWith exitCode
 
+runControlAuthorityDeploy :: FilePath -> IO ()
+runControlAuthorityDeploy selected = do
+  bootstrap <- readBootstrapProjection selected
+  case bootstrap of
+    Left failure -> failWith ("Cannot read control bootstrap: " ++ show failure)
+    Right projection
+      | scopeEnvironment (bootstrapScope projection) /= Test ->
+          failWith "Control authority-deploy currently supports only test identities."
+      | otherwise -> do
+          steps <- deployAuthority projection
+          let rendered =
+                concatMap
+                  ( \step ->
+                      "  "
+                        ++ serviceStepName step
+                        ++ ": "
+                        ++ (if serviceStepOk step then "ok" else "NOT completed")
+                        ++ " - "
+                        ++ serviceStepDetail step
+                        ++ "\n"
+                  )
+                  steps
+          if all serviceStepOk steps
+            then writeOutput ("The Authority runtime is deployed.\n" ++ rendered)
+            else
+              failWith ("The Authority deployment is incomplete; nothing was repaired by hand.\n" ++ rendered)
+
+runOrdinaryDelete :: FilePath -> IO ()
+runOrdinaryDelete selected = do
+  bootstrap <- readBootstrapProjection selected
+  case bootstrap of
+    Left failure -> failWith ("Cannot read control bootstrap: " ++ show failure)
+    Right projection -> do
+      (verdict, _) <- currentAdmission (scopeRoot (bootstrapScope projection))
+      case verdict of
+        NeverAdmitted ->
+          writeOutput
+            "Nothing to delete: no cloud capability was ever admitted for this deployment. The kind environment, local services, trust and journal are retained.\n"
+        AdmittedSettled ->
+          failWith
+            "Refused: this deployment admitted a capability whose deletion is not delivered by this binary yet; nothing was changed.\n"
+        _ ->
+          failWith
+            ( "Refused: deletion needs a settled, known operation history. "
+                ++ renderVerdict verdict
+                ++ "\nNothing was changed; resolve the journal through recovery first.\n"
+            )
+
+runControlLifecycleStatus :: FilePath -> IO ()
+runControlLifecycleStatus selected = do
+  bootstrap <- readBootstrapProjection selected
+  case bootstrap of
+    Left failure -> failWith ("Cannot read control bootstrap: " ++ show failure)
+    Right projection -> do
+      (verdict, source) <- currentAdmission (scopeRoot (bootstrapScope projection))
+      writeOutput
+        ( renderVerdict verdict
+            ++ ( case source of
+                   FromAuthority observedAt -> " [source: the Authority's journal, read at " ++ Text.unpack observedAt ++ "]"
+                   FromLocalControlJournal -> " [source: local control journal; no Authority is deployed]"
+               )
+            ++ "\n"
+        )
+      case verdict of
+        RecoveryRequired _ -> exitWith (ExitFailure 1)
+        _ -> pure ()
+
 runControlStatus :: FilePath -> IO ()
 runControlStatus selected = do
   bootstrap <- readBootstrapProjection selected
@@ -289,6 +411,8 @@ runControlStatus selected = do
               )
             readiness <- observeKubernetesReadiness projection
             writeOutput (renderKubernetesReadiness readiness)
+            observeServices (scopeRoot (bootstrapScope projection) </> "control" </> "kubeconfig")
+              >>= writeOutput
             case controlRuntime value of
               RuntimeUnobservable failure -> failWith ("Cannot observe local control: " ++ renderControlStatusError failure)
               _ -> pure ()
@@ -360,24 +484,35 @@ runControlDelete selected = do
   case bootstrap of
     Left failure -> failWith ("Cannot read control bootstrap: " ++ show failure)
     Right projection -> do
-      steps <- deleteNewTestIdentity projection
-      let render step =
-            "  "
-              ++ deleteStepName step
-              ++ ": "
-              ++ (if deleteStepCompleted step then "removal reply recorded" else "NOT completed")
-              ++ " - "
-              ++ take 300 (deleteStepDetail step)
-              ++ "\n"
-          report = concatMap render steps
-      if all deleteStepCompleted steps
-        then
-          writeOutput
-            ( "Recorded kind resources were removed; replies are not proof of absence, so read `control status`.\n"
-                ++ report
-                ++ "Host data, records, artifacts, the loaded node image and the retained root remain.\n"
+      (verdict, _) <- currentAdmission (scopeRoot (bootstrapScope projection))
+      if noChangeAllowed verdict
+        then deleteAdmitted projection
+        else
+          failWith
+            ( "Refused: removal needs a settled, known operation history. "
+                ++ renderVerdict verdict
+                ++ "\nNothing was removed; resolve the journal through recovery first.\n"
             )
-        else failWith ("Removal is incomplete; records are retained for recovery.\n" ++ report)
+ where
+  deleteAdmitted projection = do
+    steps <- deleteNewTestIdentity projection
+    let render step =
+          "  "
+            ++ deleteStepName step
+            ++ ": "
+            ++ (if deleteStepCompleted step then "removal reply recorded" else "NOT completed")
+            ++ " - "
+            ++ take 300 (deleteStepDetail step)
+            ++ "\n"
+        report = concatMap render steps
+    if all deleteStepCompleted steps
+      then
+        writeOutput
+          ( "Recorded kind resources were removed; replies are not proof of absence, so read `control status`.\n"
+              ++ report
+              ++ "Host data, records, artifacts, the loaded node image and the retained root remain.\n"
+          )
+      else failWith ("Removal is incomplete; records are retained for recovery.\n" ++ report)
 
 -- Run the real-socket policy observation when the kubeconfig was installed.
 observeEnforcementReport :: BootstrapProjection -> String -> IO String
@@ -402,6 +537,132 @@ observeEnforcementReport projection operation = do
 
 -- Always ends Incomplete: the cluster is not initialized, no kubeconfig or
 -- readiness exists, and no remover is delivered. Created resources are kept.
+
+-- | Capacity first, then declared host ports; each refuses before any effect.
+admitReconcile :: BootstrapProjection -> IO (Maybe String)
+admitReconcile projection = do
+  capacity <- kindHostCapacityRefusal (scopeRoot (bootstrapScope projection))
+  case capacity of
+    Just reason -> pure (Just ("host capacity cannot fund the declared envelope: " ++ reason))
+    Nothing -> do
+      names <-
+        dockerNameRefusal (bootstrapRuntimeSocket projection) (scopeKindName (bootstrapScope projection))
+      case names of
+        Just reason -> pure (Just reason)
+        Nothing -> hostPortRefusal (kindPlanHostPorts (bootstrapKindPlan projection))
+
+data BrokerAction = BrokerInitAction | BrokerUnsealAction | BrokerBaselineAction
+
+runControlBrokerSecret :: BrokerAction -> FilePath -> IO ()
+runControlBrokerSecret action selected = do
+  bootstrap <- readBootstrapProjection selected
+  case bootstrap of
+    Left failure -> failWith ("Cannot read control bootstrap: " ++ show failure)
+    Right projection
+      | scopeEnvironment (bootstrapScope projection) /= Test ->
+          failWith "Control broker commands currently support only test identities."
+      | otherwise -> do
+          supplied <- readSecretLine "Vault operator password: "
+          case supplied of
+            Nothing ->
+              failWith
+                "Needs input: provide the Vault operator password at the prompt or on standard input. Nothing was changed."
+            Just password -> do
+              let kubeconfig = scopeRoot (bootstrapScope projection) </> "control" </> "kubeconfig"
+                  environment = [("KUBECONFIG", kubeconfig), ("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")]
+              code <- case action of
+                BrokerInitAction -> brokerInitializeSelected "." environment password
+                BrokerUnsealAction -> brokerUnsealSelected "." environment password
+                BrokerBaselineAction -> brokerBaselineSelected "." environment password
+              exitWith code
+
+runControlVaultStatus :: FilePath -> IO ()
+runControlVaultStatus selected = do
+  bootstrap <- readBootstrapProjection selected
+  case bootstrap of
+    Left failure -> failWith ("Cannot read control bootstrap: " ++ show failure)
+    Right projection
+      | scopeEnvironment (bootstrapScope projection) /= Test ->
+          failWith "Control vault-status currently supports only test identities."
+      | otherwise -> do
+          result <- brokerVaultStatus (scopeRoot (bootstrapScope projection) </> "control" </> "kubeconfig")
+          either
+            (\detail -> failWith ("The Broker did not answer: " ++ detail))
+            (\text -> writeOutput ("Vault status through the Bootstrap Broker: " ++ text ++ "\n"))
+            result
+
+runControlBackup :: FilePath -> IO ()
+runControlBackup selected = do
+  bootstrap <- readBootstrapProjection selected
+  case bootstrap of
+    Left failure -> failWith ("Cannot read control bootstrap: " ++ show failure)
+    Right projection
+      | scopeEnvironment (bootstrapScope projection) /= Test ->
+          failWith "Control backup currently supports only test identities."
+      | otherwise -> do
+          steps <- backupServices projection
+          let (ok, rendered) = renderBackupOutcome steps
+          if ok
+            then writeOutput ("Backup complete.\n" ++ rendered)
+            else failWith ("Backup incomplete.\n" ++ rendered)
+
+runControlRestore :: FilePath -> String -> IO ()
+runControlRestore selected name = do
+  bootstrap <- readBootstrapProjection selected
+  case bootstrap of
+    Left failure -> failWith ("Cannot read control bootstrap: " ++ show failure)
+    Right projection
+      | scopeEnvironment (bootstrapScope projection) /= Test ->
+          failWith "Control restore currently supports only test identities."
+      | otherwise -> do
+          steps <- restoreServices projection name
+          let (ok, rendered) = renderBackupOutcome steps
+          if ok
+            then writeOutput ("Restore complete; run `control unlock` to unseal Vault.\n" ++ rendered)
+            else failWith ("Restore incomplete.\n" ++ rendered)
+
+runControlProtectedUnlock :: FilePath -> IO ()
+runControlProtectedUnlock selected = do
+  bootstrap <- readBootstrapProjection selected
+  case bootstrap of
+    Left failure -> failWith ("Cannot read control bootstrap: " ++ show failure)
+    Right projection
+      | scopeEnvironment (bootstrapScope projection) /= Test ->
+          failWith "Control protected-unlock currently supports only test identities."
+      | otherwise -> do
+          outcome <- protectedUnlock projection
+          let (ok, rendered) = renderProtectedOutcome outcome
+          if ok then writeOutput rendered else failWith rendered
+
+runControlUnlock :: FilePath -> IO ()
+runControlUnlock selected = do
+  bootstrap <- readBootstrapProjection selected
+  case bootstrap of
+    Left failure -> failWith ("Cannot read control bootstrap: " ++ show failure)
+    Right projection -> do
+      outcome <- unlockVault projection
+      let (ok, rendered) = renderUnlockOutcome outcome
+      if ok
+        then writeOutput ("Vault is unsealed and a secret round trip succeeded.\n" ++ rendered)
+        else failWith ("Unlock is incomplete; nothing was repaired by hand.\n" ++ rendered)
+
+runControlServices :: FilePath -> IO ()
+runControlServices selected = do
+  bootstrap <- readBootstrapProjection selected
+  case bootstrap of
+    Left failure -> failWith ("Cannot read control bootstrap: " ++ show failure)
+    Right projection
+      | scopeEnvironment (bootstrapScope projection) /= Test ->
+          failWith "Control services currently supports only test identities."
+      | otherwise -> do
+          outcome <- reconcileServices projection
+          let (ok, rendered) = renderServicesOutcome outcome
+          if ok
+            then
+              writeOutput
+                ("MinIO and Vault are deployed and read back directly; Vault is uninitialized.\n" ++ rendered)
+            else failWith ("Services are incomplete; nothing was repaired by hand.\n" ++ rendered)
+
 runControlReconcile :: FilePath -> IO ()
 runControlReconcile selected = do
   bootstrap <- readBootstrapProjection selected
@@ -411,7 +672,10 @@ runControlReconcile selected = do
       | scopeEnvironment (bootstrapScope projection) /= Test ->
           failWith "Control reconcile currently supports only test identities."
       | otherwise -> do
-          outcome <- reconcileNewPrerequisites projection
+          outcome <-
+            reconcileNewPrerequisites
+              (admitReconcile projection)
+              projection
           case outcome of
             ReconcileNodeReady operation -> do
               let resultPath = scopeRoot (bootstrapScope projection) </> ("kind-controller-result-" ++ operation)
@@ -428,6 +692,8 @@ runControlReconcile selected = do
                   ++ ". "
                   ++ network
                   ++ " Readiness read-back and recreation are not delivered."
+            ReconcileCapacityRefused reason ->
+              failWith ("Refused before any work: " ++ reason)
             other -> failWith ("Incomplete before node creation; records are retained: " ++ show other)
 
 runControlArtifactImport :: FilePath -> String -> FilePath -> IO ()

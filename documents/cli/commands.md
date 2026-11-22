@@ -73,11 +73,23 @@ The generated payload below remains unchanged. It describes actual old command n
 | `prodbox control status` | Inspect local control observations |
 | `prodbox control plan` | Render the selected kind configuration |
 | `prodbox control reconcile` | Create a new test environment's kind prerequisites and node attempt |
+| `prodbox control services` | Deploy the pinned MinIO and Vault into a created test environment |
+| `prodbox control unlock` | Initialize or self-unseal the test environment's Vault and prove a secret round trip |
+| `prodbox control protected-unlock` | Unseal the test environment's Vault with an operator-supplied key |
+| `prodbox control vault-status` | Read Vault's state through the Bootstrap Broker's authenticated route |
+| `prodbox control broker-init` | Initialize Vault through the Bootstrap Broker with an operator password |
+| `prodbox control broker-unseal` | Unseal Vault through the Bootstrap Broker with the operator password |
+| `prodbox control broker-baseline` | Reconcile Vault's baseline through the Bootstrap Broker with the operator password |
+| `prodbox control lifecycle-status` | Read the local operation journal and report its admission verdict |
+| `prodbox control authority-deploy` | Deploy the Lifecycle Authority runtime into the test environment |
+| `prodbox control backup` | Back up the test environment's Vault and MinIO data inside its retained root |
+| `prodbox control restore` | Restore a backup of the test environment's Vault and MinIO data |
 | `prodbox control delete` | Remove a new test environment's recorded kind resources |
 | `prodbox control import-artifact` | Import a declared bootstrap artifact |
 | `prodbox control discard-artifact-staging` | Discard the selected artifact staging file |
 | `prodbox control inspect-node-archive` | Inspect the retained OCI node archive |
 | `prodbox control inspect-image-attempt` | Inspect a retained image attempt |
+| `prodbox delete` | Delete the selected deployment's cloud-owned resources and keep the local plane |
 | `prodbox config setup` | Interactively author config |
 | `prodbox config show` | Display current config |
 | `prodbox config validate` | Validate current config |

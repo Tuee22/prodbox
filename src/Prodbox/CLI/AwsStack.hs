@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Prodbox.CLI.Pulumi
+module Prodbox.CLI.AwsStack
   ( EphemeralPulumiStack (..)
   , EphemeralPulumiOutputs (..)
   , readEphemeralPulumiOutputs
@@ -28,9 +28,9 @@ import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Prodbox.CLI.Command
   ( AdoptableLegacyStack
+  , AwsStackCommand (..)
   , PerRunPruneTarget (..)
   , Plan
-  , PulumiCommand (..)
   , buildPlan
   , runPlanWithOptions
   )
@@ -125,11 +125,11 @@ data EphemeralPulumiOutputs = EphemeralPulumiOutputs
   }
   deriving (Eq, Show)
 
-runPulumiCommand :: FilePath -> PulumiCommand -> IO ExitCode
+runPulumiCommand :: FilePath -> AwsStackCommand -> IO ExitCode
 runPulumiCommand repoRoot =
   runPulumiCommandWithGate (probePulumiVaultGate repoRoot) repoRoot
 
-runPulumiCommandWithGate :: IO VaultGateOutcome -> FilePath -> PulumiCommand -> IO ExitCode
+runPulumiCommandWithGate :: IO VaultGateOutcome -> FilePath -> AwsStackCommand -> IO ExitCode
 runPulumiCommandWithGate gate repoRoot command =
   case command of
     PulumiStackDiff target -> runAwsStackDiff repoRoot target

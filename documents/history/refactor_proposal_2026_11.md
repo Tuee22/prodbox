@@ -38,7 +38,7 @@ Deletion of production AWS data volumes and buckets is a real destructive change
 
 ## 2. Findings that determine this design
 
-- The public cascade is still explicitly a legacy executor in `src/Prodbox/CLI/Rke2.hs`; the replacement is qualification-only in `src/Prodbox/Lifecycle/Teardown/CascadeCandidate/Internal.hs`.
+- The public cascade is still explicitly a legacy executor in `583443f:src/Prodbox/CLI/Rke2.hs`; the replacement is qualification-only in `src/Prodbox/Lifecycle/Teardown/CascadeCandidate/Internal.hs`.
 - The August 16 change `5b8c730` introduced the current unknown-state refusal. It repaired unsafe inference but did not deliver automatic recovery or a positive never-provisioned path to the public command.
 - `queryPerRunResidueStatuses` authenticates before reaching its explicit Vault gate. `vault status` goes through Broker readiness. Basic diagnosis therefore inherits dependencies of privileged execution.
 - The existing doctrine already describes recovery before teardown. Repeating that target contract without changing the public implementation and closure criteria will repeat the development cycle.
@@ -758,7 +758,7 @@ No finite campaign guarantees the absence of all future defects. This plan chang
 Repository sources reviewed include:
 
 - [Current command registry](../../src/Prodbox/CLI/Spec.hs), [request types](../../src/Prodbox/CLI/Command.hs), [generated command inventory](../../documents/cli/commands.md), and [CLI doctrine](../../documents/engineering/cli_command_surface.md).
-- [Current lifecycle executor](../../src/Prodbox/CLI/Rke2.hs), [residue observations](../../src/Prodbox/Lifecycle/LiveResidue.hs), [private replacement](../../src/Prodbox/Lifecycle/Teardown/CascadeCandidate/Internal.hs), and [host recovery boundary](../../src/Prodbox/Lifecycle/HostCleanupRecoveryPlane.hs).
+- Current lifecycle executor (`583443f:src/Prodbox/CLI/Rke2.hs`, now `src/Prodbox/CLI/Cluster.hs`), [residue observations](../../src/Prodbox/Lifecycle/LiveResidue.hs), [private replacement](../../src/Prodbox/Lifecycle/Teardown/CascadeCandidate/Internal.hs), and [host recovery boundary](../../src/Prodbox/Lifecycle/HostCleanupRecoveryPlane.hs).
 - [Vault commands](../../src/Prodbox/CLI/Vault.hs), [test routing](../../src/Prodbox/TestPlan.hs), and [doctrine/plan checker](../../src/Prodbox/CheckCode.hs).
 - [Documentation standards](../../documents/documentation_standards.md), [plan standards](../../DEVELOPMENT_PLAN/development_plan_standards.md), [current plan](../../DEVELOPMENT_PLAN/README.md), [component inventory](../../DEVELOPMENT_PLAN/system-components.md), [substrate inventory](../../DEVELOPMENT_PLAN/substrates.md), and [active removal ledger](../../DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md). The prior ledger is available at revision `583443f` as described in [history navigation](README.md).
 - The July–November 2026 Git history, including `8bed066`, `f59ccfc`, `39f17be`, `5b8c730`, `b2e9bf6`, and `e21ed05`. Historical results identify the revisions they exercised, not this proposed replacement.

@@ -120,6 +120,7 @@ module Prodbox.ControlPlane.Runtime
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (async, wait, waitCatch)
 import Control.Concurrent.STM
   ( TBQueue
@@ -162,6 +163,10 @@ import Network.Socket
 import Network.Socket.ByteString (recv)
 import Numeric.Natural (Natural)
 import Prodbox.Aws.SigV4 (hexSha256)
+import Prodbox.Bootstrap.Broker.TokenReview
+  ( inClusterTokenReviewerForAudience
+  , readProjectedNamespace
+  )
 import Prodbox.Bootstrap.Broker.Types (renderArtifactDigest)
 import Prodbox.CLI.Command
   ( ControlPlaneLaunchOptions (..)
@@ -191,6 +196,12 @@ import Prodbox.ControlPlane.AdminActionAuthorityExecutionEndpoint
 import Prodbox.ControlPlane.AdminActionEndpoint
   ( adminActionAuthenticatedHandler
   , adminActionEndpointMaximumBytes
+  )
+import Prodbox.ControlPlane.AdmissionJournalMirror
+  ( initialiseJournalMirror
+  , journalMountDirectory
+  , mirrorAdmissionRepository
+  , observeJournalMirror
   )
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
   ( AuthenticatedRoleHandler (..)
@@ -226,7 +237,7 @@ import Prodbox.ControlPlane.AuthenticationRegistry
   ( targetSecretControllerAuditorVaultRole
   )
 import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
-  ( AuthorityAdmissionRepository
+  ( AuthorityAdmissionRepository (..)
   , AuthorityOperationSubmitResult (..)
   , authorityAdmissionMaximumEncodedBytes
   , authorityAdmissionMigrationImportApplicator
@@ -246,6 +257,10 @@ import Prodbox.ControlPlane.AuthorityBackupEndpoint
   , authorityBackupDigestText
   )
 import Prodbox.ControlPlane.AuthorityControlProtocol (isEpochPromotionObservationForRole)
+import Prodbox.ControlPlane.AuthorityJournalReadServer
+  ( journalReadAudience
+  , runAuthorityJournalReadServer
+  )
 import Prodbox.ControlPlane.AuthorityPeerContextEndpoint
   ( authorityPeerContextVerifiedHandler
   , isAuthorityPeerContextObservationForRole
@@ -808,6 +823,7 @@ import Prodbox.Http.ResponseObligation
   , responseWriteBudgetMicrosDefault
   , withResponseObligation
   )
+import Prodbox.K8s.InCluster (inClusterNamespacePath)
 import Prodbox.Lifecycle.AdminAction.Authority
   ( AdminActionAuthorityBoundary (..)
   , modelBAdminActionAuthorityRepository
@@ -996,7 +1012,7 @@ import Prodbox.Pulumi.EncryptedBackend
   , renderEncryptedBackendError
   )
 import Prodbox.Runtime.Role (RuntimeRole (..), runtimeRoleName)
-import Prodbox.Supervision (withSupervisedChildren)
+import Prodbox.Supervision (withSupervisedChild, withSupervisedChildren)
 import Prodbox.Vault.Client
   ( VaultKubernetesLoginResult (..)
   , vaultKubernetesLoginWithLease
@@ -1007,6 +1023,7 @@ import Prodbox.Vault.Session
   , VaultSessionOperationError (..)
   , sessionAddress
   )
+import System.Directory (doesDirectoryExist)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.Timeout (timeout)
@@ -2563,8 +2580,28 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession store coordinates 
         recoveryPlaneObserverResult <-
           productionRecoveryPlaneComponentObserverInternal
             localRke2HostObservationRepository
-        let baseAdmissionRepository =
+        let plainAdmissionRepository =
               rpcBirthNativeAdmissionRepository birthBackend birthMode initialAdmission
+        -- The mounted journal: when the chart's journal volume is present, every
+        -- aggregate commit is preceded by its write-ahead mirror and the genesis
+        -- record is written once, so admission history stays readable while
+        -- Vault is sealed. Absent the volume (the legacy topology) nothing
+        -- changes. If the mirror cannot be initialized the repository refuses
+        -- every read and commit rather than serving with an unmirrored journal.
+        journalMounted <- doesDirectoryExist journalMountDirectory
+        journalMirrorResult <-
+          if journalMounted
+            then initialiseJournalMirror journalMountDirectory plainAdmissionRepository
+            else pure (Right ())
+        let baseAdmissionRepository = case journalMirrorResult of
+              Left _ ->
+                AuthorityAdmissionRepository
+                  { readAuthorityAdmission = pure (Left "journal-mirror-unavailable")
+                  , compareAndSwapAuthorityAdmission = \_ _ -> pure (Left "journal-mirror-unavailable")
+                  }
+              Right ()
+                | journalMounted -> mirrorAdmissionRepository journalMountDirectory plainAdmissionRepository
+                | otherwise -> plainAdmissionRepository
             admissionRepository =
               authorityAdmissionWithRetainedEpoch vaultSession baseAdmissionRepository
             birthAuthenticationEpoch = do
@@ -4889,6 +4926,11 @@ runRolePlan role options vaultConfig vaultSession validatedStore clusterId agent
     TlsRetentionRuntime -> "signed-s3-prefix-probe"
     _ -> "fail-closed-until-interpreter-bound"
 
+-- | The narrow journal read serves for the life of a Lifecycle Authority
+-- process, before and independently of the Vault-dependent startup. While that
+-- startup cannot complete (for example Vault is sealed) the Authority keeps
+-- serving the read and retries instead of exiting; without the mounted journal,
+-- or for any other role, nothing changes.
 runRoleServer
   :: RuntimeRole
   -> ControlPlaneVaultConfig
@@ -4899,7 +4941,50 @@ runRoleServer
   -> RpcBirthConfig
   -> Either AuthenticatedRuntimeProvisioningGap ValidatedAuthenticationTopology
   -> IO ExitCode
-runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdentity birthConfig authenticationProvisioning =
+runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdentity birthConfig authenticationProvisioning
+  | role /= LifecycleAuthorityRuntime = once
+  | otherwise = do
+      journalMounted <- doesDirectoryExist journalMountDirectory
+      namespaceResult <- readProjectedNamespace inClusterNamespacePath
+      reviewerResult <- inClusterTokenReviewerForAudience journalReadAudience
+      case (journalMounted, namespaceResult, reviewerResult) of
+        (True, Right namespace, Right reviewer) ->
+          withSupervisedChild
+            ( runAuthorityJournalReadServer
+                namespace
+                reviewer
+                (observeJournalMirror journalMountDirectory)
+            )
+            (const retrying)
+        _ -> once
+ where
+  once =
+    runRoleServerOnce
+      role
+      vaultConfig
+      vaultSession
+      validatedStore
+      clusterId
+      agentIdentity
+      birthConfig
+      authenticationProvisioning
+  retrying = do
+    outcome <- once
+    case outcome of
+      ExitSuccess -> pure ExitSuccess
+      ExitFailure _ -> threadDelay 5000000 >> retrying
+
+runRoleServerOnce
+  :: RuntimeRole
+  -> ControlPlaneVaultConfig
+  -> VaultSession
+  -> ValidatedRoleStore
+  -> Text
+  -> TargetAgentIdentity
+  -> RpcBirthConfig
+  -> Either AuthenticatedRuntimeProvisioningGap ValidatedAuthenticationTopology
+  -> IO ExitCode
+runRoleServerOnce role vaultConfig vaultSession validatedStore clusterId agentIdentity birthConfig authenticationProvisioning =
   case authenticationProvisioning of
     Left _ -> refuseControlPlaneStartup role TargetSecretAgentStartupAuthenticationTopology
     Right topology -> case (role, validatedStore, birthConfig) of

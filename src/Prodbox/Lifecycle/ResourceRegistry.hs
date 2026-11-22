@@ -8,10 +8,10 @@
 -- facts with the @destroy@ action for each resource.
 --
 -- This sprint wires the per-run subset into
--- 'Prodbox.CLI.Rke2.runNativeDeleteCascade' as a behavior-preserving
+-- 'Prodbox.CLI.Cluster.runNativeDeleteCascade' as a behavior-preserving
 -- refactor: 'reconcileAbsent' destroys exactly the per-run stacks the
 -- cascade already destroyed, in the same canonical order, using the
--- same 'PulumiCommand's. The long-lived ('aws-ses') and 'Operational'
+-- same 'AwsStackCommand's. The long-lived ('aws-ses') and 'Operational'
 -- (IAM user, @aws.*@ config) destroy actions land with their consumers
 -- in Sprints 7.8 / nuke.
 module Prodbox.Lifecycle.ResourceRegistry
@@ -61,12 +61,12 @@ import Control.Exception
 import Control.Monad (foldM, unless)
 import Data.List (intercalate, nub)
 import Data.Text qualified as Text
+import Prodbox.CLI.AwsStack (runPulumiCommand)
 import Prodbox.CLI.Command
-  ( PlanOptions (..)
-  , PulumiCommand (..)
+  ( AwsStackCommand (..)
+  , PlanOptions (..)
   )
 import Prodbox.CLI.Output (writeDiagnosticLine, writeOutputLine)
-import Prodbox.CLI.Pulumi (runPulumiCommand)
 import Prodbox.ControlPlane.CapabilityKind (CapabilityKind (ManagedDestroy))
 import Prodbox.ControlPlane.CapabilityRef (CapabilityRef, mkCapabilityRef)
 import Prodbox.ControlPlane.Coordinate
@@ -139,7 +139,7 @@ capacityScaledManagedResources = Autoscaler.capacityScaledResourceNames
 -- | The per-run Pulumi stacks as managed resources, in the canonical
 -- teardown order @aws-eks → aws-eks-subzone → aws-test@ (so dependent
 -- VPC / subnet residue tears down before the broader network
--- substrate). The destroy actions are exactly the 'PulumiCommand's the
+-- substrate). The destroy actions are exactly the 'AwsStackCommand's the
 -- cascade ran before Sprint 4.21, so wiring them in is behavior-
 -- preserving.
 -- | Sprint 4.84: the closed set of per-run AWS stacks the cascade owns.

@@ -74,7 +74,7 @@ import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Numeric.Natural (Natural)
 import Prodbox.Aws (awsHarnessAdminScope)
-import Prodbox.CLI.Rke2
+import Prodbox.CLI.Cluster
   ( reconcileHarnessLifecycleProviderCredential
   , revokeHarnessLifecycleProviderCredential
   , runNativeHarnessPostCredentialRuntime

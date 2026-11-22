@@ -42,7 +42,7 @@ import Data.Time.Clock (UTCTime, getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Numeric (showHex)
 import Numeric.Natural (Natural)
-import Prodbox.CLI.Rke2
+import Prodbox.CLI.Cluster
   ( MinioImageSource (MinioBootstrapPublic)
   , ensureInternalControlPlaneChartReady
   , ensureMinioRuntime

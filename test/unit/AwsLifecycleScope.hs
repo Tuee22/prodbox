@@ -8,13 +8,13 @@ import Data.IORef
 import Data.List (nub, sort)
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Prodbox.CLI.Command (IntegrationSuite (..), PolicyTier (..), TestScope (..))
-import Prodbox.CLI.Rke2
+import Prodbox.CLI.Cluster
   ( ReconcileStepId (..)
   , nativeHarnessBootstrapFloorStepOrder
   , nativeHarnessProviderReadinessStepOrder
   , nativeInstallStepOrder
   )
+import Prodbox.CLI.Command (IntegrationSuite (..), PolicyTier (..), TestScope (..))
 import Prodbox.Config.ComponentGraph (defaultComponentGraph, validateComponentGraph)
 import Prodbox.Infra.AwsFieldAudit (FieldAudit (..))
 import Prodbox.Lifecycle.AwsAudit

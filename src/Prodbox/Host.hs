@@ -192,7 +192,7 @@ runHostCommand repoRoot command =
     HostInfo -> runHostInfo repoRoot
     HostFirewallGatewayRestrict port -> runHostFirewallGatewayRestrict port
     HostFirewallGatewayUnrestrict port -> runHostFirewallGatewayUnrestrict port
-    HostPublicEdge substrate -> runHostPublicEdge repoRoot substrate
+    EdgeStatusCommand substrate -> runHostPublicEdge repoRoot substrate
 
 runHostPublicEdge :: FilePath -> Substrate -> IO ExitCode
 runHostPublicEdge repoRoot substrate = do

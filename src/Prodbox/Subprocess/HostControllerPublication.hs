@@ -32,6 +32,7 @@ module Prodbox.Subprocess.HostControllerPublication
   , hostControllerConfigurationName
   , hostControllerRequestName
   , hostControllerPublicationPathReserved
+  , observeHostPublicationDirectoryAbsent
   ) where
 
 import Codec.Serialise (serialise)
@@ -125,11 +126,30 @@ hostControllerPublishedDirectory
 hostControllerPublishedDirectory kind uid key =
   "/run/user/" <> show uid <> "/" <> publicationDirectoryName kind key
 
+-- Exact descriptor-relative observation only; the caller must hold the
+-- operation fence across this read and its dependent action.
+observeHostPublicationDirectoryAbsent :: Word64 -> Identity.HostControllerKind -> Identity.HostExecutionKey -> IO (Either HostControllerPublicationError Bool)
+observeHostPublicationDirectoryAbsent ending kind key = do
+  uid <- getEffectiveUserID
+  withRuntimeRoot uid $ \root -> mask $ \restore -> do
+    valid <- checkTime ending
+    case valid of
+      Left failure -> pure (Left failure)
+      Right () -> do
+        opened <- try (IO.openFdAt (Just root) (publicationDirectoryName kind key) IO.ReadOnly directoryFlags)
+        case opened of
+          Left (cause :: IOException) | isDoesNotExistError cause -> (True <$) <$> checkTime ending
+          Left cause -> pure (Left (ioRefusal cause))
+          Right descriptor -> restore ((False <$) <$> checkTime ending) `finally` IO.closeFd descriptor
+
 publicationDirectoryPrefix :: Identity.HostControllerKind -> String
 publicationDirectoryPrefix kind = case kind of
   Identity.RpcBirthController -> "prodbox-rpc-birth-inputs-"
   Identity.OrdinaryCascadeController -> "prodbox-cascade-inputs-"
   Identity.MutationController -> "prodbox-mutation-inputs-"
+  Identity.KindController -> "prodbox-kind-family-inputs-"
+  Identity.KindProbeVerifierController -> "prodbox-kind-verify-inputs-"
+  Identity.KindProbeSuccessorController -> "prodbox-kind-successor-inputs-"
 
 publicationDirectoryName :: Identity.HostControllerKind -> Identity.HostExecutionKey -> String
 publicationDirectoryName kind key = publicationDirectoryPrefix kind <> Identity.hostExecutionKeyText key
@@ -142,7 +162,7 @@ hostControllerPublicationPathReserved = any reserved . splitDirectories
   reserved component =
     any
       (\kind -> publicationDirectoryPrefix kind `isPrefixOf` component)
-      [Identity.RpcBirthController, Identity.OrdinaryCascadeController, Identity.MutationController]
+      [Identity.RpcBirthController, Identity.OrdinaryCascadeController, Identity.MutationController, Identity.KindController, Identity.KindProbeVerifierController, Identity.KindProbeSuccessorController]
 
 hostControllerConfigurationName, hostControllerRequestName :: String
 hostControllerConfigurationName = "settings.cbor"
@@ -401,6 +421,12 @@ hostPublicationNeverSentMetadata
               "prodbox-host-never-sent-unlinked/kind/v1\NUL" <> legacy
             Identity.MutationController ->
               "prodbox-host-never-sent-unlinked/mutation/v1\NUL" <> legacy
+            Identity.KindController ->
+              "prodbox-host-never-sent-unlinked/kind-family/v1\NUL" <> legacy
+            Identity.KindProbeVerifierController ->
+              "prodbox-host-never-sent-unlinked/kind-verifier/v1\NUL" <> legacy
+            Identity.KindProbeSuccessorController ->
+              "prodbox-host-never-sent-unlinked/kind-successor/v1\NUL" <> legacy
 
 hostPublicationNeverSentParentMatches :: HostPublicationNeverSent -> FileStatus -> Bool
 hostPublicationNeverSentParentMatches (HostPublicationNeverSent (HostPublicationOwner _ _ _ _ _ _ expected _ _ _ _ _ _) _ _) =

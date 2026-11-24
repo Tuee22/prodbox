@@ -1192,6 +1192,20 @@ deploymentScopeSuite = describe "deployment scope coordinates" $ do
             case result of
               Left failure -> expectationFailure (show failure)
               Right projection -> kindKubeconfigContext projection `shouldBe` "kind-prodbox-t-run"
+            snapshotResult <- withKindKubeconfigSnapshot bootstrap $ \snapshotPath -> do
+              (firstExit, before, _) <- readProcessWithExitCode "/usr/bin/cat" [snapshotPath] ""
+              firstExit `shouldBe` ExitSuccess
+              writeAttempt <- try (writeFile snapshotPath "tampered") :: IO (Either IOException ())
+              isLeft writeAttempt `shouldBe` True
+              renameFile path saved
+              writeFile path "replacement"
+              (secondExit, after, _) <- readProcessWithExitCode "/usr/bin/cat" [snapshotPath] ""
+              secondExit `shouldBe` ExitSuccess
+              after `shouldBe` before
+              removeFile path
+              renameFile saved path
+              pure ()
+            snapshotResult `shouldBe` Right ()
             setFileMode path 0o644
             fmap errorOf (readKindKubeconfig bootstrap) `shouldReturn` Just KindKubeconfigFileUnsafe
             setFileMode path 0o600

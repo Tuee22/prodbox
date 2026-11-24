@@ -8,9 +8,9 @@
 > **Purpose**: Actual Vault/MinIO/Broker services boot and recover from retained artifacts; test-only MinIO self-unseal and protected production unlock behave distinctly and preserve the same Vault identity.
 
 **Phase**: 2
-**State**: Complete
+**State**: Active
 **Prerequisites**: Phase 1 complete. No registry service, AWS, public DNS, SES, application platform or later Authority implementation is needed for this bootstrap-owned scope.
-**Acceptance**: A02-01, A02-02, A02-03, A02-04, A02-05 in [acceptance_cases.md](acceptance_cases.md).
+**Acceptance**: A02-01, A02-02, A02-03, A02-04, A02-05, A02-06 in [acceptance_cases.md](acceptance_cases.md).
 **Critical mutations**: M03 in [mutation_cases.md](mutation_cases.md).
 **Owned removals**: L06, L07 in [legacy_tracking_for_deletion.md](legacy_tracking_for_deletion.md).
 **Inherited removals**: B026, B041, B053, B054 in [legacy_tracking_for_deletion.md](legacy_tracking_for_deletion.md).
@@ -542,8 +542,143 @@ cuts over. Those four B rows are therefore Removed for the ordinary path.
 - [x] **P02-T01** — Deploy real MinIO, Vault, Bootstrap Broker and bounded workers from exact pinned local artifacts, independent of the registry and public edge they may later support.
 - [x] **P02-T02** — Separate bootstrap MinIO access from steady-state Vault-backed MinIO policy. Define the exact pre-Vault read capability for the test run’s unlock object; never rely on the sealed Vault to decrypt its only unlock key.
 - [x] **P02-T03** — Implement explicit protected production and test MinIO self-unseal policies. Expose actual direct component status while Broker/Vault/MinIO availability differs. Production cannot load the test policy.
-- [x] **P02-T04** — Implement init/unseal/baseline, retained-generation checks, bounded interruption continuation and local backup/restore for this scope. Do not reinitialize over missing/corrupt/foreign retained identity; report the exact data-loss/recovery condition.
-- [x] **P02-T05** — Exercise actual policy traffic and actual concurrent secret workers within Phase 1’s capacity reservation. Observe workload settlement or durable recoverable ownership on every failure/cancellation.
+Regression found 2026-11-22: `Control/Backup.hs` `treeDigest` hashes only the
+sorted relative paths and file sizes. A disposable file changed from four bytes
+`AAAA` to four bytes `BBBB` produced the same manifest digest, so restore can
+accept content corruption. The earlier case 7 changed the manifest digest and
+did not exercise changed backup content. P02-T04 is reopened; the previous
+Phase 2 evidence remains tied to its original implementation and does not prove
+this adverse case. Repair the content integrity boundary without logging or
+publicly hashing plaintext secrets, add a same-size corruption control, and run
+the real backup/restore scenario, applicable mutations and cumulative gate.
+Phase 3's later work remains incomplete and its dependent evidence must be
+revalidated after this regression is fixed.
+
+Repair in progress (2026-11-22): backup format 2 uses a fresh random key stored
+mode 0600 inside the protected backup and keyed commitments over entry names,
+types and streamed contents. Commitments and the key remain in that private
+backup and are never emitted as evidence; old format 1 cannot establish content
+integrity and restore refuses it without deleting it. The Phase 2 real scenario
+now attempts a same-size content change in a separate backup copy and checks
+that live data remains unchanged. Both changed modules pass a standalone GHC
+typecheck against the installed dependency identities; a complete rebuilt binary
+and the scenario have not yet been validated. The
+key shares the backup's protection and is intended to detect accidental
+corruption, not an attacker able to rewrite both key and backup.
+An isolated synthetic-file invocation of the actual `treeDigest` function
+changed `AAAA` to `BBBB` at the same size and observed distinct commitments
+with the same synthetic key (both invocations exited 0); the commitments were
+not printed. This is a focused regression check, not the real restore case.
+The initial full build failed when its already-built library did not yet export
+the helper imported by the new mutation assertion; an incremental rebuild with
+the current library and test package definition is in progress. The M03c source
+patch and assertion are bound in the mutation catalog, but have not been run.
+The streaming loop was subsequently made strict to avoid accumulating deferred
+commitment updates; its source and mutation digests were updated. The running
+build started before that last edit and must be followed by another incremental
+build before its executable is used as current evidence.
+The synthetic commitment check was repeated against the strict-loop revision:
+the same-size change produced a different commitment, restoring the original
+bytes reproduced the original commitment, and all three invocations exited 0.
+The current executable and unit suite built successfully, and the focused
+backup-content assertion and Phase 2 mutation-binding alignment test passed.
+The implemented `prodbox test init` refused because it observed an RKE2 install
+marker and reports a possible production cluster. The marker was not changed;
+the real A02-06 run and its cleanup are therefore not established by this
+attempt. Investigate the supported isolated test entry and the actual production
+state before any live scenario; do not bypass this guard or alter the production
+installation to obtain a passing test.
+The first current `prodbox dev check` stopped in document lint because this
+phase's reopened state was written as `Active — reopened` instead of the
+recognized `Active`; the phase state has been corrected and the gate must be
+rerun.
+The rerun passed document lint but was stopped during Haskell lint after a
+separate formatter check identified differences in the edited files. Those files
+were formatted and mutation source bindings refreshed; the full gate has not
+yet passed on the formatted revision.
+The repository formatter and targeted HLint both pass on the changed Haskell
+files after formatting. A new full build is running for that revision; earlier
+unit results do not by themselves prove the formatted build or the full gate.
+The current executable's `prodbox dev lint docs` subsequently exited 0; this
+is document lint only, not the full canonical gate.
+The formatted executable and unit suite subsequently built. On that revision,
+the backup integrity assertion and Phase 2 and Phase 3 mutation-binding
+alignment selections passed; all 20 admission-history unit cases also passed.
+The next full canonical gate failed Haskell style lint because the new test
+runner's `find -print` argument triggered the terminal-output token check. The
+runner now uses `find -printf` with the same path output and its formatter check
+passes. A separate full Haskell lint then found the new `BackupIntegrityTests`
+import out of order in `test/unit/Main.hs`; the import was reordered and that
+file's formatter check passed. Rebuild and the full gate must be rerun. Real
+A02-06 and the isolated M03c execution remain outstanding.
+Read-only Docker inspection also found that the mutation executor's pinned node
+image `sha256:152b34af...05e4752d` is absent. No image was imported or pulled;
+M03c remains unrun until its required isolated executor environment is available.
+The unselected `prodbox test run phase-01-mutation` returned "The cumulative
+scenario runner is not implemented yet" rather than invoking the selected
+handler, so it provided no mutation result. The ordinary public dispatch now
+routes that name to the same isolated catalog and refuses unsupported coverage,
+AWS substrate and profile options. The rebuilt public binary refused `--coverage`
+and `--substrate aws` with exit 1, and the default invocation reached the
+catalog's missing-pinned-image refusal with exit 2. No mutant ran; do not count
+either refusal as a kill. The running canonical gate was stopped because its
+source revision changed and must be rerun after the rebuild.
+The refusal is from the legacy topology-driven initializer; the selected-config
+Phase 2 handler is a separate implemented route. Its isolated root, artifact
+bindings and interaction with the retained installation still need to be
+established before concluding whether that route can run safely here.
+Format-1 backups remain retained but need an explicitly scoped recovery or
+migration disposition before P02-T04 can close; they must not be silently
+declared verified or deleted.
+Decision (2026-11-22): the documents require preserving retained recovery
+material and never inferring usable state from missing evidence
+([storage.md](../documents/engineering/storage.md), lines 39–45;
+[lifecycle.md](../documents/engineering/lifecycle.md), lines 16–32). Format 1
+has no independent content commitment, so
+its own metadata cannot prove its contents intact. Retain it unchanged and
+require an independently known-good live source or verified backup for a new
+format-2 backup; if neither exists, keep recovery incomplete under the original
+scope. A future explicit recovery lane must not call the old backup verified
+merely because its paths and sizes match. A real test of this disposition is
+still required.
+
+Implementation update (2026-11-22): the public restore refusal now names the
+retained format-1 backup and the known-good-source/verified-backup requirement.
+The Phase 2 scenario has a separate format-1 refusal and retained-copy control;
+that control has not run. A synthetic unit case exercises `restoreServices`
+against a format-1 manifest and checks both the refusal's recovery input and
+retention. A focused GHC execution against the current library passed both this
+case and the same-size corruption assertion; this is not real-system evidence.
+The later executable/unit build completed, and the rebuilt unit executable
+passed both backup cases and the Phase 2 and 3 mutation-binding alignment
+selections. The full Haskell lint then reported a redundant map in the new
+format-1 test; it was simplified, and that file's formatter and targeted HLint
+checks passed. The canonical binary was refreshed after lint exited. The test
+edit requires an affected rebuild; the full gate and real-system evidence
+remain open.
+The affected unit target was rebuilt after that simplification. Both backup
+integrity cases and the Phase 2 mutation-binding alignment selection passed;
+the canonical gate was rerun on the current code. On 2026-11-22 it exited 0
+with repository documentation/style checks, the warning-clean build and gated
+unit suites complete. The operator binary SHA-256 was
+`2494debab7257741fdd93f126714e3874ce80f706003c5d633a7fdde05998fd9`.
+Its scratch log is `.build/canonical-check-current.log`; it is not durable
+qualification evidence. The note was added after the run. This gate does not
+replace real A02-06 or the isolated M03c run.
+The source and M03c binding changed while an older
+full unit and lint run were still in progress, so neither running result can
+qualify this revision; rebuild and affected checks must be repeated.
+The earlier `prodbox-unit` component reported PASS before the runner continued
+to its other suites; its input revision predates the refusal-message change.
+The overall `prodbox test unit` command later exited 0, but source changes during
+that command mean the result is not attributed to a single current revision.
+Targeted HLint on the subsequently changed backup, scenario runner and mutation
+binding reports no hints. Both current backup and scenario modules also passed
+standalone GHC typechecking against the installed project dependencies; this
+does not establish that the scenario ran.
+
+- [ ] **P02-T04** — Implement init/unseal/baseline, retained-generation checks, bounded interruption continuation and local backup/restore for this scope. Do not reinitialize over missing/corrupt/foreign retained identity; report the exact data-loss/recovery condition.
+- [ ] **P02-T05** — Exercise actual policy traffic and actual concurrent secret workers within Phase 1’s capacity reservation. Observe workload settlement or durable recoverable ownership on every failure/cancellation. Reopened after review of the service gate. On 2026-11-22 the gate was tightened to skip the probe when its attempt write fails and to refuse secret creation unless typed probe cleanup is confirmed and the probe has no primary failure. The probe now records a scope-bound intent and UID under the recovered operation lease, but the service attempt itself is not yet equivalently bound, the fixed probe name does not support a repeat operation, and interruption recovery remains incomplete. Resolve those contracts and revalidate the complete gate before creating secret workers.
 - [x] **P02-T06** — Run secret round-trips, real seal/unseal, wrong input/missing custody/outage cases, kind recreation, direct status and M03. Explicit audited Authority-mediated rotation/PKI/reset features belong to Phase 3 and are not a bootstrap closure dependency.
 
 ## Real acceptance and independent observation
@@ -557,6 +692,7 @@ The linked catalog defines the exact real workflow and observer for each case:
 - [x] **A02-03** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result.
 - [x] **A02-04** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result.
 - [x] **A02-05** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result.
+- [ ] **A02-06** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result.
 
 A result is incomplete if its independent read-back, scope/source binding, worker settlement, or required cleanup is unavailable. Fixture-only provider behavior, source scans, manifest rendering, process exit and old receipts cannot close a real-system claim. Actual input prerequisites are declared above; no acceptance result depends on an unimplemented larger phase.
 
@@ -584,13 +720,13 @@ Update implemented correspondence and generated references as the active slice c
 
 ## Completion record
 
-- [x] All implementation tasks and owned acceptance cases passed.
+- [ ] All implementation tasks and owned acceptance cases passed.
 - [x] Source/binary/image/config identity, independent observations, budgets and evidence availability are recorded without secret values.
-- [x] Required source mutations are killed by intended assertions or carry reviewed equivalence evidence; no invalid/inconclusive substitute is counted.
-- [x] Exact resource/credential/worker cleanup and retained-state obligations are terminal for the declared scope.
+- [ ] Required source mutations are killed by intended assertions or carry reviewed equivalence evidence; no invalid/inconclusive substitute is counted for the current scope.
+- [ ] Exact resource/credential/worker cleanup and retained-state obligations are terminal for the declared scope.
 - [x] Owned legacy removals and documentation/generated-reference updates are complete.
-- [x] Canonical gate and cumulative relevant regressions pass; no hand action is used as qualifying evidence.
+- [ ] Canonical gate and cumulative relevant regressions pass; no hand action is used as qualifying evidence.
 
-All advertised bootstrap cases pass against actual services, original Vault data survives kind recreation, policies and capacity are observed, and no future cloud/Authority adapter substitutes for required evidence.
+Closure requires advertised bootstrap cases against actual services, retained Vault data through kind recreation, and observed policy and capacity evidence without a future cloud/Authority substitute.
 
 Only then change **State** to Complete and update the single README queue with evidence links. If a counterexample appears, preserve it, expand the owned acceptance/mutation case and repair this phase; do not manufacture a future-phase prerequisite or a new decimal queue.

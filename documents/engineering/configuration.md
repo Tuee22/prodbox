@@ -102,6 +102,11 @@ the Docker connection. It reports an unconfirmed submission as unconfirmed;
 neither a record nor a daemon response proves file contents or worker
 settlement. If Docker inventory is unavailable, status still prints the local
 observations, reports the inventory failure and exits nonzero.
+Status also reads any recoverable absence-control journal and its exact
+per-volume removal results. It separately reports a bounded, unsettled Docker
+volume inventory when observable. Neither the local records nor that inventory
+establish cleanup or worker settlement; a missing or unconfirmed record does
+not establish resource absence.
 When the parent kind operation matches, status also checks the local node-image
 intent record. A matching record does not establish that the daemon effect
 completed or that its worker settled; an absent local record is not proof that
@@ -227,6 +232,11 @@ requires observation; setup can compare an existing destination against the
 re-entered exact draft when no pending file is present. A match reports the
 observed content only, with publication origin unverified. Setup does not
 overwrite a competing specification.
+For isolated test automation, `prodbox --config PATH config setup --fresh-test`
+accepts the same non-secret prompted coordinates but enrolls only a fresh test
+root. It refuses production, existing roots and incomplete enrollments without
+adopting them. If configuration publication fails after root enrollment, the
+root is retained and its result must be recovered explicitly.
 After setup, `prodbox --config PATH control import-artifact kind-tool SOURCE`
 and `control import-artifact node-archive SOURCE` retain the declared files
 from absolute local paths. The command checks the configured digest and size,

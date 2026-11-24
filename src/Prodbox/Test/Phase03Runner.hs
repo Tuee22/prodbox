@@ -28,6 +28,7 @@ import Prodbox.Config.BootstrapProjection
   , bootstrapKindTool
   , bootstrapNodeArtifact
   , bootstrapRootGeneration
+  , bootstrapRuntimeSocket
   , bootstrapScope
   , readBootstrapProjection
   )
@@ -104,11 +105,12 @@ scenario selected projection = do
   executable <- getExecutablePath
   binaryBytes <- ByteString8.readFile executable
   sourceResult <- captureSourceIdentity "." []
-  randomBytes <- readRandomBytes
+  randomResult <- readRandomBytes
   started <- getMonotonicTimeNSec
-  case sourceResult of
-    Left failure -> writeOutputLine ("source identity refused: " ++ show failure) >> pure (ExitFailure 2)
-    Right source -> do
+  case (sourceResult, randomResult) of
+    (Left failure, _) -> writeOutputLine ("source identity refused: " ++ show failure) >> pure (ExitFailure 2)
+    (_, Left failure) -> writeOutputLine ("scenario entropy refused: " ++ failure) >> pure (ExitFailure 2)
+    (Right source, Right randomBytes) -> do
       let second = 1000000000
           budget = ScenarioBudget (started + 1200 * second) (started + 1500 * second) (1024 * 1048576) 1200000000 0
           artifacts =
@@ -169,16 +171,16 @@ scenario selected projection = do
               else pure []
       -- Case 1: a never-admitted deployment reports truthfully and deletes twice.
       reconcile1 <- public ["control", "reconcile"]
-      ready1 <- independentClusterReady root cluster
+      ready1 <- independentClusterReady (bootstrapRuntimeSocket projection) root cluster
       status1 <- public ["control", "lifecycle-status"]
       authorityAbsentAfterStatus <- not <$> doesDirectoryExist (root </> "authority")
       ordinary1 <- public ["delete", "--yes"]
       ordinary2 <- public ["delete", "--yes"]
-      readyAfterOrdinary <- independentClusterReady root cluster
+      readyAfterOrdinary <- independentClusterReady (bootstrapRuntimeSocket projection) root cluster
       authorityAbsentAfterOrdinary <- not <$> doesDirectoryExist (root </> "authority")
       delete1 <- public ["control", "delete", "--yes"]
       delete2 <- public ["control", "delete", "--yes"]
-      absent <- independentAbsence cluster
+      absent <- independentAbsence (bootstrapRuntimeSocket projection) cluster
       retained <- independentHostData root generation (bootstrapNodeArtifact projection)
       case1Done <- getMonotonicTimeNSec
       -- Case 2: a durable journal, read directly, drives the verdict.
@@ -398,7 +400,7 @@ scenario selected projection = do
       -- harness left unresolved, delete through the public command and observe.
       _ <- appendSettlement root "op-b"
       cleanup3 <- public ["control", "delete", "--yes"]
-      absent3 <- independentAbsence cluster
+      absent3 <- independentAbsence (bootstrapRuntimeSocket projection) cluster
       retained3 <- independentHostData root generation (bootstrapNodeArtifact projection)
       case3Done <- getMonotonicTimeNSec
       let case1 =

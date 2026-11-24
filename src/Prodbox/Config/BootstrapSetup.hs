@@ -3,7 +3,7 @@
 
 -- | Interactive authoring of a new, non-secret bootstrap document. This can
 -- enroll a fresh test root; it does not install artifacts or authorize a cluster.
-module Prodbox.Config.BootstrapSetup (runSelectedBootstrapSetup) where
+module Prodbox.Config.BootstrapSetup (runSelectedBootstrapSetup, runSelectedFreshTestBootstrapSetup) where
 
 import Control.Exception (IOException, try)
 import Data.Text qualified as Text
@@ -23,6 +23,32 @@ import Prodbox.Config.SelectedDhall (SelectedDhallPublication (..))
 import System.Exit (ExitCode (..))
 import System.IO (hFlush, isEOF, stdout)
 import Text.Read (readMaybe)
+
+-- | The test harness may create a new test identity, but it must never adopt
+-- an existing or incomplete root, even if that root matches its draft.
+runSelectedFreshTestBootstrapSetup :: FilePath -> PlanOptions -> IO ExitCode
+runSelectedFreshTestBootstrapSetup selected options
+  | dryRun options || planFile options /= Nothing =
+      refuse "Fresh test setup does not support plan options."
+  | otherwise = do
+      attempted <- try readDraft
+      case attempted of
+        Left (_ :: IOException) -> refuse "Fresh test bootstrap input ended or could not be read."
+        Right (Left failure) -> refuse failure
+        Right (Right draft)
+          | draftEnvironment draft /= "test" -> refuse "Fresh test setup accepts only a test identity."
+          | otherwise -> do
+              enrolled <- prepareBootstrapRoot selected draft
+              case enrolled of
+                Right FreshScopePrepared -> do
+                  published <- publishBootstrapDraft selected draft
+                  case published of
+                    Right () -> writeOutputLine "Fresh test root and bootstrap configuration published." >> pure ExitSuccess
+                    Left failure -> refuse ("Fresh test root retained after publication failure: " ++ show failure)
+                Right other -> refuse ("Fresh test root was not created: " ++ show other)
+                Left failure -> refuse ("Fresh test root was not created: " ++ show failure)
+ where
+  refuse message = writeDiagnosticLine message >> pure (ExitFailure 1)
 
 runSelectedBootstrapSetup :: FilePath -> PlanOptions -> IO ExitCode
 runSelectedBootstrapSetup selected options

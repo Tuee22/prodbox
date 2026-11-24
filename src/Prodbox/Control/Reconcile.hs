@@ -12,7 +12,12 @@ module Prodbox.Control.Reconcile
   ( ReconcileOutcome (..)
   , NetworkAttempt
   , reconcileNewPrerequisites
+  , reconcileFamilyPrerequisites
+  , prepareNewOwnerFamilyOperation
   , kindUlaSubnet
+  , imageSubmissionAccepted
+  , randomOperationId
+  , ImageAttemptFailure (..)
   ) where
 
 import Control.Exception (IOException, try)
@@ -33,6 +38,8 @@ import Prodbox.Config.BootstrapProjection
   , bootstrapRootGeneration
   , bootstrapRuntimeSocket
   , bootstrapScope
+  , decodeOptionalBootstrapSource
+  , renderBootstrapProjection
   )
 import Prodbox.Config.DeploymentScope
   ( FreshScopeResult (..)
@@ -42,6 +49,10 @@ import Prodbox.Config.DeploymentScope
 import Prodbox.Config.KindPlan (KindNodeCreateInput (..), kindNodeRunArguments)
 import Prodbox.Control.DockerConnectedInfo
   ( DockerConnectedInfoResult (..)
+  , DockerImageLoadResult (..)
+  , DockerImageLoadStream (..)
+  , DockerImageReadback (..)
+  , DockerImageSubmissionObservation (..)
   , DockerNetworkCreateResult (..)
   , DockerNodeVarCreateResult (..)
   , DockerNodeVarVolumeObservation (..)
@@ -59,7 +70,9 @@ import Prodbox.Control.KindDockerWorkerPrepare
 import Prodbox.Control.KindLease
   ( KindOperationOutcome (..)
   , withRecoveredKindOperation
+  , withNewKindOwnerFamilyOperation
   )
+import Prodbox.Control.KindIntent (KindIntentObservation (KindIntentMatches), observeKindOwnerFamilyIntent)
 import Prodbox.Control.KindNetworkIntent
   ( KindNetworkIntentWrite (..)
   , mkKindNetworkIntent
@@ -69,7 +82,7 @@ import Prodbox.Control.KindNetworkReceipt (NetworkTransport (..))
 import Prodbox.Control.KindNetworkRecovery
   ( KindNetworkAttemptAction (..)
   , KindNetworkRecordedTransport (..)
-  , withNewConnectedKindNetworkRecordedAttempt
+  , withNewConnectedKindNetworkRecordedAttemptGuarded
   )
 import Prodbox.Control.KindNodeCreateIntent
   ( KindNodeCreateIntentWrite (..)
@@ -83,10 +96,20 @@ import Prodbox.Control.KindNodeVolumeIntent
   )
 import Prodbox.Control.KindNodeVolumeOperation
   ( KindNodeVolumeAction (..)
-  , withNewConnectedKindNodeVolumeAttempt
+  , withNewConnectedKindNodeVolumeAttemptGuarded
   )
-import Prodbox.Control.NodeArchive (VerifiedNodeArchive (..))
-import Prodbox.Control.NodeImageOperation (withNewConnectedNodeImageRecordedAttempt)
+import Prodbox.Control.NodeArchive (InspectedArchiveResult (..), VerifiedNodeArchive (..))
+import Prodbox.Control.NodeArchiveStage (StagedNodeResult (..))
+import Prodbox.Control.NodeImageIntent (NodeImageResultWrite (..))
+import Prodbox.Control.NodeImageOperation
+  ( NodeImageAttemptAction (..)
+  , NodeImageConnectedObservation (..)
+  , NodeImageConnectionResult (..)
+  , NodeImagePreparation (..)
+  , NodeImageRecordedSubmission (..)
+  , withNewConnectedNodeImageRecordedAttempt
+  , withRecoveredConnectedNodeImageRecordedFamilyAttempt
+  )
 import Prodbox.Control.Recreate (ArchiveOutcome (..), archiveCompletedOperation)
 import Prodbox.Control.Status (observeImageId)
 import System.IO (IOMode (ReadMode), withBinaryFile)
@@ -98,6 +121,10 @@ type NetworkAttempt =
 data ReconcileOutcome
   = ReconcileRootRefused !FreshScopeResult
   | ReconcileCapacityRefused !String
+  | ReconcileFamilyAdmissionRefused
+  | ReconcileFamilyConfigurationRefused
+  | ReconcileFamilyOperationReady !String
+  | ReconcileFamilyIntentRefused !String
   | ReconcileDaemonUnobserved !String
   | ReconcileNetworkProposalInvalid
   | ReconcileNetworkProposalRefused !String
@@ -111,8 +138,18 @@ data ReconcileOutcome
   | ReconcileEntropyUnavailable
   | ReconcileArchiveRefused !String
   | ReconcileRecreated !String ![String]
-  | ReconcileImageAttempt !String !String
+  | ReconcileImageAttempt !String !String !ImageAttemptFailure
   | ReconcileImageNotObserved !String !String
+  deriving (Eq, Show)
+
+-- Closed diagnostic only: no daemon response text or artifact content is
+-- retained by the family result.
+data ImageAttemptFailure
+  = ImageAttemptResultUnconfirmed
+  | ImageAttemptReadbackUnconfirmed
+  | ImageAttemptTransportUnconfirmed
+  | ImageAttemptClosingUnconfirmed
+  | ImageAttemptOther
   deriving (Eq, Show)
 
 -- | Subnet kind itself proposes for a network name on its first attempt: a
@@ -136,6 +173,50 @@ randomOperationId = do
  where
   hex2 byte = let text = showHex byte "" in if length text == 1 then '0' : text else text
 
+-- A pre-existing image cannot turn a failed or uncertain load into success.
+-- Even this accepted transport is not a proof of daemon worker settlement.
+imageSubmissionAccepted :: NodeImageRecordedSubmission -> Bool
+imageSubmissionAccepted (NodeImageRecordedSubmission
+  (DockerImageSubmissionObservation
+    (DockerImageLoadReply 200 (DockerImageLoadMessages count))
+    (DockerImageReadbackStable (Right ImageIdObserved {})))
+  NodeImageResultRecorded) = count > 0
+imageSubmissionAccepted _ = False
+
+-- Establish only the owner-first operation before publishing its controller.
+-- Image, network and volume effects are performed later by the family worker.
+prepareNewOwnerFamilyOperation :: IO (Maybe String) -> BootstrapProjection -> IO ReconcileOutcome
+prepareNewOwnerFamilyOperation admit bootstrap = case renderBootstrapProjection bootstrap of
+  Nothing -> pure ReconcileFamilyConfigurationRefused
+  Just source -> do
+    decoded <- decodeOptionalBootstrapSource "kind-family-settings.dhall" source
+    if decoded /= Right (Just bootstrap) then pure ReconcileFamilyConfigurationRefused else do
+      prepared <- prepareFreshScope (bootstrapScope bootstrap) (Text.unpack (bootstrapRootGeneration bootstrap))
+      case prepared of
+        FreshScopePrepared -> start
+        FreshScopeAlreadyExists -> start
+        other -> pure (ReconcileRootRefused other)
+ where
+  start = do
+    refusal <- admit
+    case refusal of
+      Just reason -> pure (ReconcileCapacityRefused reason)
+      Nothing -> do
+        archived <- archiveCompletedOperation bootstrap
+        case archived of
+          ArchiveNothingRecorded -> begin
+          ArchiveMoved _ _ -> begin
+          other -> pure (ReconcileArchiveRefused (show other))
+  begin = do
+    generated <- randomOperationId
+    case generated of
+      Nothing -> pure ReconcileEntropyUnavailable
+      Just operation -> do
+        written <- withNewKindOwnerFamilyOperation bootstrap operation id
+        pure $ case written of
+          KindOperationCallbackReturned True -> ReconcileFamilyOperationReady operation
+          other -> ReconcileFamilyIntentRefused (show other)
+
 -- | Image, network, then node var volume for one new operation. Each later
 -- step runs only after an independent observation of the earlier one; any
 -- other outcome is returned and every durable record is retained.
@@ -143,15 +224,43 @@ randomOperationId = do
 -- retained root's device) and before any archive, image, network, volume or
 -- node effect; a refusal leaves only the root and its generation record.
 reconcileNewPrerequisites :: IO (Maybe String) -> BootstrapProjection -> IO ReconcileOutcome
-reconcileNewPrerequisites admit bootstrap = do
-  prepared <-
-    prepareFreshScope (bootstrapScope bootstrap) (Text.unpack (bootstrapRootGeneration bootstrap))
-  case prepared of
-    FreshScopePrepared -> start
-    FreshScopeAlreadyExists -> start
-    other -> pure (ReconcileRootRefused other)
+reconcileNewPrerequisites admit bootstrap = reconcilePrerequisitesUsing Nothing admit bootstrap
+
+-- The managed family already owns the operation and its admission. No new
+-- operation or host-side controller is created by this worker path.
+reconcileFamilyPrerequisites
+  :: BootstrapProjection -> String -> (IO Bool -> IO Bool) -> IO ReconcileOutcome
+reconcileFamilyPrerequisites bootstrap operation admission =
+  do
+    admitted <- withRecoveredKindOperation bootstrap operation $ \stable -> do
+      before <- admission stable
+      protocol <- observeKindOwnerFamilyIntent bootstrap
+      after <- admission stable
+      pure (before && protocol == KindIntentMatches operation && after)
+    if admitted == KindOperationCallbackReturned True
+      then reconcilePrerequisitesUsing (Just (operation, admission)) (pure Nothing) bootstrap
+      else pure ReconcileFamilyAdmissionRefused
+
+reconcilePrerequisitesUsing
+  :: Maybe (String, IO Bool -> IO Bool) -> IO (Maybe String) -> BootstrapProjection -> IO ReconcileOutcome
+reconcilePrerequisitesUsing selected admit bootstrap = case selected of
+  Just (operation, _) -> image operation
+  Nothing -> do
+    prepared <-
+      prepareFreshScope (bootstrapScope bootstrap) (Text.unpack (bootstrapRootGeneration bootstrap))
+    case prepared of
+      FreshScopePrepared -> start
+      FreshScopeAlreadyExists -> start
+      other -> pure (ReconcileRootRefused other)
  where
   socket = bootstrapRuntimeSocket bootstrap
+  admitted stable = case selected of
+    Nothing -> stable
+    Just (operation, admission) -> do
+      before <- admission stable
+      protocol <- observeKindOwnerFamilyIntent bootstrap
+      after <- admission stable
+      pure (before && protocol == KindIntentMatches operation && after)
   start = do
     refusal <- admit
     case refusal of
@@ -170,15 +279,54 @@ reconcileNewPrerequisites admit bootstrap = do
       Just operation -> image operation
   image operation = do
     captured <- newIORef ""
-    loaded <- withNewConnectedNodeImageRecordedAttempt bootstrap operation $ \verified _ size descriptor session stable -> do
+    let submit = case selected of
+          Nothing -> withNewConnectedNodeImageRecordedAttempt bootstrap operation
+          Just _ -> withRecoveredConnectedNodeImageRecordedFamilyAttempt bootstrap operation admitted
+    loaded <- submit $ \verified _ size descriptor session stable -> do
       writeIORef captured (nodeConfigDigest verified)
       loadAndObserveDockerSessionImage session descriptor size (nodeConfigDigest verified) stable
     configDigest <- readIORef captured
-    observed <-
-      if null configDigest then pure ImageIdUnobservable else observeImageId socket configDigest
-    case observed of
-      ImageIdObserved {} -> network operation configDigest
-      _ -> pure (ReconcileImageNotObserved operation (show loaded))
+    case loaded of
+      KindOperationCallbackReturned
+        (InspectedArchiveCompleted
+          (StagedNodeCompleted
+            (NodeImagePreparationCompleted
+              (NodeImageConnectedObserved
+                (DockerPeerCompleted
+                  (DockerConnectedInfoCompleted
+                    (NodeImageConnectionReady (NodeImageAttemptActionReturned submission))))))))
+        | imageSubmissionAccepted submission -> do
+            observed <- if null configDigest then pure ImageIdUnobservable else observeImageId socket configDigest
+            case observed of
+              ImageIdObserved {} -> network operation configDigest
+              _ -> pure (ReconcileImageNotObserved operation (show observed))
+      _ -> pure (ReconcileImageAttempt operation (show loaded) (failureStage loaded))
+  failureStage loaded = case loaded of
+    KindOperationRootChanged {} -> ImageAttemptClosingUnconfirmed
+    KindOperationUnlockFailed {} -> ImageAttemptClosingUnconfirmed
+    KindOperationScopeCleanupFailed {} -> ImageAttemptClosingUnconfirmed
+    KindOperationCallbackReturned (InspectedArchiveChanged _) -> ImageAttemptClosingUnconfirmed
+    KindOperationCallbackReturned (InspectedArchiveUnconfirmedAfter _ _) -> ImageAttemptClosingUnconfirmed
+    KindOperationCallbackReturned (InspectedArchiveCompleted (StagedNodeChanged _)) -> ImageAttemptClosingUnconfirmed
+    KindOperationCallbackReturned (InspectedArchiveCompleted (StagedNodeCompleted (NodeImagePreparationChangedAfter _))) -> ImageAttemptClosingUnconfirmed
+    KindOperationCallbackReturned (InspectedArchiveCompleted (StagedNodeCompleted
+      (NodeImagePreparationCompleted (NodeImageConnectedObserved (DockerPeerChanged _))))) -> ImageAttemptClosingUnconfirmed
+    KindOperationCallbackReturned (InspectedArchiveCompleted (StagedNodeCompleted
+      (NodeImagePreparationCompleted (NodeImageConnectedObserved (DockerPeerCompleted
+        (DockerConnectedInfoCompleted (NodeImageConnectionChangedAfter _))))))) -> ImageAttemptClosingUnconfirmed
+    KindOperationCallbackReturned (InspectedArchiveCompleted (StagedNodeCompleted
+      (NodeImagePreparationCompleted (NodeImageConnectedObserved (DockerPeerCompleted
+        (DockerConnectedInfoCompleted (NodeImageConnectionReady (NodeImageAttemptActionChangedAfter _)))))))) -> ImageAttemptClosingUnconfirmed
+    KindOperationCallbackReturned (InspectedArchiveCompleted (StagedNodeCompleted
+      (NodeImagePreparationCompleted (NodeImageConnectedObserved (DockerPeerCompleted
+        (DockerConnectedInfoCompleted (NodeImageConnectionReady (NodeImageAttemptActionReturned
+          (NodeImageRecordedSubmission (DockerImageSubmissionObservation transport readback) recorded))))))))) ->
+            if recorded /= NodeImageResultRecorded then ImageAttemptResultUnconfirmed else case transport of
+              DockerImageLoadReply 200 (DockerImageLoadMessages count) | count > 0 -> case readback of
+                DockerImageReadbackStable (Right ImageIdObserved {}) -> ImageAttemptOther
+                _ -> ImageAttemptReadbackUnconfirmed
+              _ -> ImageAttemptTransportUnconfirmed
+    _ -> ImageAttemptOther
   network operation configDigest = do
     daemon <- observeDockerDaemon socket
     case daemon of
@@ -191,10 +339,10 @@ reconcileNewPrerequisites admit bootstrap = do
           Nothing -> pure ReconcileNetworkProposalInvalid
           Just intent -> do
             recorded <- withRecoveredKindOperation bootstrap operation $ \stable ->
-              recordKindNetworkIntent bootstrap intent stable
+              recordKindNetworkIntent bootstrap intent (admitted stable)
             case recorded of
               KindOperationCallbackReturned NetworkIntentRecorded -> do
-                created <- withNewConnectedKindNetworkRecordedAttempt bootstrap operation $ \_ session stable ->
+                created <- withNewConnectedKindNetworkRecordedAttemptGuarded bootstrap operation admitted $ \_ session stable ->
                   createDockerSessionKindNetwork session bootstrap intent stable
                 case createdNetworkId created of
                   Just networkId -> volume operation configDigest networkId
@@ -207,10 +355,10 @@ reconcileNewPrerequisites admit bootstrap = do
       Nothing -> pure (ReconcileVolumeProposalInvalid operation)
       Just intent -> do
         recorded <- withRecoveredKindOperation bootstrap operation $ \stable ->
-          recordKindNodeVolumeIntent bootstrap intent stable
+          recordKindNodeVolumeIntent bootstrap intent (admitted stable)
         case recorded of
           KindOperationCallbackReturned NodeVolumeIntentRecorded -> do
-            created <- withNewConnectedKindNodeVolumeAttempt bootstrap operation $ \session stable ->
+            created <- withNewConnectedKindNodeVolumeAttemptGuarded bootstrap operation admitted $ \session stable ->
               createDockerSessionNodeVarVolume session bootstrap operation stable
             case created of
               KindOperationCallbackReturned
@@ -236,11 +384,11 @@ reconcileNewPrerequisites admit bootstrap = do
       Nothing -> pure (ReconcileNodeProposalInvalid operation)
       Just intent -> do
         recorded <- withRecoveredKindOperation bootstrap operation $ \stable ->
-          recordKindNodeCreateIntent bootstrap intent stable
+          recordKindNodeCreateIntent bootstrap intent (admitted stable)
         case recorded of
           KindOperationCallbackReturned NodeCreateIntentRecorded -> do
             prepared <-
-              withRecoveredKindOperation bootstrap operation (prepareKindDockerWorkerPaths bootstrap operation)
+              withRecoveredKindOperation bootstrap operation (prepareKindDockerWorkerPaths bootstrap operation . admitted)
             case prepared of
               KindOperationCallbackReturned KindDockerWorkerPrepared -> pure (ReconcileNodeReady operation)
               other -> pure (ReconcileNodeProposal operation ("worker paths: " <> show other))

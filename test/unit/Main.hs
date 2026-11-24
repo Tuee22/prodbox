@@ -45,6 +45,7 @@ import AwsSubstrateProfile (awsSubstrateProfileSuite)
 import AwsTestCanary (awsTestCanarySuite)
 import AwsTestCanaryExecution (awsTestCanaryExecutionSuite)
 import AwsWaitPolling (awsWaitPollingSuite)
+import BackupIntegrityTests (backupIntegritySuite)
 import BootstrapBrokerClient (bootstrapBrokerClientSuite)
 import BootstrapBrokerCustody (bootstrapBrokerCustodySuite)
 import BootstrapBrokerEngine (bootstrapBrokerEngineSuite)
@@ -532,6 +533,8 @@ import MeasuredProfile (measuredProfileSuite)
 import MinioRollout (minioRolloutSuite)
 import ModelBCasTransportAdapter (modelBCasTransportAdapterSuite)
 import NarrowingErrorTextTests (narrowingErrorTextSuite)
+import NodeRegistryManifestTests (nodeRegistryManifestSuite)
+import NodeRegistryPreparationTests (nodeRegistryPreparationSuite)
 import Numeric.Natural (Natural)
 import ObjectStoreNative (objectStoreNativeSuite)
 import OneShotAttempt (oneShotAttemptSuite)
@@ -3601,6 +3604,9 @@ unitSuite = do
   qualificationSourceIdentitySuite
   scenarioEvidenceSuite
   admissionHistorySuite
+  backupIntegritySuite
+  nodeRegistryManifestSuite
+  nodeRegistryPreparationSuite
   awsLifecycleDrillLedgerSuite
   sealedConstructorsSuite
   qualificationCreateInterruptedCounterexampleSuite
@@ -7468,6 +7474,11 @@ unitSuite = do
       parseArgs ["config", "setup"]
         `shouldBe` Right
           (Options False Nothing (RunNative (NativeConfig (ConfigSetup (PlanOptions False Nothing)))))
+
+    it "routes fresh test setup to its exclusive public handler" $ do
+      parseArgs ["config", "setup", "--fresh-test"]
+        `shouldBe` Right
+          (Options False Nothing (RunNative (NativeConfig (ConfigSetupFreshTest (PlanOptions False Nothing)))))
 
     it "routes aws policy to the native Haskell runtime" $ do
       parseArgs ["aws", "policy", "--tier", "full"]

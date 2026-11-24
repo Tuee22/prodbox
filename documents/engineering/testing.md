@@ -11,14 +11,25 @@
 
 `test run NAME` selects a typed scenario from one registry; unit, CLI, integration, mutation, fault and aggregate scenarios share context/evidence/cleanup ownership. The harness drives the actual public production implementation. No second install/provision/cleanup implementation can pass while the operator command remains broken.
 
-The current named `unit`, `env`, and `cli` routes select existing local test
-suites; they do not yet implement the target cumulative scenario/evidence
-runner. The CLI suite contains legacy lifecycle fixtures and refuses to start
+The named `unit`, `env`, `cli`, and `evidence` routes select existing local
+test suites. The `phase-01` route is under active development: it prepares a
+fresh test identity and pinned inputs, then drives the Phase 1 scenario; its
+automatic preparation and real lifecycle have not yet completed acceptance.
+The CLI suite contains legacy lifecycle fixtures and refuses to start
 when an RKE2 installation marker exists or cannot be observed. The local routes
 refuse unsupported coverage and AWS-substrate options and use a limited child
 environment; that environment is not an operating-system sandbox. `test list`
 reports these built-in local routes and identifies topology-defined suites as a
-separate legacy source; it does not yet list the target scenario catalog.
+separate legacy source; it does not yet list the complete target scenario catalog.
+`test status RUN_ID` currently reads retained local mutation-campaign records
+for that exact run. It reports incomplete because Docker state, worker
+settlement and workspace cleanup are not yet observed by that path; it does
+not remove resources or establish a successful test result. A self-consistent
+retained launch may differ from the current command; status reports that
+difference without claiming to authenticate the historical source.
+New mutation campaigns also retain a source-bound creation record before any
+snapshot or container request. Status identifies a missing, unsafe or mismatched
+record as incomplete; the record does not establish worker or resource absence.
 
 Every acceptance case declares input/context, scope, real prerequisites, allowed resources, commands, expected observations, adverse cases, cleanup, numerical owner and artifact identity. Tests may use completed earlier phases and external prerequisites, never an unimplemented later feature hidden behind a fake. Planned/skipped later cases do not count as passed. [Cases](../../DEVELOPMENT_PLAN/acceptance_cases.md)
 

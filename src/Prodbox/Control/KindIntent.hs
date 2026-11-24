@@ -8,7 +8,12 @@ module Prodbox.Control.KindIntent
   ( KindIntentResult (..)
   , KindIntentObservation (..)
   , recordKindIntent
+  , recordKindFamilyIntent
+  , recordKindOwnerFamilyIntent
   , observeKindIntent
+  , observeKindFamilyIntent
+  , observeKindOwnerFamilyIntent
+  , observeKindExternalFamilyIntent
   , recordKindVolumeIntent
   , observeKindVolumeIntent
   )
@@ -94,10 +99,29 @@ data KindIntentObservation
   | KindIntentObservationUnobservable
   deriving (Eq, Show)
 
+data IntentProtocol = LegacyIntent | FamilyIntent | OwnerFamilyIntent
+  deriving (Eq)
+
+data IntentSelection = AnyIntent | AnyFamilyIntent | OwnerFamilyOnly | ExternalFamilyOnly
+  deriving (Eq)
+
 -- | Independently observe a pending record. A matching record is evidence of
 -- its stored bytes, not a permit, completed operation, or proof of absence.
 observeKindIntent :: BootstrapProjection -> IO KindIntentObservation
 observeKindIntent bootstrap = observeKindIntentFor bootstrap Nothing
+
+-- A family intent is written as the original intent, not inferred from the
+-- absence of legacy records. Older readers reject its different schema.
+observeKindFamilyIntent :: BootstrapProjection -> IO KindIntentObservation
+observeKindFamilyIntent bootstrap = observeKindIntentForMode bootstrap Nothing AnyFamilyIntent
+
+-- This protocol declares that all prerequisite effects belong to the
+-- submitted family; family-v1 does not make that claim.
+observeKindOwnerFamilyIntent :: BootstrapProjection -> IO KindIntentObservation
+observeKindOwnerFamilyIntent bootstrap = observeKindIntentForMode bootstrap Nothing OwnerFamilyOnly
+
+observeKindExternalFamilyIntent :: BootstrapProjection -> IO KindIntentObservation
+observeKindExternalFamilyIntent bootstrap = observeKindIntentForMode bootstrap Nothing ExternalFamilyOnly
 
 -- | Verify an exact volume intent against the requested scope and coordinates.
 observeKindVolumeIntent :: BootstrapProjection -> KindVolume -> IO KindIntentObservation
@@ -106,7 +130,10 @@ observeKindVolumeIntent bootstrap volume
   | otherwise = observeKindIntentFor bootstrap (Just volume)
 
 observeKindIntentFor :: BootstrapProjection -> Maybe KindVolume -> IO KindIntentObservation
-observeKindIntentFor bootstrap expectedVolume = do
+observeKindIntentFor bootstrap expectedVolume = observeKindIntentForMode bootstrap expectedVolume AnyIntent
+
+observeKindIntentForMode :: BootstrapProjection -> Maybe KindVolume -> IntentSelection -> IO KindIntentObservation
+observeKindIntentForMode bootstrap expectedVolume selection = do
   result <- withScopeRootDescriptor scope $ \root sameRoot -> do
     attempted <- try (inspect root sameRoot)
     pure $
@@ -182,11 +209,18 @@ observeKindIntentFor bootstrap expectedVolume = do
       Left _ -> KindIntentInvalid
       Right operationId
         | not (validRootGeneration operationId) -> KindIntentInvalid
-        | Aeson.decodeStrict' (kindIntentBytes bootstrap operationId rootStatus expectedVolume) == Just value ->
+        | selection /= ExternalFamilyOnly, expectedVolume == Nothing
+        , Aeson.decodeStrict' (kindIntentBytes bootstrap operationId rootStatus Nothing OwnerFamilyIntent) == Just value ->
             KindIntentMatches operationId
-        | Nothing <- expectedVolume
+        | selection /= OwnerFamilyOnly, expectedVolume == Nothing
+        , Aeson.decodeStrict' (kindIntentBytes bootstrap operationId rootStatus Nothing FamilyIntent) == Just value ->
+            KindIntentMatches operationId
+        | selection == AnyIntent
+        , Aeson.decodeStrict' (kindIntentBytes bootstrap operationId rootStatus expectedVolume LegacyIntent) == Just value ->
+            KindIntentMatches operationId
+        | selection == AnyIntent, Nothing <- expectedVolume
         , Right candidate <- recordedVolume value
-        , Aeson.decodeStrict' (kindIntentBytes bootstrap operationId rootStatus (Just candidate))
+        , Aeson.decodeStrict' (kindIntentBytes bootstrap operationId rootStatus (Just candidate) LegacyIntent)
             == Just value ->
             KindIntentVolumeMatches operationId candidate
         | otherwise -> KindIntentConflict
@@ -222,21 +256,27 @@ sameVersion before after =
 -- interpreted as a matching operation; interrupted creation remains explicit
 -- for a future recovery handler. No external effect is authorized here.
 recordKindIntent :: BootstrapProjection -> String -> IO KindIntentResult
-recordKindIntent bootstrap operationId = recordKindIntentFor bootstrap operationId Nothing
+recordKindIntent bootstrap operationId = recordKindIntentFor bootstrap operationId Nothing LegacyIntent
+
+recordKindFamilyIntent :: BootstrapProjection -> String -> IO KindIntentResult
+recordKindFamilyIntent bootstrap operationId = recordKindIntentFor bootstrap operationId Nothing FamilyIntent
+
+recordKindOwnerFamilyIntent :: BootstrapProjection -> String -> IO KindIntentResult
+recordKindOwnerFamilyIntent bootstrap operationId = recordKindIntentFor bootstrap operationId Nothing OwnerFamilyIntent
 
 -- | Record the exact volume before any directory preparation.
 recordKindVolumeIntent :: BootstrapProjection -> String -> KindVolume -> IO KindIntentResult
 recordKindVolumeIntent bootstrap operationId volume
   | not (volumeMatchesBootstrap bootstrap volume) = pure KindIntentWrongVolume
-  | otherwise = recordKindIntentFor bootstrap operationId (Just volume)
+  | otherwise = recordKindIntentFor bootstrap operationId (Just volume) LegacyIntent
 
 volumeMatchesBootstrap :: BootstrapProjection -> KindVolume -> Bool
 volumeMatchesBootstrap bootstrap volume =
   kindVolumeScope volume == bootstrapScope bootstrap
     && kindVolumeGeneration volume == Text.unpack (bootstrapRootGeneration bootstrap)
 
-recordKindIntentFor :: BootstrapProjection -> String -> Maybe KindVolume -> IO KindIntentResult
-recordKindIntentFor bootstrap operationId expectedVolume
+recordKindIntentFor :: BootstrapProjection -> String -> Maybe KindVolume -> IntentProtocol -> IO KindIntentResult
+recordKindIntentFor bootstrap operationId expectedVolume protocol
   | not (validRootGeneration operationId) = pure KindIntentInvalidOperation
   | otherwise = do
       outcome <- withScopeRootDescriptor scope $ \root sameRoot -> do
@@ -271,7 +311,7 @@ recordKindIntentFor bootstrap operationId expectedVolume
         if generationState /= Right ScopeGenerationMatches
           then pure KindIntentWrongGeneration
           else do
-            let contents = kindIntentBytes bootstrap operationId rootStatus expectedVolume
+            let contents = kindIntentBytes bootstrap operationId rootStatus expectedVolume protocol
             mask $ \restore -> do
               created <- try (Posix.openFdAt (Just root) name Posix.WriteOnly fileFlags)
               case created of
@@ -325,12 +365,12 @@ recordKindIntentFor bootstrap operationId expectedVolume
                     (_ :: Either IOException Bool) -> KindIntentIncomplete
 
 kindIntentBytes
-  :: BootstrapProjection -> String -> FileStatus -> Maybe KindVolume -> ByteString.ByteString
-kindIntentBytes bootstrap operationId status expectedVolume =
+  :: BootstrapProjection -> String -> FileStatus -> Maybe KindVolume -> IntentProtocol -> ByteString.ByteString
+kindIntentBytes bootstrap operationId status expectedVolume protocol =
   LazyByteString.toStrict $
     Aeson.encode $
       Aeson.object $
-        [ "schema_version" Aeson..= (maybe (1 :: Int) (const 2) expectedVolume)
+        [ "schema_version" Aeson..= (case protocol of LegacyIntent -> maybe (1 :: Int) (const 2) expectedVolume; FamilyIntent -> 3; OwnerFamilyIntent -> 4)
         , "operation_id" Aeson..= operationId
         , "operation" Aeson..= ("kind-reconcile" :: String)
         , "cluster" Aeson..= scopeKindName scope
@@ -344,6 +384,10 @@ kindIntentBytes bootstrap operationId status expectedVolume =
         ]
           ++ maybe [] (\tool -> ["kind_tool" Aeson..= artifactValue tool]) (bootstrapKindTool bootstrap)
           ++ maybe [] (\volume -> ["volume" Aeson..= volumeValue volume]) expectedVolume
+          ++ case protocol of
+            LegacyIntent -> []
+            FamilyIntent -> ["controller_protocol" Aeson..= ("family-v1" :: String)]
+            OwnerFamilyIntent -> ["controller_protocol" Aeson..= ("family-v2" :: String)]
  where
   scope = bootstrapScope bootstrap
   generation = Text.unpack (bootstrapRootGeneration bootstrap)

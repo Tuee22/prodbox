@@ -17,6 +17,7 @@ module Prodbox.Subprocess.HostControllerInputs
   , withHostControllerInputs
   , withPinnedHostControllerInputs
   , verifyHostControllerInputs
+  , hashHostControllerExecutable
   , HostControllerInputBytes
   , readHostControllerInputs
   , readHostControllerInputsWithInitialDataFloor
@@ -257,6 +258,9 @@ data HostControllerSubmissionRecord
   | ProviderBoundSubmission !Provider.RecordedProviderBinding !HostControllerSubmissionRecord
   | OrdinaryCascadeSubmission !HostControllerSubmissionRecord
   | MutationSubmission !HostControllerSubmissionRecord
+  | KindSubmission !HostControllerSubmissionRecord
+  | KindVerifierSubmission !HostControllerSubmissionRecord
+  | KindSuccessorSubmission !HostControllerSubmissionRecord
   deriving stock (Eq)
 
 data SubmissionWire
@@ -280,30 +284,45 @@ hostControllerSubmissionKey (HostControllerSubmissionRecord key _ _ _ _) = key
 hostControllerSubmissionKey (ProviderBoundSubmission _ record) = hostControllerSubmissionKey record
 hostControllerSubmissionKey (OrdinaryCascadeSubmission record) = hostControllerSubmissionKey record
 hostControllerSubmissionKey (MutationSubmission record) = hostControllerSubmissionKey record
+hostControllerSubmissionKey (KindSubmission record) = hostControllerSubmissionKey record
+hostControllerSubmissionKey (KindVerifierSubmission record) = hostControllerSubmissionKey record
+hostControllerSubmissionKey (KindSuccessorSubmission record) = hostControllerSubmissionKey record
 
 hostControllerSubmissionKind :: HostControllerSubmissionRecord -> Identity.HostControllerKind
 hostControllerSubmissionKind HostControllerSubmissionRecord {} = Identity.RpcBirthController
 hostControllerSubmissionKind (ProviderBoundSubmission _ record) = hostControllerSubmissionKind record
 hostControllerSubmissionKind (OrdinaryCascadeSubmission _) = Identity.OrdinaryCascadeController
 hostControllerSubmissionKind (MutationSubmission _) = Identity.MutationController
+hostControllerSubmissionKind (KindSubmission _) = Identity.KindController
+hostControllerSubmissionKind (KindVerifierSubmission _) = Identity.KindProbeVerifierController
+hostControllerSubmissionKind (KindSuccessorSubmission _) = Identity.KindProbeSuccessorController
 
 hostControllerSubmissionWindow :: HostControllerSubmissionRecord -> Identity.HostExecutionWindow
 hostControllerSubmissionWindow (HostControllerSubmissionRecord _ window _ _ _) = window
 hostControllerSubmissionWindow (ProviderBoundSubmission _ record) = hostControllerSubmissionWindow record
 hostControllerSubmissionWindow (OrdinaryCascadeSubmission record) = hostControllerSubmissionWindow record
 hostControllerSubmissionWindow (MutationSubmission record) = hostControllerSubmissionWindow record
+hostControllerSubmissionWindow (KindSubmission record) = hostControllerSubmissionWindow record
+hostControllerSubmissionWindow (KindVerifierSubmission record) = hostControllerSubmissionWindow record
+hostControllerSubmissionWindow (KindSuccessorSubmission record) = hostControllerSubmissionWindow record
 
 hostControllerSubmissionDomain :: HostControllerSubmissionRecord -> Identity.HostManagerDomain
 hostControllerSubmissionDomain (HostControllerSubmissionRecord _ _ domain _ _) = domain
 hostControllerSubmissionDomain (ProviderBoundSubmission _ record) = hostControllerSubmissionDomain record
 hostControllerSubmissionDomain (OrdinaryCascadeSubmission record) = hostControllerSubmissionDomain record
 hostControllerSubmissionDomain (MutationSubmission record) = hostControllerSubmissionDomain record
+hostControllerSubmissionDomain (KindSubmission record) = hostControllerSubmissionDomain record
+hostControllerSubmissionDomain (KindVerifierSubmission record) = hostControllerSubmissionDomain record
+hostControllerSubmissionDomain (KindSuccessorSubmission record) = hostControllerSubmissionDomain record
 
 hostControllerSubmissionSender :: HostControllerSubmissionRecord -> Identity.HostBusUniqueName
 hostControllerSubmissionSender (HostControllerSubmissionRecord _ _ _ sender _) = sender
 hostControllerSubmissionSender (ProviderBoundSubmission _ record) = hostControllerSubmissionSender record
 hostControllerSubmissionSender (OrdinaryCascadeSubmission record) = hostControllerSubmissionSender record
 hostControllerSubmissionSender (MutationSubmission record) = hostControllerSubmissionSender record
+hostControllerSubmissionSender (KindSubmission record) = hostControllerSubmissionSender record
+hostControllerSubmissionSender (KindVerifierSubmission record) = hostControllerSubmissionSender record
+hostControllerSubmissionSender (KindSuccessorSubmission record) = hostControllerSubmissionSender record
 
 hostControllerSubmissionFingerprint
   :: HostControllerSubmissionRecord -> HostControllerInputFingerprint
@@ -312,6 +331,9 @@ hostControllerSubmissionFingerprint (HostControllerSubmissionRecord _ _ _ _ meta
 hostControllerSubmissionFingerprint (ProviderBoundSubmission _ record) = hostControllerSubmissionFingerprint record
 hostControllerSubmissionFingerprint (OrdinaryCascadeSubmission record) = hostControllerSubmissionFingerprint record
 hostControllerSubmissionFingerprint (MutationSubmission record) = hostControllerSubmissionFingerprint record
+hostControllerSubmissionFingerprint (KindSubmission record) = hostControllerSubmissionFingerprint record
+hostControllerSubmissionFingerprint (KindVerifierSubmission record) = hostControllerSubmissionFingerprint record
+hostControllerSubmissionFingerprint (KindSuccessorSubmission record) = hostControllerSubmissionFingerprint record
 
 hostControllerSubmissionProvider
   :: HostControllerSubmissionRecord -> Maybe Provider.RecordedProviderBinding
@@ -319,12 +341,18 @@ hostControllerSubmissionProvider HostControllerSubmissionRecord {} = Nothing
 hostControllerSubmissionProvider (ProviderBoundSubmission binding _) = Just binding
 hostControllerSubmissionProvider (OrdinaryCascadeSubmission record) = hostControllerSubmissionProvider record
 hostControllerSubmissionProvider (MutationSubmission record) = hostControllerSubmissionProvider record
+hostControllerSubmissionProvider (KindSubmission record) = hostControllerSubmissionProvider record
+hostControllerSubmissionProvider (KindVerifierSubmission record) = hostControllerSubmissionProvider record
+hostControllerSubmissionProvider (KindSuccessorSubmission record) = hostControllerSubmissionProvider record
 
 submissionMetadata :: HostControllerSubmissionRecord -> [InputMetadata]
 submissionMetadata (HostControllerSubmissionRecord _ _ _ _ metadata) = metadata
 submissionMetadata (ProviderBoundSubmission _ record) = submissionMetadata record
 submissionMetadata (OrdinaryCascadeSubmission record) = submissionMetadata record
 submissionMetadata (MutationSubmission record) = submissionMetadata record
+submissionMetadata (KindSubmission record) = submissionMetadata record
+submissionMetadata (KindVerifierSubmission record) = submissionMetadata record
+submissionMetadata (KindSuccessorSubmission record) = submissionMetadata record
 
 data ControllerInputPosition = InputOriginal | InputQuarantine
   deriving stock (Eq, Show)
@@ -412,6 +440,15 @@ encodeHostControllerSubmission (OrdinaryCascadeSubmission record) =
 encodeHostControllerSubmission (MutationSubmission record) =
   "prodbox-host-controller-submission/kind/v1\NUL"
     <> Lazy.toStrict (serialise (1 :: Word8, 2 :: Word8, encodeHostControllerSubmission record))
+encodeHostControllerSubmission (KindSubmission record) =
+  "prodbox-host-controller-submission/kind/v1\NUL"
+    <> Lazy.toStrict (serialise (1 :: Word8, 3 :: Word8, encodeHostControllerSubmission record))
+encodeHostControllerSubmission (KindVerifierSubmission record) =
+  "prodbox-host-controller-submission/kind/v1\NUL"
+    <> Lazy.toStrict (serialise (1 :: Word8, 4 :: Word8, encodeHostControllerSubmission record))
+encodeHostControllerSubmission (KindSuccessorSubmission record) =
+  "prodbox-host-controller-submission/kind/v1\NUL"
+    <> Lazy.toStrict (serialise (1 :: Word8, 5 :: Word8, encodeHostControllerSubmission record))
 encodeHostControllerSubmission (ProviderBoundSubmission binding record) =
   "prodbox-host-controller-submission/v2\NUL"
     <> Lazy.toStrict
@@ -452,12 +489,17 @@ decodeHostControllerSubmission bytes
           (deserialiseOrFail (Lazy.fromStrict payload))
       unless
         ( version == (1 :: Word8)
-            && kind `elem` ([1, 2] :: [Word8])
+            && kind `elem` ([1, 2, 3, 4, 5] :: [Word8])
             && "prodbox-host-controller-submission/v2\NUL" `BS.isPrefixOf` original
         )
         (Left ControllerSubmissionMalformed)
       record <- decodeHostControllerSubmission original
-      let bound = if kind == 1 then OrdinaryCascadeSubmission record else MutationSubmission record
+      let bound = case kind of
+            1 -> OrdinaryCascadeSubmission record
+            2 -> MutationSubmission record
+            3 -> KindSubmission record
+            4 -> KindVerifierSubmission record
+            _ -> KindSuccessorSubmission record
       unless (encodeHostControllerSubmission bound == bytes) (Left ControllerSubmissionMalformed)
       pure bound
   | Just payload <- BS.stripPrefix "prodbox-host-controller-submission/v2\NUL" bytes = do
@@ -597,6 +639,9 @@ registerHostControllerSubmission kind inputs@(HostControllerInputs ending uid ex
     Identity.RpcBirthController -> id
     Identity.OrdinaryCascadeController -> OrdinaryCascadeSubmission
     Identity.MutationController -> MutationSubmission
+    Identity.KindController -> KindSubmission
+    Identity.KindProbeVerifierController -> KindVerifierSubmission
+    Identity.KindProbeSuccessorController -> KindSuccessorSubmission
   HeldInput _ requestPath parent _ expectedParent _ = request
   path = hostControllerSubmissionPath requestPath key
   publish bytes = mask $ \restore -> do
@@ -875,6 +920,35 @@ checkExecutingFile (HeldInput role _ _ _ _ expected) = do
 verifyHostControllerInputs :: HostControllerInputs -> IO (Either HostControllerInputError ())
 verifyHostControllerInputs inputs@(HostControllerInputs _ _ _ _ _ active) = withMVar active $ \live ->
   if live then validateInputs inputs else pure (Left ControllerInputsClosed)
+
+-- Hash the same retained executable descriptor, within the original work
+-- window and the kind worker's declared 256 MiB image ceiling. No executable
+-- bytes are returned, and all three input versions are checked on both sides.
+hashHostControllerExecutable :: HostControllerInputs -> IO (Either HostControllerInputError String)
+hashHostControllerExecutable inputs@(HostControllerInputs ending _ executable _ _ active) = withMVar active $ \live ->
+  if not live then pure (Left ControllerInputsClosed) else runExceptT $ do
+    ExceptT (validateInputs inputs)
+    let HeldInput _ _ _ descriptor _ (FileVersion _ _ size _ _ _ _ _ _) = executable
+        ceilingBytes = 256 * 1024 * 1024
+    when (size < 0 || size > ceilingBytes) (throwE (ControllerInputTooLarge ControllerExecutable))
+    _ <- ExceptT (ownIO ControllerExecutable (Posix.fdSeek descriptor AbsoluteSeek 0))
+    digest <- loop descriptor size SHA256.init
+    ExceptT (validateInputs inputs)
+    pure ("sha256:" ++ concatMap hexadecimal (BS.unpack digest))
+ where
+  loop descriptor remaining state = do
+    ExceptT (checkTime ending)
+    if remaining == 0
+      then pure (SHA256.finalize state)
+      else do
+        chunk <- ExceptT (ownIO ControllerExecutable (NativeIO.fdRead descriptor (fromIntegral (min 65536 remaining))))
+        when (BS.null chunk) (throwE (ControllerInputChanged ControllerExecutable))
+        let next = SHA256.update state chunk
+        next `seq` loop descriptor (remaining - toInteger (BS.length chunk)) next
+  hexadecimal byte =
+    [ "0123456789abcdef" !! fromIntegral (byte `div` 16)
+    , "0123456789abcdef" !! fromIntegral (byte `mod` 16)
+    ]
 
 validateInputs :: HostControllerInputs -> IO (Either HostControllerInputError ())
 validateInputs (HostControllerInputs ending uid executable configuration request _) = runExceptT $ do

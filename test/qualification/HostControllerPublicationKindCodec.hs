@@ -46,7 +46,7 @@ main = do
     (Record.publicationBirthKind original == Identity.RpcBirthController)
   require "historical producer bytes changed" (Record.encodePublicationBirth original == old)
   putStrLn "PASS exact registration producer codec"
-  forM_ [Identity.RpcBirthController, Identity.OrdinaryCascadeController, Identity.MutationController] $ \kind -> do
+  forM_ [Identity.RpcBirthController, Identity.OrdinaryCascadeController, Identity.MutationController, Identity.KindController, Identity.KindProbeVerifierController, Identity.KindProbeSuccessorController] $ \kind -> do
     nonce <- getRandomBytes 32
     key <-
       maybe
@@ -58,6 +58,9 @@ main = do
           Identity.RpcBirthController -> Identity.OrdinaryCascadeController
           Identity.OrdinaryCascadeController -> Identity.MutationController
           Identity.MutationController -> Identity.RpcBirthController
+          Identity.KindController -> Identity.RpcBirthController
+          Identity.KindProbeVerifierController -> Identity.KindController
+          Identity.KindProbeSuccessorController -> Identity.KindProbeVerifierController
     (paths, ()) <-
       right
         =<< Publication.withPublishedHostControllerOwner
@@ -83,7 +86,12 @@ main = do
                   let prefix = "prodbox-host-controller-publication/birth/kind/v1\NUL"
                   payload <- maybe (fail "ordinary producer prefix missing") pure (BS.stripPrefix prefix bytes)
                   (version, tag, legacy) <- right (deserialiseOrFail (Lazy.fromStrict payload))
-                  let expectedTag = if kind == Identity.OrdinaryCascadeController then 1 else 2
+                  let expectedTag
+                        | kind == Identity.OrdinaryCascadeController = 1
+                        | kind == Identity.MutationController = 2
+                        | kind == Identity.KindController = 3
+                        | kind == Identity.KindProbeVerifierController = 4
+                        | otherwise = 5
                   require "controller version/tag changed" (version == (1 :: Word8) && tag == (expectedTag :: Word8))
                   untagged <-
                     maybe
@@ -98,7 +106,7 @@ main = do
                   forM_
                     [ prefix <> Lazy.toStrict (serialise (2 :: Word8, tag, legacy))
                     , prefix <> Lazy.toStrict (serialise (version, 0 :: Word8, legacy))
-                    , prefix <> Lazy.toStrict (serialise (version, 3 :: Word8, legacy))
+                    , prefix <> Lazy.toStrict (serialise (version, 6 :: Word8, legacy))
                     , prefix <> Lazy.toStrict (serialise (version, tag, bytes))
                     ]
                     $ \invalid ->

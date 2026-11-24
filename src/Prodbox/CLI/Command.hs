@@ -101,7 +101,9 @@ data CommandRequest
   | RunControlInspectNodeArchive
   | RunControlInspectImageAttempt String
   | RunInternalKindController [String]
+  | RunInternalKindFamilyController !HostControllerArguments
   | RunTestList
+  | RunTestStatus String
   | ShowCommands CommandListingFormat
   | ShowHelp [String]
   deriving (Eq, Show)
@@ -309,6 +311,7 @@ data ClusterK8sCommand
 
 data ConfigCommand
   = ConfigSetup PlanOptions
+  | ConfigSetupFreshTest PlanOptions
   | ConfigShow
   | ConfigValidate
   | -- | Sprint 7.17: regenerate the committed Dhall schema files

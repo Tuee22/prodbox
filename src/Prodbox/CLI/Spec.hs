@@ -232,6 +232,7 @@ commandRegistry =
         , helpLeaf
         , hostGroup
         , internalKindControllerLeaf
+        , internalKindFamilyControllerLeaf
         , internalRpcBirthControllerLeaf
         , nukeLeaf
         , testGroupSpec
@@ -333,6 +334,7 @@ parserForPath path =
     ["control", "inspect-image-attempt"] ->
       Just (RunControlInspectImageAttempt <$> strArgument (metavar "OPERATION"))
     ["internal-rpc-birth-controller"] -> Just internalRpcBirthControllerParser
+    ["internal-kind-family-controller"] -> Just internalKindFamilyControllerParser
     ["internal-kind-controller"] ->
       Just (RunInternalKindController <$> many (strArgument (metavar "ENVELOPE")))
     ["admin-action", "run"] ->
@@ -446,7 +448,11 @@ parserForPath path =
           <|> commandsJsonParser
           <|> pure (ShowCommands CommandsPlain)
     ["config", "setup"] ->
-      Just (fmap (RunNative . NativeConfig . ConfigSetup) configSetupPlanOptionsParser)
+      Just $
+        ( \options fresh -> RunNative (NativeConfig (if fresh then ConfigSetupFreshTest options else ConfigSetup options))
+        )
+          <$> configSetupPlanOptionsParser
+          <*> switch (long "fresh-test" <> help "Enroll only a new test root; requires --config")
     ["config", "show"] ->
       Just (pure (RunNative (NativeConfig ConfigShow)))
     ["config", "validate"] -> Just (pure (RunNative (NativeConfig ConfigValidate)))
@@ -672,6 +678,7 @@ parserForPath path =
           )
     ["test", "init"] -> Just testInitParser
     ["test", "list"] -> Just (pure RunTestList)
+    ["test", "status"] -> Just (RunTestStatus <$> strArgument (metavar "RUN_ID"))
     ["test", "run"] -> Just testRunParser
     ["test", "all"] -> Just (withCoverage TestAll)
     ["test", "lint"] ->
@@ -857,6 +864,38 @@ internalRpcBirthControllerParser =
   field (flag, placeholder, detail) =
     (\raw -> ["--" ++ flag, raw])
       <$> strOption (long flag <> metavar placeholder <> help detail)
+
+internalKindFamilyControllerLeaf :: CommandSpec
+internalKindFamilyControllerLeaf =
+  leaf
+    "internal-kind-family-controller"
+    "Run the pinned kind operation-family controller"
+    "Internal controller requiring pinned inputs and an observed operation parent. Arguments do not grant lifecycle admission."
+    [ requiredOption flag Nothing placeholder detail
+    | (flag, placeholder, detail) <- internalRpcBirthControllerPrefix ++ [internalRpcBirthControllerFinish]
+    ]
+    [ example
+        [ "internal-kind-family-controller"
+        , "--config", "/run/prodbox/controller/settings.dhall"
+        , "--request", "/run/prodbox/controller/request.json"
+        , "--input-fingerprint", replicate 64 'a'
+        , "--operation-key", replicate 64 'b'
+        , "--outer-ns", "50000000000"
+        , "--work-ns", "40000000000"
+        , "--hard-ns", "42000000000"
+        , "--stop-ns", "45000000000"
+        , "--finish-ns", "47000000000"
+        ]
+        "Closed envelope supplied by the operation publisher"
+    ]
+
+internalKindFamilyControllerParser :: Parser CommandRequest
+internalKindFamilyControllerParser =
+  BindP (concat <$> traverse field (internalRpcBirthControllerPrefix ++ [internalRpcBirthControllerFinish])) parse
+ where
+  parse arguments = either (const empty) (pure . RunInternalKindFamilyController) (parseHostControllerArguments arguments)
+  field (flag, placeholder, detail) =
+    (\raw -> ["--" ++ flag, raw]) <$> strOption (long flag <> metavar placeholder <> help detail)
 
 commandsTreeParser :: Parser CommandRequest
 commandsTreeParser =
@@ -1852,6 +1891,11 @@ configGroup =
             Nothing
             "PATH"
             "Write the binary-sibling setup plan to a file; unavailable with --config"
+        , flagOption
+            "fresh-test"
+            Nothing
+            Nothing
+            "Enroll only a new test root; requires --config"
         ]
         [example ["config", "setup"] "Create or refresh the config interactively."]
     , leaf
@@ -3034,6 +3078,13 @@ testGroupSpec =
         "List the built-in local suites; legacy topology-defined suites require a separate test topology."
         []
         [example ["test", "list"] "List built-in local test suites."]
+    , leafWithArgs
+        "status"
+        "Inspect a retained test campaign"
+        "Inspect retained local mutation-campaign records. Worker settlement, Docker state and cleanup are not established."
+        [argument "run-id" "RUN_ID" "Exact retained mutation campaign identifier."]
+        []
+        [example ["test", "status", "123456789"] "Inspect a retained mutation campaign."]
     , leaf
         "init"
         "Create prodbox.test.dhall"

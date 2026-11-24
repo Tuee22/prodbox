@@ -2,6 +2,7 @@
 
 module Prodbox.TestRunner
   ( runTests
+  , validatePhaseOneOptions
   , runSelectedPhaseScenario
   , runSelectedMutationCatalog
   , runSelectedPhaseTwoScenario
@@ -222,7 +223,7 @@ import Prodbox.Test.LifecycleCleanupClient
   , runLifecycleTestHarnessCleanup
   )
 import Prodbox.Test.MutationExecutor (runMutationCatalog)
-import Prodbox.Test.Phase01Runner (runPhase01Scenario)
+import Prodbox.Test.Phase01Runner (runFreshPhase01Scenario, runPhase01Scenario)
 import Prodbox.Test.Phase02BrokerRunner (runPhase02BrokerScenario)
 import Prodbox.Test.Phase02Runner (runPhase02Scenario)
 import Prodbox.Test.Phase03Runner (runPhase03Scenario)
@@ -367,11 +368,17 @@ data TestRefusal
   | UnknownTopologySuite String
   deriving (Eq, Show)
 
-data NamedLocalSuite = NamedUnit | NamedEnvironment | NamedCli | NamedEvidence
+data NamedLocalSuite = NamedUnit | NamedEnvironment | NamedCli | NamedEvidence | NamedPhaseOne
   deriving (Eq, Show)
 
 namedLocalSuites :: [(String, NamedLocalSuite)]
-namedLocalSuites = [("unit", NamedUnit), ("env", NamedEnvironment), ("cli", NamedCli), ("evidence", NamedEvidence)]
+namedLocalSuites =
+  [ ("unit", NamedUnit)
+  , ("env", NamedEnvironment)
+  , ("cli", NamedCli)
+  , ("evidence", NamedEvidence)
+  , ("phase-01", NamedPhaseOne)
+  ]
 
 renderNamedLocalTestList :: String
 renderNamedLocalTestList =
@@ -398,6 +405,15 @@ runSelectedMutationCatalog = runMutationCatalog
 runSelectedPhaseScenario :: FilePath -> IO ExitCode
 runSelectedPhaseScenario = runPhase01Scenario
 
+validatePhaseOneOptions :: TestCommand -> Either String ()
+validatePhaseOneOptions command
+  | testCoverage command /= CoverageFlags False Nothing =
+      Left "Coverage is not supported by the Phase 1 scenario runner."
+  | testSubstrate command /= SubstrateHomeLocal =
+      Left "The Phase 1 scenario runner does not select an AWS substrate."
+  | testRecordProfile command = Left "The Phase 1 scenario runner does not record a capacity profile."
+  | otherwise = Right ()
+
 runTests :: FilePath -> TestCommand -> IO ExitCode
 runTests repoRoot command =
   case validateCoverage (testCoverage command) of
@@ -410,6 +426,7 @@ runTests repoRoot command =
           Just NamedEnvironment -> runNamedEnvironmentTests repoRoot command
           Just NamedCli -> runNamedCliTests repoRoot command
           Just NamedEvidence -> runNamedEvidenceTests repoRoot command
+          Just NamedPhaseOne -> either failWith (const (runFreshPhase01Scenario repoRoot)) (validatePhaseOneOptions command)
           Nothing
             | suiteName == "all" || "phase-" `isPrefixOf` suiteName ->
                 failWith ("The cumulative scenario runner is not implemented yet: " ++ suiteName)

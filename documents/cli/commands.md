@@ -118,9 +118,11 @@ The generated payload below remains unchanged. It describes actual old command n
 | `prodbox host firewall gateway-restrict` | Restrict the gateway NodePort to 127.0.0.1 |
 | `prodbox host firewall gateway-unrestrict` | Remove the gateway NodePort loopback restriction |
 | `prodbox internal-kind-controller` | Run one managed kind node attempt |
+| `prodbox internal-kind-family-controller` | Run the pinned kind operation-family controller |
 | `prodbox internal-rpc-birth-controller` | Run the pinned operation-owned RPC birth controller |
 | `prodbox nuke` | Total teardown of every prodbox-owned AWS resource (operator-only) |
 | `prodbox test list` | List locally registered test suites |
+| `prodbox test status` | Inspect a retained test campaign |
 | `prodbox test init` | Create prodbox.test.dhall |
 | `prodbox test run` | Run a named test suite |
 | `prodbox test all` | Run the full test suite |

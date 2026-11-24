@@ -16,9 +16,9 @@ Each family below expands into named variant records in the owning implementatio
 | Mutation | First owner | Required semantic variants | Intended unchanged assertion | Acceptance binding |
 |---|---:|---|---|---|
 | M00 | 0 | Disable future-phase dependency rejection; disable removal-owner validity; accept missing/foreign evidence references; admit a known missing current source | `plan.rejects_future_dependency`, `plan.requires_valid_remover`, `plan.requires_bound_evidence` and `plan.rejects_missing_source` each fail for its own malformed-plan fixture | A00-02, A00-04 |
-| M01 | 1 | Remove environment/root/context or Docker effect ownership checks; admit a cross-root alias, foreign context, foreign network removal or unowned pull | The corresponding unchanged `context.rejects_foreign_scope`, `context.rejects_root_alias`, `context.rejects_foreign_network` or `context.rejects_unowned_pull` assertion fails without touching real production | A01-03, A01-07 |
+| M01 | 1 | Remove environment/root/context or Docker effect ownership checks; admit a cross-root alias, foreign context, foreign network, namespace or control-container removal, namespace replacement, wrong controller node, or unowned pull; accept changed or truncated node-artifact bytes; treat an unconfirmed create attempt as never started, an unknown recreation intent as absent, a failed removal as successful, or an unbound controller/removal receipt as valid | The corresponding unchanged `context.rejects_foreign_scope`, `context.rejects_root_alias`, `context.rejects_foreign_network`, `context.rejects_unowned_pull`, `artifact.rejects_changed_bytes`, `delete.rejects_unconfirmed_node`, `recreate.rejects_unknown_intent`, `delete.rejects_failed_removal`, `delete.rejects_foreign_control`, `delete.rejects_unbound_receipt`, `controller.rejects_foreign_receipt`, `controller.rejects_wrong_node`, `network.rejects_foreign_namespace_cleanup` or `network.rejects_replaced_namespace` assertion fails without touching real production | A01-03, A01-07, A01-08 |
 | M02 | 1 | Evidence validator accepts absent, fabricated, stale or wrong-scope results | `evidence.rejects_unbound_result` fails on the corresponding adversarial report; observer meta-test stays unmodified | A01-06, A01-07 |
-| M03 | 2 | Permit test MinIO self-unseal in production policy; call init over a recorded storage-generation mismatch | `bootstrap.production_rejects_test_unlock` / `bootstrap.preserves_vault_incarnation` fail | A02-03, A02-04, A02-05 |
+| M03 | 2 | Permit test MinIO self-unseal in production policy; call init over a recorded storage-generation mismatch; omit backup file contents from its integrity commitment | `bootstrap.production_rejects_test_unlock` / `bootstrap.preserves_vault_incarnation` / `backup.rejects_same_size_corruption` fail | A02-03, A02-04, A02-05, A02-06 |
 | M04 | 3 | Recode an unobservable resource/journal or missing existing history as absence / NeverAdmitted | `lifecycle.unknown_requires_recovery` / `lifecycle.missing_history_is_not_fresh` fail | A03-02, A03-03, A03-04 |
 | M05 | 3 | Return `NoChange` while a durable admitted operation remains unresolved | `lifecycle.pending_intent_blocks_noop` fails | A03-01, A03-04 |
 | M06 | 4 | Omit IAM intent registration before the first possible create; revoke an operational credential before its resource dependants are terminal | `credentials.intent_precedes_effect` / `credentials.dependants_precede_retirement` fail | A04-01, A04-02, A04-03 |
@@ -33,6 +33,32 @@ Each family below expands into named variant records in the owning implementatio
 The assertion identifiers name required behavioral checks to implement; they are not claims that tests with those names already exist. A phase binds them to actual test/source identifiers before running its catalog. Pure fixtures and recorded provider contracts can isolate faults, but tests execute the actual mutated implementation rather than a hand-written description of its expected behavior.
 
 ### Phase 1 preliminary assertion binding
+
+The owner-first cutover also requires an M01 variant that replaces the
+owner-only protocol check in `reconcileFamilyPrerequisites` with the broader
+family check. The unchanged `distinguishes owner-first family intent from
+externally prepared history` test must reject the old protocol. This variant
+still needs registration and an isolated source-mutation run; this binding is
+not a claimed kill.
+
+`delete.rejects_unconfirmed_node` is bound to the unchanged node disposition
+assertion in `test/unit/NodeRegistryPreparationTests.hs`. The reviewed patch is
+registered; isolated execution remains pending and is not a mutation kill.
+The same test suite binds `recreate.rejects_unknown_intent` and
+`delete.rejects_failed_removal`, with reviewed patches registered and isolated
+execution pending.
+`delete.rejects_foreign_control` is bound there as well, with reviewed patch
+and isolated execution pending.
+`delete.rejects_unbound_receipt` is also bound there; its reviewed patch and
+isolated execution remain pending.
+`controller.rejects_foreign_receipt` is bound there; its reviewed patch and
+isolated execution remain pending.
+`controller.rejects_wrong_node` is bound to the node-status test in the same
+suite; its reviewed patch and isolated execution remain pending.
+`network.rejects_foreign_namespace_cleanup` is bound to the probe's controlled
+creation-failure test; its reviewed patch and isolated execution are pending.
+`network.rejects_replaced_namespace` is bound to the controlled replacement
+test; its reviewed patch and isolated execution are also pending.
 
 The missing-report variant of `evidence.rejects_unbound_result` is bound to
 `scenario evidence comparison.rejects an unbound report for the mutation catalog`
@@ -65,6 +91,25 @@ and the candidate source SHA-256 is
 The baseline assertion and preparation passed; isolated compilation, actual
 assertion failure, cleanup and M01 acceptance remain open.
 
+The reviewed M01 artifact-byte variant targets
+`src/Prodbox/Control/NodeRegistryArchive.hs` and the assertion
+`artifact.rejects_changed_bytes` in the digest-bound archive test. It removes
+the digest condition while preserving the length condition. The source SHA-256
+is `7284e324f79d558274f7afb567f9f2443920371cc9156128d689bf93de74f4e2`,
+the binding digest is `a40fceb185c28948aa9b5c2abca29cf3df5d9e067a79f0ac4147a4e948e5e3e5`,
+and the candidate SHA-256 is `a7c12da0afa0b1f5777abfb9575e32657ad6adcafd1544f66e5c2f1ff16f998a`.
+Its isolated execution and designated-assertion kill remain open.
+
+Three additional reviewed M01 variants are registered with the executor. Each
+is source-bound and selects its unchanged designated assertion; preparation
+does not constitute an isolated execution or a kill.
+
+| Variant | Source SHA-256 | Binding SHA-256 | Candidate SHA-256 |
+|---|---|---|---|
+| `M01-unconfirmed-node` | `ca80d272c5c5c7cd99150a2aaddc2f12ef9d02a503ad4b08d0c59e29852300f7` | `2c45426102274576c95067e5bbdb06b855d7866c9b01396d3cc4662cdfad54ef` | `e8af997f252bc283ac3764e59fed7b82cd76129924845cf6404235ba1b2d7483` |
+| `M01-unknown-recreate` | `8f4ab55c4a38d413a3bdf15f65f17739822c83a90106d04a858ed87bc3c03334` | `a19d46b3f42818b3879cad9cf21c0ed304010ac2521c6e7f571072357205d72e` | `1b64fe0897e300b48c0ff10ccd3e6b5b36bd3fa83c8884818a62e3ea2773d484` |
+| `M01-failed-removal` | `ca80d272c5c5c7cd99150a2aaddc2f12ef9d02a503ad4b08d0c59e29852300f7` | `46ad729379cb4f58bcdd0403fdf745df98013709eebcc5cc92f2299660ac2f9b` | `6581e7c9b627b2f5ee23456f33c48f9f5b75a15f56a6a58c364b5fbe2c1a9db0` |
+
 ### Phase 3 assertion bindings
 
 The reviewed M04 and M05 variants are three source-bound candidates in
@@ -84,12 +129,28 @@ domain-separated binding digest is `1317a84b87b354520515cb814a370b8766926673f1e0
 SHA-256 is `b93fa4e240eb4a0dfd4ca1e4e0f2c14a13fff72a72bcefb15d2357c6f32eac84`.
 
 The M04c variant is bound to `prodbox-unit.admission history.never reads a journal mirror without its genesis record as never admitted for the mutation catalog`
-and `lifecycle.uninitialized_mirror_is_not_fresh` in `src/Prodbox/ControlPlane/AdmissionJournalMirror.hs` (source SHA-256 `cb15a8c10fc6de27285f597760830385515331f54eb355fc547a75f3e43e63d6`): it makes a
+and `lifecycle.uninitialized_mirror_is_not_fresh` in `src/Prodbox/ControlPlane/AdmissionJournalMirror.hs` (source SHA-256 `42b4d462f6b40fd3ebbce2066ed8ef4f414039c68c6bcb6fae9abdc19caa9255`): it makes a
 journal mirror with no genesis record read as an empty, successfully read journal,
-that is as never admitted. Its binding digest is `b47816515089cc9bfa61cb0ee36f522fbe7c14b99aed274b191b1c9b6798f861` and the candidate source
-SHA-256 is `88e548df6f6953a733bed25a54e7b21843d7a1c3194ea8dd8f3db3563d55087e`.
+that is as never admitted. The historical binding digest
+`b47816515089cc9bfa61cb0ee36f522fbe7c14b99aed274b191b1c9b6798f861` and
+candidate source SHA-256 `88e548df6f6953a733bed25a54e7b21843d7a1c3194ea8dd8f3db3563d55087e`
+belong to the prior mirror source, not the current digest. The current binding
+digest is `c69335e67cbae727149e290930386b0a90cd7bc905394a0f0828ac611ffdded6`
+and the current candidate source SHA-256 is
+`c985f8c62ad2e7dc3705beb27bc64583a367759965b68212aa78258b3a751ff6`;
+execution against the current source remains pending.
 
 ### Phase 2 assertion bindings
+
+The A02-06 backup-content variant M03c is bound to
+`prodbox-unit.backup content integrity.detects a same-size content change for the mutation catalog`
+and `backup.rejects_same_size_corruption`. It omits file bytes from the keyed
+commitment while preserving paths and sizes. The required source SHA-256 is
+`ea7a7eba1baad1eac748deb9d56cd1517bdafd0026c8f2226b7730d0cc02fa2d`, its
+binding digest is `ec851332a11931e7b18c4d0449a9bd334cb95393dcce2ed43ddf7cabfb310594`,
+and the candidate source SHA-256 is
+`6850d96b339ea1bc91c63f2da2a16ce3c051e8b95e2c7c20839a3f2a50404c0e`.
+The isolated run is pending; preparing this candidate is not a mutation kill.
 
 The reviewed M03 variants are two source-bound candidates in
 `src/Prodbox/Control/Unlock.hs`, one per assertion of the catalog row. Both

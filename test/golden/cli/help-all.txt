@@ -768,6 +768,7 @@ Write or refresh the binary-sibling configuration; with --config, create a new b
 Options:
 - --dry-run - Render the binary-sibling setup plan without mutating state; unavailable with --config
 - --plan-file <PATH> - Write the binary-sibling setup plan to a file; unavailable with --config
+- --fresh-test - Enroll only a new test root; requires --config
 
 Examples:
 - prodbox config setup  # Create or refresh the config interactively.
@@ -998,6 +999,24 @@ Internal program submitted by the kind launcher inside the kind controller unit.
 Examples:
 - prodbox internal-kind-controller /path/selected.dhall bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb /path/prodbox sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa /path/result 900000000000 600000000000 610000000000 640000000000 700000000000  # Closed envelope supplied by the kind launcher
 
+## prodbox internal-kind-family-controller
+prodbox internal-kind-family-controller - Run the pinned kind operation-family controller
+
+Internal controller requiring pinned inputs and an observed operation parent. Arguments do not grant lifecycle admission.
+Options:
+- --config <PATH> - Exact pinned import-free controller settings file
+- --request <PATH> - Exact pinned original controller request file
+- --input-fingerprint <SHA256> - Published executable/settings/request fingerprint
+- --operation-key <SHA256> - Original operation execution key
+- --outer-ns <NANOSECONDS> - Original monotonic outer deadline
+- --work-ns <NANOSECONDS> - Original monotonic work deadline
+- --hard-ns <NANOSECONDS> - Original monotonic hard deadline
+- --stop-ns <NANOSECONDS> - Original monotonic stop deadline
+- --finish-ns <NANOSECONDS> - Original monotonic finish deadline
+
+Examples:
+- prodbox internal-kind-family-controller --config /run/prodbox/controller/settings.dhall --request /run/prodbox/controller/request.json --input-fingerprint aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --operation-key bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --outer-ns 50000000000 --work-ns 40000000000 --hard-ns 42000000000 --stop-ns 45000000000 --finish-ns 47000000000  # Closed envelope supplied by the operation publisher
+
 ## prodbox internal-rpc-birth-controller
 prodbox internal-rpc-birth-controller - Run the pinned operation-owned RPC birth controller
 
@@ -1036,6 +1055,13 @@ prodbox test list - List locally registered test suites
 List the built-in local suites; legacy topology-defined suites require a separate test topology.
 Examples:
 - prodbox test list  # List built-in local test suites.
+
+## prodbox test status
+prodbox test status - Inspect a retained test campaign
+
+Inspect retained local mutation-campaign records. Worker settlement, Docker state and cleanup are not established.
+Examples:
+- prodbox test status 123456789  # Inspect a retained mutation campaign.
 
 ## prodbox test init
 prodbox test init - Create prodbox.test.dhall

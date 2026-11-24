@@ -144,7 +144,7 @@ hostExecutionStopEnd (HostExecutionWindow _ _ _ value _) = value
 hostExecutionFinishEnd (HostExecutionWindow _ _ _ _ value) = value
 
 -- Closed program identity, not physical placement or Authority admission.
-data HostControllerKind = RpcBirthController | OrdinaryCascadeController | MutationController
+data HostControllerKind = RpcBirthController | OrdinaryCascadeController | MutationController | KindController | KindProbeVerifierController | KindProbeSuccessorController
   deriving (Eq, Show)
 
 hostControllerKindEntrypoint :: HostControllerKind -> String
@@ -152,18 +152,27 @@ hostControllerKindEntrypoint kind = case kind of
   RpcBirthController -> "internal-rpc-birth-controller"
   OrdinaryCascadeController -> "internal-cascade-controller"
   MutationController -> "internal-mutation-controller"
+  KindController -> "internal-kind-family-controller"
+  KindProbeVerifierController -> "internal-kind-family-controller"
+  KindProbeSuccessorController -> "internal-kind-family-controller"
 
 hostControllerKindSliceName :: HostControllerKind -> String
 hostControllerKindSliceName kind = case kind of
   RpcBirthController -> "prodboxrpcbirth.slice"
   OrdinaryCascadeController -> "prodboxcascade.slice"
   MutationController -> "prodboxmutation.slice"
+  KindController -> "prodboxkindfamily.slice"
+  KindProbeVerifierController -> "prodboxkindverify.slice"
+  KindProbeSuccessorController -> "prodboxkindsuccessor.slice"
 
 hostControllerKindPrefix :: HostControllerKind -> String
 hostControllerKindPrefix kind = case kind of
   RpcBirthController -> "prodbox-rpc-birth-"
   OrdinaryCascadeController -> "prodbox-cascade-"
   MutationController -> "prodbox-mutation-"
+  KindController -> "prodbox-kind-family-"
+  KindProbeVerifierController -> "prodbox-kind-verify-"
+  KindProbeSuccessorController -> "prodbox-kind-successor-"
 
 -- The original parent-only controller slot on the retained operator host. The descriptor
 -- key and full original window bind its invocation metadata, not its name.

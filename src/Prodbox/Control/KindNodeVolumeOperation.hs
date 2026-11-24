@@ -6,8 +6,10 @@
 module Prodbox.Control.KindNodeVolumeOperation
   ( KindNodeVolumeAction (..)
   , withNewConnectedKindNodeVolumeAttempt
+  , withNewConnectedKindNodeVolumeAttemptGuarded
   , KindNodeVolumeRemovalAction (..)
   , withNewConnectedKindNodeVolumeRemoval
+  , withNewConnectedKindNodeVolumeRemovalGuarded
   ) where
 
 import Control.Exception (IOException, try)
@@ -64,10 +66,21 @@ withNewConnectedKindNodeVolumeAttempt
   -> String
   -> (DockerSession -> IO Bool -> IO DockerNodeVarCreateResult)
   -> IO (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult KindNodeVolumeAction)))
-withNewConnectedKindNodeVolumeAttempt bootstrap operation action =
+withNewConnectedKindNodeVolumeAttempt bootstrap operation =
+  withNewConnectedKindNodeVolumeAttemptGuarded bootstrap operation id
+
+-- Admission is rechecked along with the lease and Docker peer before the
+-- attempt marker, effect and receipt. The caller retains the family owner.
+withNewConnectedKindNodeVolumeAttemptGuarded
+  :: BootstrapProjection
+  -> String
+  -> (IO Bool -> IO Bool)
+  -> (DockerSession -> IO Bool -> IO DockerNodeVarCreateResult)
+  -> IO (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult KindNodeVolumeAction)))
+withNewConnectedKindNodeVolumeAttemptGuarded bootstrap operation admission action =
   withRecoveredKindOperation bootstrap operation $ \operationStable ->
     withConnectedDockerInfo 30000000 (bootstrapRuntimeSocket bootstrap) $ \session (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable -> do
-      let stable = (&&) <$> operationStable <*> peerStable
+      let stable = (&&) <$> admission operationStable <*> peerStable
       case mkKindNodeVolumeIntent operation (DockerDaemonObserved identifier identity) of
         Nothing -> pure NodeVolumeActionInvalid
         Just intent -> do
@@ -117,10 +130,20 @@ withNewConnectedKindNodeVolumeRemoval
   -> (DockerSession -> IO Bool -> IO Bool)
   -> (DockerSession -> IO Bool -> IO DockerNodeVarRemoveResult)
   -> IO (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult KindNodeVolumeRemovalAction)))
-withNewConnectedKindNodeVolumeRemoval bootstrap operation admit action =
+withNewConnectedKindNodeVolumeRemoval bootstrap operation =
+  withNewConnectedKindNodeVolumeRemovalGuarded bootstrap operation id
+
+withNewConnectedKindNodeVolumeRemovalGuarded
+  :: BootstrapProjection
+  -> String
+  -> (IO Bool -> IO Bool)
+  -> (DockerSession -> IO Bool -> IO Bool)
+  -> (DockerSession -> IO Bool -> IO DockerNodeVarRemoveResult)
+  -> IO (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult KindNodeVolumeRemovalAction)))
+withNewConnectedKindNodeVolumeRemovalGuarded bootstrap operation settlementStable admit action =
   withRecoveredKindOperation bootstrap operation $ \operationStable ->
     withConnectedDockerInfo 30000000 (bootstrapRuntimeSocket bootstrap) $ \session (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable -> do
-      let stable = (&&) <$> operationStable <*> peerStable
+      let stable = settlementStable ((&&) <$> operationStable <*> peerStable)
       case mkKindNodeVolumeIntent operation (DockerDaemonObserved identifier identity) of
         Nothing -> pure NodeVolumeRemovalActionInvalid
         Just intent -> do

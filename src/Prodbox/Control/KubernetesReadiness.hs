@@ -9,13 +9,13 @@
 module Prodbox.Control.KubernetesReadiness
   ( ReadinessObservation (..)
   , observeKubernetesReadiness
+  , observeKubernetesReadinessSnapshot
   , renderKubernetesReadiness
   ) where
 
 import Data.ByteString qualified as ByteString
-import Prodbox.Config.BootstrapProjection (BootstrapProjection, bootstrapScope)
-import Prodbox.Config.DeploymentScope (scopeRoot)
-import Prodbox.Control.KindKubeconfigFile (readKindKubeconfig)
+import Prodbox.Config.BootstrapProjection (BootstrapProjection)
+import Prodbox.Control.KindKubeconfigFile (withKindKubeconfigSnapshot)
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
   , ProcessOutput (..)
@@ -23,7 +23,6 @@ import Prodbox.Subprocess
   , captureSubprocessWithInputBounded
   )
 import System.Exit (ExitCode (..))
-import System.FilePath ((</>))
 
 data ReadinessObservation
   = ReadinessNoKubeconfig
@@ -60,13 +59,13 @@ query kubeconfig arguments = do
 
 observeKubernetesReadiness :: BootstrapProjection -> IO ReadinessObservation
 observeKubernetesReadiness bootstrap = do
-  accepted <- readKindKubeconfig bootstrap
-  case accepted of
-    Left _ -> do
-      -- A missing file and an unacceptable one are different findings.
-      pure ReadinessNoKubeconfig
-    Right _ -> do
-      let kubeconfig = scopeRoot (bootstrapScope bootstrap) </> "control" </> "kubeconfig"
+  observed <- withKindKubeconfigSnapshot bootstrap observeKubernetesReadinessSnapshot
+  pure (either (const ReadinessKubeconfigRefused) id observed)
+
+-- The caller holds the sealed snapshot for the entire observation. Kubernetes
+-- still verifies the TLS endpoint against the CA in that snapshot.
+observeKubernetesReadinessSnapshot :: FilePath -> IO ReadinessObservation
+observeKubernetesReadinessSnapshot kubeconfig = do
       ready <- query kubeconfig ["get", "--raw=/readyz"]
       nodes <-
         query

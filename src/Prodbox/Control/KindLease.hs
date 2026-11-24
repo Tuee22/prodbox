@@ -14,17 +14,25 @@ module Prodbox.Control.KindLease
   , KindOperationRefusal (..)
   , KindOperationOutcome (..)
   , withNewKindOperation
+  , withNewKindFamilyOperation
+  , withNewKindOwnerFamilyOperation
   , withRecoveredKindOperation
+  , withRecoveredKindOperationUntil
+  , KindLeaseHandoff (..)
+  , awaitKindLeaseHandoff
   , prepareNewKindVolumeDirectory
   , prepareRecoveredKindVolumeDirectory
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (Exception, IOException, SomeException, fromException, mask, throwIO, try)
 import Data.Bits ((.&.), (.|.))
 import Data.Text qualified as Text
+import Data.Word (Word64)
 import Foreign.C.Error (Errno (..), eAGAIN, eWOULDBLOCK, getErrno)
 import Foreign.C.Types (CInt (..))
+import GHC.Clock (getMonotonicTimeNSec)
 import Prodbox.Config.BootstrapProjection
   ( BootstrapProjection
   , bootstrapRootGeneration
@@ -42,8 +50,12 @@ import Prodbox.Control.KindIntent
   ( KindIntentObservation (..)
   , KindIntentResult (..)
   , observeKindIntent
+  , observeKindFamilyIntent
+  , observeKindOwnerFamilyIntent
   , observeKindVolumeIntent
   , recordKindIntent
+  , recordKindFamilyIntent
+  , recordKindOwnerFamilyIntent
   , recordKindVolumeIntent
   )
 import Prodbox.Control.KindVolumePrepare (prepareKindVolumeDirectory)
@@ -51,6 +63,7 @@ import System.IO.Error (IOErrorType, ioeGetErrorType)
 import System.Posix.Files (fileMode, fileOwner, getFdStatus, isDirectory)
 import System.Posix.Types (Fd (..))
 import System.Posix.User (getEffectiveUserID)
+import System.Timeout (timeout)
 
 foreign import capi "sys/file.h value LOCK_EX" exclusiveLock :: CInt
 foreign import capi "sys/file.h value LOCK_NB" nonBlockingLock :: CInt
@@ -59,6 +72,7 @@ foreign import capi "sys/file.h flock" lockFile :: CInt -> CInt -> IO CInt
 
 data KindLeaseError
   = KindLeaseBusy
+  | KindLeaseDeadlineExpired
   | KindLeaseGenerationUnavailable
   | KindLeaseUnobservable
   | KindLeaseScopeCallbackFailed !IOErrorType ![ScopeDescriptorIoFailure]
@@ -114,6 +128,22 @@ withNewKindOperation bootstrap operationId =
     intent <- recordKindIntent bootstrap operationId
     pure $ if intent == KindIntentRecorded then Right () else Left (KindOperationIntentRefused intent)
 
+-- The protocol choice is part of the exclusive initial record. In particular,
+-- it cannot be attached later to an operation of unknown provenance.
+withNewKindFamilyOperation
+  :: BootstrapProjection -> String -> (IO Bool -> IO value) -> IO (KindOperationOutcome value)
+withNewKindFamilyOperation bootstrap operationId =
+  withIntentOperation bootstrap operationId (observeKindFamilyIntent bootstrap) $ do
+    intent <- recordKindFamilyIntent bootstrap operationId
+    pure $ if intent == KindIntentRecorded then Right () else Left (KindOperationIntentRefused intent)
+
+withNewKindOwnerFamilyOperation
+  :: BootstrapProjection -> String -> (IO Bool -> IO value) -> IO (KindOperationOutcome value)
+withNewKindOwnerFamilyOperation bootstrap operationId =
+  withIntentOperation bootstrap operationId (observeKindOwnerFamilyIntent bootstrap) $ do
+    intent <- recordKindOwnerFamilyIntent bootstrap operationId
+    pure $ if intent == KindIntentRecorded then Right () else Left (KindOperationIntentRefused intent)
+
 -- | Reacquire an existing, exactly matching intent without creating or
 -- replacing it. The caller must independently settle any previous worker and
 -- establish lifecycle admission before performing an effect.
@@ -124,6 +154,65 @@ withRecoveredKindOperation
   -> IO (KindOperationOutcome value)
 withRecoveredKindOperation bootstrap operationId =
   withIntentOperation bootstrap operationId (observeKindIntent bootstrap) (pure (Right ()))
+
+-- Retry only a confirmed busy lease before entering the callback. Once a
+-- callback starts its own bounds and settlement govern it; this helper never
+-- times it out or repeats it. Unobservable and changed states fail closed.
+withRecoveredKindOperationUntil
+  :: Word64 -> BootstrapProjection -> String -> (IO Bool -> IO value)
+  -> IO (KindOperationOutcome value)
+withRecoveredKindOperationUntil ending bootstrap operation action = go
+ where
+  go = do
+    now <- getMonotonicTimeNSec
+    if now >= ending then pure (KindOperationRefused (KindOperationLeaseRefused KindLeaseDeadlineExpired)) else do
+      result <- withRecoveredKindOperation bootstrap operation action
+      case result of
+        KindOperationRefused (KindOperationLeaseRefused KindLeaseBusy) -> do
+          after <- getMonotonicTimeNSec
+          if after >= ending then pure (KindOperationRefused (KindOperationLeaseRefused KindLeaseDeadlineExpired))
+            else do
+              let remaining = (ending - after) `div` 1000
+              if remaining == 0 then pure (KindOperationRefused (KindOperationLeaseRefused KindLeaseDeadlineExpired))
+                else threadDelay (fromIntegral (min 50000 remaining)) >> go
+        _ -> pure result
+
+data KindLeaseHandoff
+  = KindLeaseHandoffReady
+  | KindLeaseHandoffExpired
+  | KindLeaseHandoffUnstable
+  | KindLeaseHandoffRefused !(KindOperationOutcome Bool)
+  deriving (Eq, Show)
+
+-- Wait only for the launcher to release this same recovered operation. A
+-- busy lease is the sole retryable observation; all uncertain closing results
+-- and changes to the pinned process owner fail closed. This does not carry a
+-- lease into the worker or replace the worker's own per-effect acquisition.
+awaitKindLeaseHandoff :: Word64 -> BootstrapProjection -> String -> IO Bool -> IO KindLeaseHandoff
+awaitKindLeaseHandoff ending bootstrap operation ownerStable = do
+  now <- getMonotonicTimeNSec
+  if now >= ending || (ending - now) `div` 1000 == 0
+    then pure KindLeaseHandoffExpired
+    else do
+      let micros = min (fromIntegral (maxBound :: Int) :: Word64) ((ending - now) `div` 1000)
+      result <- timeout (fromIntegral micros) loop
+      finished <- getMonotonicTimeNSec
+      pure $ case result of
+        Nothing -> KindLeaseHandoffExpired
+        Just KindLeaseHandoffReady | finished >= ending -> KindLeaseHandoffExpired
+        Just outcome -> outcome
+ where
+  loop = do
+    owner <- ownerStable
+    if not owner then pure KindLeaseHandoffUnstable else do
+      observed <- withRecoveredKindOperation bootstrap operation $ \stable -> (&&) <$> stable <*> ownerStable
+      case observed of
+        KindOperationRefused (KindOperationLeaseRefused KindLeaseBusy) -> threadDelay 50000 >> loop
+        KindOperationCallbackReturned True -> do
+          final <- ownerStable
+          pure (if final then KindLeaseHandoffReady else KindLeaseHandoffUnstable)
+        KindOperationCallbackReturned False -> pure KindLeaseHandoffUnstable
+        _ -> pure (KindLeaseHandoffRefused observed)
 
 -- | Record the exact volume before entering the callback. This is not a
 -- lifecycle admission permit or proof that an earlier worker settled.

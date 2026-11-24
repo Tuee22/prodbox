@@ -30,6 +30,7 @@ import Prodbox.Config.BootstrapProjection
   , bootstrapKindTool
   , bootstrapNodeArtifact
   , bootstrapRootGeneration
+  , bootstrapRuntimeSocket
   , bootstrapScope
   , readBootstrapProjection
   )
@@ -95,11 +96,12 @@ scenario selected projection = do
   executable <- getExecutablePath
   binaryBytes <- ByteString.readFile executable
   sourceResult <- captureSourceIdentity "." []
-  randomBytes <- readRandomBytes
+  randomResult <- readRandomBytes
   started <- getMonotonicTimeNSec
-  case sourceResult of
-    Left failure -> writeOutputLine ("source identity refused: " ++ show failure) >> pure (ExitFailure 2)
-    Right source -> do
+  case (sourceResult, randomResult) of
+    (Left failure, _) -> writeOutputLine ("source identity refused: " ++ show failure) >> pure (ExitFailure 2)
+    (_, Left failure) -> writeOutputLine ("scenario entropy refused: " ++ failure) >> pure (ExitFailure 2)
+    (Right source, Right randomBytes) -> do
       let second = 1000000000
           budget = ScenarioBudget (started + 2400 * second) (started + 3000 * second) (2048 * 1048576) 2400000000 0
           artifacts =
@@ -294,7 +296,7 @@ scenario selected projection = do
       loginOther <- loginAs "prodbox-token-accessor-auditor" managementNamespace "default"
       case5Done <- getMonotonicTimeNSec
       deleteRun <- publicWith ["control", "delete", "--yes"] ByteString.empty
-      absent <- independentAbsence cluster
+      absent <- independentAbsence (bootstrapRuntimeSocket projection) cluster
       retained <- independentHostData root generation (bootstrapNodeArtifact projection)
       done <- getMonotonicTimeNSec
       let all' =

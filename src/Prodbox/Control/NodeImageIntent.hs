@@ -177,7 +177,10 @@ recordNodeImageResult
   -> IO NodeImageResultWrite
 recordNodeImageResult bootstrap intent result stable = do
   touched <- newIORef False
-  outcome <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
+  -- The closing read independently repeats the bounded admission checks. Its
+  -- budget must fit inside the writer's budget, including the checks before
+  -- the durable write; the enclosing operation still supplies its deadline.
+  outcome <- timeout 60000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
     checked <- try (writeRecord touched root sameRoot)
     pure (either (const NodeImageResultRefused) id (checked :: Either IOException NodeImageResultWrite))
   changed <- readIORef touched
@@ -224,7 +227,7 @@ observeRecordedNodeImageResult bootstrap operation =
 observeNodeImageResult
   :: BootstrapProjection -> NodeImageIntent -> IO Bool -> IO NodeImageResultObservation
 observeNodeImageResult bootstrap intent stable = do
-  outcome <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
+  outcome <- timeout 30000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
     checked <- try (readRecord root sameRoot)
     pure
       ( either

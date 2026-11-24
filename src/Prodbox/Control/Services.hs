@@ -43,11 +43,14 @@ import Prodbox.Config.DeploymentScope (scopeKindName, scopeRoot)
 import Prodbox.Control.BrokerDeploy (deployBroker, observeBrokerReadiness)
 import Prodbox.Control.DockerIdentity (readDocker)
 import Prodbox.Control.KindNodeBootstrap (writeJournalRecord)
+import Prodbox.Control.KindIntent (KindIntentObservation (KindIntentMatches), observeKindIntent)
 import Prodbox.Control.ManagementPolicy (managementNamespace, managementPolicyManifest)
 import Prodbox.Control.NetworkEnforcement
-  ( EnforcementOutcome (..)
-  , enforcementProven
-  , observeNetworkEnforcement
+  ( EnforcementCleanup (..)
+  , EnforcementOutcome (..)
+  , enforcementComplete
+  , renderEnforcementCleanup
+  , observeNetworkEnforcementScoped
   )
 import Prodbox.Control.ServiceSupport (ServiceStep (..), importImageStep, run)
 import Prodbox.Infra.BootstrapImageArchive (BootstrapImageArchitecture (BootstrapImageAmd64))
@@ -132,8 +135,16 @@ reconcileServices bootstrap = do
               ]
           )
       -- 1. the management policy must be enforced before any secret exists.
-      enforcement <- observeNetworkEnforcement kubeconfig "prodbox-services-gate"
-      let proven = maybe False enforcementProven (enforcementObservation enforcement)
+      enforcement <-
+        if attempt
+          then do
+            intent <- observeKindIntent bootstrap
+            case intent of
+              KindIntentMatches operation -> observeNetworkEnforcementScoped bootstrap operation "prodbox-services-gate"
+              _ -> pure (EnforcementOutcome Nothing (Just "kind operation identity unavailable") EnforcementCleanupNotStarted)
+          else pure (EnforcementOutcome Nothing (Just "service attempt was not recorded") EnforcementCleanupNotStarted)
+      let proven =
+            attempt && enforcementComplete enforcement
           gate =
             ServiceStep
               "enforcement-gate"
@@ -142,7 +153,9 @@ reconcileServices bootstrap = do
                   then "pinned management policy enforced by real sockets before any secret is created"
                   else
                     "enforcement not proven ("
-                      ++ maybe "no observation" (const "observation incomplete") (enforcementObservation enforcement)
+                      ++ maybe (maybe "no observation" id (enforcementFailure enforcement)) (const "observation incomplete") (enforcementObservation enforcement)
+                      ++ "; cleanup: "
+                      ++ renderEnforcementCleanup (enforcementCleanup enforcement)
                       ++ "); no secret was created"
               )
       if not proven

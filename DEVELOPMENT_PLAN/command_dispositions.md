@@ -81,7 +81,7 @@ Disposition `Preserved` retains capability with the common context/engine. `Repl
 | C054 | `prodbox cluster wait` | `prodbox admin control wait` | Replaced | 3 | Maintenance | `--verbose`, `--version`, `--timeout`, `--namespace`, `--config` | — |
 | C055 | `prodbox cluster workload-logs` | `prodbox services logs` | Replaced | 6 | Operator | `--verbose`, `--version`, `--namespace`, `--tail`, `--config` | — |
 | C056 | `prodbox commands` | `prodbox commands` | Preserved | 1 | Operator | `--verbose`, `--version`, `--tree`, `--json`, `--config` | — |
-| C057 | `prodbox config setup` | `prodbox config setup` | Preserved | 1 | Operator | `--verbose`, `--version`, `--dry-run`, `--plan-file`, `--config` | — |
+| C057 | `prodbox config setup` | `prodbox config setup` | Preserved | 1 | Operator | `--verbose`, `--version`, `--dry-run`, `--plan-file`, `--fresh-test`, `--config` | — |
 | C058 | `prodbox config show` | `prodbox config show` | Preserved | 1 | Operator | `--verbose`, `--version`, `--config` | — |
 | C059 | `prodbox config validate` | `prodbox config validate` | Preserved | 1 | Operator | `--verbose`, `--version`, `--config` | — |
 | C060 | `prodbox config schema` | `prodbox config schema` | Preserved | 1 | Operator | `--verbose`, `--version`, `--config` | — |
@@ -185,6 +185,8 @@ Disposition `Preserved` retains capability with the common context/engine. `Repl
 | C160 | `prodbox control authority-deploy` | `prodbox control authority-deploy` | Preserved | 3 | Operator | `--verbose`, `--version`, `--config` | — |
 | C159 | `prodbox control lifecycle-status` | `prodbox control lifecycle-status` | Preserved | 3 | Operator | `--verbose`, `--version`, `--config` | — |
 | C157 | `prodbox control broker-baseline` | `prodbox control broker-baseline` | Preserved | 2 | Operator | `--verbose`, `--version`, `--config` | — |
+| C162 | `prodbox test status` | `prodbox test status` | Preserved | 1 | Developer | `--verbose`, `--version`, `--config` | — |
+| C163 | `prodbox internal-kind-family-controller` | `prodbox internal kind-family-controller` | Internalized | 1 | Internal | `--verbose`, `--version`, `--config`, `--request`, `--input-fingerprint`, `--operation-key`, `--outer-ns`, `--work-ns`, `--hard-ns`, `--stop-ns`, `--finish-ns`, `--config` | `--config`, `--request`, `--input-fingerprint`, `--operation-key`, `--outer-ns`, `--work-ns`, `--hard-ns`, `--stop-ns`, `--finish-ns` |
 
 ## Option disposition
 
@@ -213,6 +215,7 @@ This list accounts for every distinct baseline long option; the leaf table recor
 | `--emit-readonly-script` | — | Preserve read-only provider diagnostics with their declared field; never emit a mutating fallback script. |
 | `--finish-ns` | — | Internalize with authenticated worker/controller launch; preserve exact immutable binding and validation, never an ordinary operator permission shortcut. |
 | `--force` | — | Preserve overwrite only for authored test-plan generation; never force infrastructure or retained-state reset. |
+| `--fresh-test` | — | Preserve exclusive creation of a new test root; refuse production, existing roots and incomplete enrollment. |
 | `--hard-ns` | — | Internalize with authenticated worker/controller launch; preserve exact immutable binding and validation, never an ordinary operator permission shortcut. |
 | `--image-digest` | — | Internalize with authenticated worker/controller launch; preserve exact immutable binding and validation, never an ordinary operator permission shortcut. |
 | `--ingress-schema` | — | Internalize with authenticated worker/controller launch; preserve exact immutable binding and validation, never an ordinary operator permission shortcut. |
@@ -293,6 +296,10 @@ The captured registry JSON does not serialize positional operand metadata. `CLI.
 | Stack/repair family operands | Declared family plus exact recorded scope, never arbitrary AWS identifiers granting ownership | 5–8 |
 
 New paths with no baseline leaf are explicitly owned: `plan reconcile/delete`, `operations list/show/resume/cancel`, `control delete` and aggregate `status` in Phase 3; initial `control reconcile/status` in Phase 1 then management services in Phase 2; `test list/status/cleanup` and bounded mutation execution in Phase 1 (cloud cleanup extends with introduced families); `services logs` in Phase 6; credential status in Phase 4; federation status in Phase 9. Real cloud/application reconcile becomes available only in its owning phase.
+
+`test status RUN_ID` currently supports read-only inspection of retained local
+mutation-campaign records. It reports incomplete without observing Docker,
+worker settlement or cleanup; other test-run status and cleanup remain open.
 
 Target `reconcile --target aws` means the EKS application projection and closes in Phase 8; the cheap Phase 5 S3 resource uses the separately named `admin aws stack storage-canary` / test family without pretending EKS exists. The ordinary root `delete` handles all families admitted so far, starting with credential-family resources in Phase 4.
 

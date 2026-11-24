@@ -1,0 +1,39 @@
+.TH PRODBOX_internal_kind_family_controller 1
+.SH NAME
+prodbox-internal-kind-family-controller \- Run the pinned kind operation-family controller
+.SH SYNOPSIS
+.B prodbox internal-kind-family-controller
+.SH DESCRIPTION
+Internal controller requiring pinned inputs and an observed operation parent. Arguments do not grant lifecycle admission.
+.SH OPTIONS
+.TP
+\fB--config\fR <PATH>
+Exact pinned import-free controller settings file
+.TP
+\fB--request\fR <PATH>
+Exact pinned original controller request file
+.TP
+\fB--input-fingerprint\fR <SHA256>
+Published executable/settings/request fingerprint
+.TP
+\fB--operation-key\fR <SHA256>
+Original operation execution key
+.TP
+\fB--outer-ns\fR <NANOSECONDS>
+Original monotonic outer deadline
+.TP
+\fB--work-ns\fR <NANOSECONDS>
+Original monotonic work deadline
+.TP
+\fB--hard-ns\fR <NANOSECONDS>
+Original monotonic hard deadline
+.TP
+\fB--stop-ns\fR <NANOSECONDS>
+Original monotonic stop deadline
+.TP
+\fB--finish-ns\fR <NANOSECONDS>
+Original monotonic finish deadline
+.SH EXAMPLES
+.TP
+\fBprodbox internal-kind-family-controller --config /run/prodbox/controller/settings.dhall --request /run/prodbox/controller/request.json --input-fingerprint aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --operation-key bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --outer-ns 50000000000 --work-ns 40000000000 --hard-ns 42000000000 --stop-ns 45000000000 --finish-ns 47000000000\fR
+Closed envelope supplied by the operation publisher

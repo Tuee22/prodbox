@@ -15,6 +15,8 @@ module Prodbox.Control.NodeImageOperation
   , withNewConnectedNodeImageAttempt
   , NodeImageRecordedSubmission (..)
   , withNewConnectedNodeImageRecordedAttempt
+  , withNewConnectedNodeImageRecordedFamilyAttempt
+  , withRecoveredConnectedNodeImageRecordedFamilyAttempt
   , observeRecoveredNodeImagePreparation
   , observeRecoveredDaemonBoundNodeImagePreparation
   , NodeImageRecoveryPoint (..)
@@ -47,8 +49,10 @@ import Prodbox.Control.KindDockerReadGate
 import Prodbox.Control.KindLease
   ( KindOperationOutcome
   , withNewKindOperation
+  , withNewKindFamilyOperation
   , withRecoveredKindOperation
   )
+import Prodbox.Control.KindIntent (KindIntentObservation (KindIntentMatches), observeKindOwnerFamilyIntent)
 import Prodbox.Control.NodeArchive
   ( InspectedArchiveResult
   , VerifiedNodeArchive (..)
@@ -288,7 +292,7 @@ withNewConnectedNodeImageAttempt
            )
        )
 withNewConnectedNodeImageAttempt bootstrap operation action =
-  withNewConnectedNodeImageAttemptBound bootstrap operation (\_ -> action)
+  withConnectedNodeImageAttemptBound False False id bootstrap operation (\_ -> action)
 
 data NodeImageRecordedSubmission = NodeImageRecordedSubmission
   { recordedSubmission :: !DockerImageSubmissionObservation
@@ -320,14 +324,45 @@ withNewConnectedNodeImageRecordedAttempt
                )
            )
        )
-withNewConnectedNodeImageRecordedAttempt bootstrap operation action =
-  withNewConnectedNodeImageAttemptBound bootstrap operation $ \bound verified digest size descriptor session stable -> do
+withNewConnectedNodeImageRecordedAttempt = withNewConnectedNodeImageRecordedAttemptFor False
+
+-- The family variant makes its protocol selection in the initial exclusive
+-- operation intent, before the image load or any subsequent effect.
+withNewConnectedNodeImageRecordedFamilyAttempt
+  :: BootstrapProjection -> String
+  -> (VerifiedNodeArchive -> String -> Integer -> Fd -> DockerSession -> IO Bool -> IO DockerImageSubmissionObservation)
+  -> IO (KindOperationOutcome (InspectedArchiveResult (StagedNodeResult
+       (NodeImagePreparation (NodeImageConnectedObservation (NodeImageAttemptAction NodeImageRecordedSubmission))))))
+withNewConnectedNodeImageRecordedFamilyAttempt = withNewConnectedNodeImageRecordedAttemptFor True
+
+withNewConnectedNodeImageRecordedAttemptFor
+  :: Bool -> BootstrapProjection -> String
+  -> (VerifiedNodeArchive -> String -> Integer -> Fd -> DockerSession -> IO Bool -> IO DockerImageSubmissionObservation)
+  -> IO (KindOperationOutcome (InspectedArchiveResult (StagedNodeResult
+       (NodeImagePreparation (NodeImageConnectedObservation (NodeImageAttemptAction NodeImageRecordedSubmission))))))
+withNewConnectedNodeImageRecordedAttemptFor family bootstrap operation action =
+  withConnectedNodeImageAttemptBound family False id bootstrap operation $ \bound verified digest size descriptor session stable -> do
     outcome <- action verified digest size descriptor session stable
     written <- recordNodeImageResult bootstrap bound (submissionTransport outcome) stable
     pure (NodeImageRecordedSubmission outcome written)
 
-withNewConnectedNodeImageAttemptBound
-  :: BootstrapProjection
+-- The operation and family owner already exist when a managed controller
+-- starts prerequisites. The admission recheck is borrowed across staging,
+-- the image attempt, the daemon effect and its retained result.
+withRecoveredConnectedNodeImageRecordedFamilyAttempt
+  :: BootstrapProjection -> String -> (IO Bool -> IO Bool)
+  -> (VerifiedNodeArchive -> String -> Integer -> Fd -> DockerSession -> IO Bool -> IO DockerImageSubmissionObservation)
+  -> IO (KindOperationOutcome (InspectedArchiveResult (StagedNodeResult
+       (NodeImagePreparation (NodeImageConnectedObservation (NodeImageAttemptAction NodeImageRecordedSubmission))))))
+withRecoveredConnectedNodeImageRecordedFamilyAttempt bootstrap operation admission action =
+  withConnectedNodeImageAttemptBound True True admission bootstrap operation $ \bound verified digest size descriptor session stable -> do
+    outcome <- action verified digest size descriptor session stable
+    written <- recordNodeImageResult bootstrap bound (submissionTransport outcome) stable
+    pure (NodeImageRecordedSubmission outcome written)
+
+withConnectedNodeImageAttemptBound
+  :: Bool -> Bool -> (IO Bool -> IO Bool)
+  -> BootstrapProjection
   -> String
   -> ( NodeImageIntent
        -> VerifiedNodeArchive
@@ -346,8 +381,8 @@ withNewConnectedNodeImageAttemptBound
                )
            )
        )
-withNewConnectedNodeImageAttemptBound bootstrap operation action =
-  withNewDaemonBoundNodeImagePreparation bootstrap operation prepare
+withConnectedNodeImageAttemptBound family recovered admission bootstrap operation action =
+  withPreparation family recovered admission True bootstrap operation prepare
  where
   prepare verified digest size descriptor stable =
     case mkNodeImageIntent operation (nodeManifestDigest verified) (nodeConfigDigest verified) digest size of
@@ -384,7 +419,7 @@ withNewNodeImagePreparation
   -> (VerifiedNodeArchive -> String -> Integer -> Fd -> IO Bool -> IO value)
   -> IO (KindOperationOutcome (InspectedArchiveResult (StagedNodeResult (NodeImagePreparation value))))
 withNewNodeImagePreparation bootstrap operation action =
-  withNewPreparation False bootstrap operation action
+  withNewPreparation False False bootstrap operation action
 
 -- | Record a repeated daemon/socket observation alongside the held stage.
 -- This is still not daemon authentication or an effect admission permit.
@@ -394,21 +429,33 @@ withNewDaemonBoundNodeImagePreparation
   -> (VerifiedNodeArchive -> String -> Integer -> Fd -> IO Bool -> IO value)
   -> IO (KindOperationOutcome (InspectedArchiveResult (StagedNodeResult (NodeImagePreparation value))))
 withNewDaemonBoundNodeImagePreparation bootstrap operation action =
-  withNewPreparation True bootstrap operation action
+  withNewPreparation False True bootstrap operation action
 
 withNewPreparation
   :: Bool
+  -> Bool
   -> BootstrapProjection
   -> String
   -> (VerifiedNodeArchive -> String -> Integer -> Fd -> IO Bool -> IO value)
   -> IO (KindOperationOutcome (InspectedArchiveResult (StagedNodeResult (NodeImagePreparation value))))
-withNewPreparation requireDaemon bootstrap operation action =
-  withNewKindOperation bootstrap operation $ \operationStable ->
+withNewPreparation family requireDaemon bootstrap operation action =
+  withPreparation family False id requireDaemon bootstrap operation action
+
+withPreparation
+  :: Bool -> Bool -> (IO Bool -> IO Bool) -> Bool -> BootstrapProjection -> String
+  -> (VerifiedNodeArchive -> String -> Integer -> Fd -> IO Bool -> IO value)
+  -> IO (KindOperationOutcome (InspectedArchiveResult (StagedNodeResult (NodeImagePreparation value))))
+withPreparation family recovered admission requireDaemon bootstrap operation action =
+  (if recovered then withRecoveredKindOperation else if family then withNewKindFamilyOperation else withNewKindOperation) bootstrap operation $ \operationStable ->
     withStagedNodeArchive bootstrap (prepare operationStable)
  where
   prepare operationStable verified digest size descriptor stageStable = do
     daemon <- observeOptionalDaemon requireDaemon (bootstrapRuntimeSocket bootstrap)
-    let localStable = (&&) <$> operationStable <*> stageStable
+    let localStable = do
+          owner <- admission operationStable
+          protocol <- if recovered then (== KindIntentMatches operation) <$> observeKindOwnerFamilyIntent bootstrap else pure True
+          stage <- stageStable
+          pure (owner && protocol && stage)
         stable = do
           local <- localStable
           if not local

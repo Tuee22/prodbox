@@ -9,6 +9,7 @@ module Prodbox.Subprocess.HostControllerInputRetirement
   ( InputRetirementError (..)
   , HostInputRetirementReceipt
   , retireHostControllerInputs
+  , retireHostControllerInputsWithAdmission
   , hostInputRetirementReceiptMatches
   , HostNeverSentInputRetirementReceipt
   , retireNeverSentHostControllerInputs
@@ -80,6 +81,8 @@ data InputRetirementError
   | InputRetirementNamespaceRefused
   | InputRetirementMetadataRefused
   | InputRetirementJournalMismatch
+  | InputRetirementAdmissionChanged
+  | InputRetirementPhysicalAndAdmissionChanged !Retirement.RetirementError
   | InputRetirementFileChanged !Inputs.HostControllerInputRole
   | InputRetirementFileMissing !Inputs.HostControllerInputRole
   | InputRetirementConflictingNames !Inputs.HostControllerInputRole
@@ -95,7 +98,7 @@ newtype HostInputRetirementReceipt = HostInputRetirementReceipt Inputs.HostContr
 newtype HostNeverSentInputRetirementReceipt = HostNeverSentInputRetirementReceipt ByteString
 
 data InputRetirementSource
-  = SubmittedSource !Retirement.HostOperationRetirement !Inputs.HostControllerSubmissionRecord
+  = SubmittedSource !Retirement.HostOperationRetirement !Inputs.HostControllerSubmissionRecord !(IO Bool)
   | NeverSentSource !Publication.HostPublicationNeverSent
 
 hostInputRetirementReceiptMatches
@@ -107,13 +110,19 @@ retireHostControllerInputs
   -> Retirement.HostOperationRetirement
   -> Inputs.HostControllerSubmissionRecord
   -> IO (Either InputRetirementError HostInputRetirementReceipt)
-retireHostControllerInputs supplied owner record = do
+retireHostControllerInputs supplied owner record =
+  retireHostControllerInputsWithAdmission supplied owner record (pure True)
+
+retireHostControllerInputsWithAdmission
+  :: Word64 -> Retirement.HostOperationRetirement -> Inputs.HostControllerSubmissionRecord -> IO Bool
+  -> IO (Either InputRetirementError HostInputRetirementReceipt)
+retireHostControllerInputsWithAdmission supplied owner record stable = do
   let ending = min supplied (Retirement.hostOperationRetirementDeadline owner)
   borrowed <- Retirement.withHostOperationRetirementBorrow ending owner $ \lease ->
     if not (Retirement.hostOperationRetirementMatches lease record)
       then pure (Left InputRetirementRecordMismatch)
       else do
-        result <- runLocked ending (SubmittedSource lease record)
+        result <- runLocked ending (SubmittedSource lease record stable)
         pure (HostInputRetirementReceipt record <$ result)
   pure (either (Left . InputRetirementPhysicalRefused) id borrowed)
 
@@ -203,7 +212,7 @@ verifySubmission
   :: Word64 -> UserID -> InputRetirementSource -> Fd -> ExceptT InputRetirementError IO ()
 verifySubmission ending uid source parent = case source of
   NeverSentSource _ -> pure ()
-  SubmittedSource _ record -> do
+  SubmittedSource _ record _ -> do
     let request = directory uid source </> Publication.hostControllerRequestName
         submission =
           takeFileName
@@ -223,12 +232,12 @@ terminalBytes record = "prodbox-host-input-retirement/terminal/v1\NUL" <> source
 
 sourceBytes :: InputRetirementSource -> ByteString
 sourceBytes source = case source of
-  SubmittedSource _ record -> Inputs.encodeHostControllerSubmission record
+  SubmittedSource _ record _ -> Inputs.encodeHostControllerSubmission record
   NeverSentSource owner -> Publication.hostPublicationNeverSentMetadata owner
 
 sourceKey :: InputRetirementSource -> Identity.HostExecutionKey
 sourceKey source = case source of
-  SubmittedSource _ record -> Inputs.hostControllerSubmissionKey record
+  SubmittedSource _ record _ -> Inputs.hostControllerSubmissionKey record
   NeverSentSource owner -> Publication.hostPublicationNeverSentKey owner
 
 directory :: UserID -> InputRetirementSource -> FilePath
@@ -237,7 +246,7 @@ directory uid source =
 
 sourceKind :: InputRetirementSource -> Identity.HostControllerKind
 sourceKind source = case source of
-  SubmittedSource _ record -> Inputs.hostControllerSubmissionKind record
+  SubmittedSource _ record _ -> Inputs.hostControllerSubmissionKind record
   NeverSentSource owner -> Publication.hostPublicationNeverSentKind owner
 
 payloadRole :: Payload -> Inputs.HostControllerInputRole
@@ -306,12 +315,12 @@ requireOriginal ending uid record parent payload = ExceptT $ withPair ending par
 
 expectsPayload :: InputRetirementSource -> Payload -> Bool
 expectsPayload source payload = case source of
-  SubmittedSource _ _ -> True
+  SubmittedSource {} -> True
   NeverSentSource owner -> Publication.hostPublicationNeverSentHasInput owner (payloadRole payload)
 
 allowsMissingOriginal :: InputRetirementSource -> Bool
 allowsMissingOriginal source = case source of
-  SubmittedSource _ _ -> False
+  SubmittedSource {} -> False
   NeverSentSource owner -> Publication.hostPublicationNeverSentAllowsMissingOriginal owner
 
 retirePayload
@@ -378,7 +387,7 @@ fileMatches
   -> FileStatus
   -> Bool
 fileMatches source role position root status = case source of
-  SubmittedSource _ record -> Inputs.hostControllerRecordedInputMatches record role position root status
+  SubmittedSource _ record _ -> Inputs.hostControllerRecordedInputMatches record role position root status
   NeverSentSource owner ->
     Publication.hostPublicationNeverSentParentMatches owner root
       && Publication.hostPublicationNeverSentFileMatches owner role position status
@@ -387,10 +396,15 @@ verifyPermission :: Word64 -> InputRetirementSource -> ExceptT InputRetirementEr
 verifyPermission ending source = do
   checkTime ending
   ExceptT $ case source of
-    SubmittedSource owner _ ->
-      fmap
-        (either (Left . InputRetirementPhysicalRefused) Right)
-        (Retirement.verifyHostOperationRetirementBefore ending owner)
+    SubmittedSource owner _ stable -> do
+      before <- stable
+      observed <- Retirement.verifyHostOperationRetirementBefore ending owner
+      after <- stable
+      pure $ case (before && after, observed) of
+        (False, Left cause) -> Left (InputRetirementPhysicalAndAdmissionChanged cause)
+        (False, Right ()) -> Left InputRetirementAdmissionChanged
+        (True, Left cause) -> Left (InputRetirementPhysicalRefused cause)
+        (True, Right ()) -> Right ()
     NeverSentSource owner ->
       fmap
         (either (Left . InputRetirementPublicationRefused) Right)
@@ -416,7 +430,7 @@ verifyRoot ending uid record parent = do
       (parentMatches record payload status)
       (throwE InputRetirementNamespaceRefused)
   parentMatches source payload status = case source of
-    SubmittedSource _ original ->
+    SubmittedSource _ original _ ->
       Inputs.hostControllerRecordedInputPath original (payloadRole payload)
         == Just (directory uid source </> payloadName payload)
         && Inputs.hostControllerRecordedParentMatches original (payloadRole payload) status

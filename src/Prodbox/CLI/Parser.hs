@@ -58,6 +58,13 @@ validateCommandArgv argv =
         (Left . ("Internal RPC birth argument envelope refused: " ++) . show)
         (const (Right ()))
         (parseHostControllerArguments arguments)
+    ["internal-kind-family-controller", "--help"] -> Right ()
+    ["internal-kind-family-controller", "-h"] -> Right ()
+    "internal-kind-family-controller" : arguments ->
+      either
+        (Left . ("Internal kind family argument envelope refused: " ++) . show)
+        (const (Right ()))
+        (parseHostControllerArguments arguments)
     _ -> case forbiddenArgvMessage argv of
       Just message -> Left message
       Nothing -> Right ()

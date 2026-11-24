@@ -135,10 +135,12 @@ prodbox
       gateway-restrict
       gateway-unrestrict
   internal-kind-controller
+  internal-kind-family-controller
   internal-rpc-birth-controller
   nuke
   test
     list
+    status
     init
     run
     all

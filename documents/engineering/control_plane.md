@@ -59,7 +59,84 @@ Phase 1 proves real mounts, kind node recreation, context isolation, management 
 
 ## Implemented through Phase 1
 
-`control reconcile` admits a test identity only after, in order, host capacity (the compiled controller envelope against the observed CPU affinity, memory and device), the absence of Docker resources already bearing the scope's cluster name, and free declared host ports; each refusal happens before any archive, image, network, volume or node effect. The confined kind controller runs as a transient unit in its own slice. The pinned management NetworkPolicy lives in `Prodbox.Control.ManagementPolicy` (digest pinned by a unit test) and enforcement is observed with real sockets under the shipped kindnet CNI, never inferred from a successful apply. Authority admission, Vault and the secret workers are Phase 2 and later. Evidence: [Phase 1 validation](../../DEVELOPMENT_PLAN/evidence/phase_01_validation.md).
+`control reconcile` admits a test identity only after, in order, host capacity (the compiled controller envelope against the observed CPU affinity, memory and device), the absence of Docker resources already bearing the scope's cluster name, and free declared host ports; each refusal happens before any archive, image, network, volume or node effect. Fresh reconcile records an owner-first family intent and attempts the managed launch, but the family-send guard currently refuses submission. The pinned management NetworkPolicy lives in `Prodbox.Control.ManagementPolicy` (digest pinned by a unit test); enforcement requires real socket observations under kindnet. Authority admission, Vault and the secret workers are Phase 2 and later. Earlier observations are recorded in [Phase 1 validation](../../DEVELOPMENT_PLAN/evidence/phase_01_validation.md), but do not qualify the current family path.
+
+The current control-delete implementation retains an existing absence-control
+cleanup composition. Legacy controller recovery remains guarded; a family
+intent can enter the family recovery branch only after its exact submission,
+physical retirement and input retirement are confirmed. The public reconcile
+command creates owner-first family intents for fresh operations and inspects
+existing family intents using its bound completion observer. The completion observer
+uses the controller's recorded probe result and matching cleanup journal; it
+does not run a new post-retirement probe. Reconcile still reports incomplete
+until the selected Kubernetes API is independently bound to the owned node.
+The staged controller places its probe commands in the kind family and checks
+the selected API CA against the recorded node. A staged recovery worker binds
+cleanup to the recorded namespace UID and a separate recovery identity; its
+write-ahead locator retains its manager, executable and execution window. A
+staged sender and managed-parent composition exist, and the internal family
+command routes a distinct recovery key to that composition. Actual family
+submission remains disabled. A recovery-family
+retirement owner is implemented and has controlled fixture evidence; its real
+worker path is unqualified. Family delete requires a recorded probe cleanup
+and, when a recovery launch exists, matching UID and attempt records, exact
+input retirement and both family retirement owners. The delete composition
+does not yet establish terminal node or control-container absence.
+Incomplete family reconcile and the family delete composition can retire an
+explicitly never-sent cleanup publication while retaining its locator. They
+continue to report cleanup incomplete; this does not authorize a replacement
+worker or infer a never-sent state from missing publication.
+For an uncertain cleanup attempt, a staged verifier request and dispatcher
+bind a distinct execution identity to the cleanup and recorded namespace UID.
+The verifier readback holds both predecessor retirement owners; family delete
+also requires the verifier's exact retirement owner and published-input
+retirement before using that readback. Controlled fixtures exercise these
+boundaries, but actual family submission and real verifier execution remain
+disabled and unqualified. Incomplete reconcile reports a pending verifier's
+never-sent recovery disposition; it does not authorize a replacement verifier.
+The staged family worker now carries prerequisite image, network and volume
+preparation under its borrowed admission before node creation. Controlled
+fixtures cover admission refusal and a recovered image load; managed execution,
+partial-resource recovery and the public cutover remain unqualified.
+An owner-first `family-v2` intent distinguishes this model from older
+`family-v1` operations whose prerequisites were externally prepared. A missing
+v2 launch can be fenced under the operation lease before cleanup; a missing
+v1 launch remains unresolved. Neither local record establishes resource absence.
+The current cleanup locator declares a write-ahead publication protocol. Under
+the operation lease, a missing attempt marker can identify the pre-publication
+state; after that marker, a missing publication remains unconfirmed. Locators
+from the earlier staged format are refused rather than treated as this proof.
+`control status` reports the local cleanup locator and publication-attempt
+stage separately; those records do not establish a send or worker retirement.
+Incomplete family reconcile and family delete can also retire original-family
+publication inputs when the retained publisher proves they were never sent.
+They retain the operation and report incomplete; that proof alone does not
+establish node or dependent-resource absence. Family delete can borrow the
+never-sent proof across recorded prerequisite cleanup when the probe journal
+and cleanup publication records are empty; independent absence remains a
+separate observation.
+The original-family locator now also declares a write-ahead publication
+protocol. A missing attempt marker under the operation lease identifies the
+pre-publication state; after an attempt, missing publication is unconfirmed.
+Earlier staged locators without the declaration are refused.
+Before cleaning up a pre-publication operation, family delete records an
+exclusive cancellation that fences a later publication. It rechecks that
+cancellation under each effect lease and requires empty probe records.
+`control status` reports a matching cancellation separately from an attempted
+publication; conflicting or unobservable local records remain unconfirmed.
+For cleanup, a settled delete command that exits nonzero is retained as a
+failure before an independent namespace inventory can record absence. A
+transport or subprocess-settlement failure remains unconfirmed.
+For an unconfirmed delete attempt, a staged read-only protocol records a
+separately identified verifier's absence observation without issuing another
+delete. Its retained request and publication-attempt records bind the prior
+cleanup identity, verifier identity and namespace UID. Managed launch and
+retirement are not yet implemented. A staged managed-parent boundary binds the
+verifier's request and both predecessor retirement owners; the readback alone
+cannot authorize node removal.
+The staged family launcher can resume the exact retained request before its
+publication-attempt marker, within the original window; an existing marker
+fences another send. This resume is not yet connected to public reconcile.
 
 ## Implemented through Phase 2
 

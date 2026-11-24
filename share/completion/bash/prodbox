@@ -5,7 +5,7 @@ _prodbox()
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   if (( COMP_CWORD <= 1 )); then
-    words="admin-action aws bootstrap-broker credential-provisioner lifecycle-authority provider-worker authority-backup tls-retention target-secret-agent charts cluster commands control delete config dev dns edge gateway help host internal-kind-controller internal-rpc-birth-controller nuke test users vault workload"
+    words="admin-action aws bootstrap-broker credential-provisioner lifecycle-authority provider-worker authority-backup tls-retention target-secret-agent charts cluster commands control delete config dev dns edge gateway help host internal-kind-controller internal-kind-family-controller internal-rpc-birth-controller nuke test users vault workload"
   else
     key="${COMP_WORDS[@]:1:COMP_CWORD-1}"
     case "$key" in
@@ -106,7 +106,7 @@ _prodbox()
         words="gateway-restrict gateway-unrestrict"
         ;;
       "test")
-        words="list init run all lint unit integration"
+        words="list status init run all lint unit integration"
         ;;
       "test integration")
         words="all cli aws-iam dns-aws aws-eks env gateway-daemon gateway-pods control-plane-counterexample teardown-recovery create-interrupted certificate-scope clean-room-handoff cascade-qualification cascade-qualification-receipt aws-lifecycle-receipt aws-lifecycle aws-lifecycle-canary ha-rke2-aws lifecycle pulumi eks-volume-rebind charts-storage charts-platform resource-guardrails daemon-bootstrap pulsar-broker charts-vscode charts-api charts-websocket admin-routes public-dns keycloak-invite sealed-vault"

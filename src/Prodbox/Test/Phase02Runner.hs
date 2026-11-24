@@ -21,6 +21,7 @@ import Control.Exception (IOException, try)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Bits (xor)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.ByteString.Lazy qualified as LazyByteString
@@ -37,6 +38,7 @@ import Prodbox.Config.BootstrapProjection
   , bootstrapKindTool
   , bootstrapNodeArtifact
   , bootstrapRootGeneration
+  , bootstrapRuntimeSocket
   , bootstrapScope
   , readBootstrapProjection
   )
@@ -83,6 +85,7 @@ import System.Directory
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
+import System.IO (IOMode (ReadWriteMode), SeekMode (AbsoluteSeek), hSeek, withBinaryFile)
 import System.Posix.Files (setFileMode)
 
 runPhase02Scenario :: FilePath -> IO ExitCode
@@ -112,11 +115,12 @@ scenario selected projection = do
   executable <- getExecutablePath
   binaryBytes <- ByteString.readFile executable
   sourceResult <- captureSourceIdentity "." []
-  randomBytes <- readRandomBytes
+  randomResult <- readRandomBytes
   started <- getMonotonicTimeNSec
-  case sourceResult of
-    Left failure -> writeOutputLine ("source identity refused: " ++ show failure) >> pure (ExitFailure 2)
-    Right source -> do
+  case (sourceResult, randomResult) of
+    (Left failure, _) -> writeOutputLine ("source identity refused: " ++ show failure) >> pure (ExitFailure 2)
+    (_, Left failure) -> writeOutputLine ("scenario entropy refused: " ++ failure) >> pure (ExitFailure 2)
+    (Right source, Right randomBytes) -> do
       let second = 1000000000
           budget = ScenarioBudget (started + 2400 * second) (started + 3000 * second) (2048 * 1048576) 2400000000 0
           artifacts =
@@ -374,7 +378,7 @@ scenario selected projection = do
       -- Environment and services.
       reconcile1 <- public ["control", "reconcile"]
       services1 <- public ["control", "services"]
-      ready1 <- independentClusterReady root cluster
+      ready1 <- independentClusterReady (bootstrapRuntimeSocket projection) root cluster
       healthBeforeInit <- health
       -- Case 1: initialize once, keep the unlock object, round trip.
       unlock1 <- public ["control", "unlock"]
@@ -541,6 +545,53 @@ scenario selected projection = do
         Right bytes -> ByteString.writeFile (backupRoot </> corruptName </> "manifest.json") bytes
         Left _ -> pure ()
       corruptRestore <- public ["control", "restore", corruptName, "--yes"]
+      let contentCorruptName = "backup-corrupt0002"
+      contentCopied <-
+        maybe
+          (pure (Left "no backup"))
+          (\name -> run "/usr/bin/cp" ["-a", backupRoot </> name, backupRoot </> contentCorruptName])
+          backupName
+      candidates <-
+        run
+          "/usr/bin/find"
+          [ backupRoot </> contentCorruptName </> "vault-data"
+          , "-type"
+          , "f"
+          , "-size"
+          , "+0c"
+          , "-printf"
+          , "%p\n"
+          , "-quit"
+          ]
+      contentChanged <- case (contentCopied, candidates) of
+        (Right (0, _, _), Right (0, pathLine, _)) -> case lines pathLine of
+          path : _ -> do
+            changed <-
+              try
+                ( withBinaryFile path ReadWriteMode $ \handle -> do
+                    byte <- ByteString.hGet handle 1
+                    hSeek handle AbsoluteSeek 0
+                    ByteString.hPut handle (ByteString.map (`xor` 1) byte)
+                )
+                :: IO (Either IOException ())
+            pure (either (const False) (const True) changed)
+          [] -> pure False
+        _ -> pure False
+      contentCorruptRestore <- public ["control", "restore", contentCorruptName, "--yes"]
+      let legacyName = "backup-legacy00001"
+      legacyCopied <-
+        maybe
+          (pure (Left "no backup"))
+          (\name -> run "/usr/bin/cp" ["-a", backupRoot </> name, backupRoot </> legacyName])
+          backupName
+      legacyManifest <-
+        try (ByteString.readFile (backupRoot </> legacyName </> "manifest.json"))
+          :: IO (Either IOException ByteString.ByteString)
+      legacyMarked <- case legacyManifest >>= maybe (Left (userError "manifest")) Right . markLegacyFormat of
+        Right bytes -> ByteString.writeFile (backupRoot </> legacyName </> "manifest.json") bytes >> pure True
+        Left _ -> pure False
+      legacyRestore <- public ["control", "restore", legacyName, "--yes"]
+      legacyRetained <- doesDirectoryExist (backupRoot </> legacyName)
       persistAfterCorrupt <- readPersistent
       healthAfterCorrupt <- health
       restoreRun <-
@@ -671,7 +722,7 @@ scenario selected projection = do
       case4Done <- getMonotonicTimeNSec
       -- Case 5: recreate the whole environment; the same Vault and its data return.
       delete1 <- public ["control", "delete", "--yes"]
-      absent1 <- independentAbsence cluster
+      absent1 <- independentAbsence (bootstrapRuntimeSocket projection) cluster
       retained1 <- independentHostData root generation (bootstrapNodeArtifact projection)
       reconcile2 <- public ["control", "reconcile"]
       services5 <- public ["control", "services"]
@@ -681,7 +732,7 @@ scenario selected projection = do
       healthFinal <- health
       persist3 <- readPersistent
       delete2 <- public ["control", "delete", "--yes"]
-      absent2 <- independentAbsence cluster
+      absent2 <- independentAbsence (bootstrapRuntimeSocket projection) cluster
       retained2 <- independentHostData root generation (bootstrapNodeArtifact projection)
       done <- getMonotonicTimeNSec
       let sameCluster a b = fmap healthCluster a == fmap healthCluster b && fmap healthCluster a /= Just ""
@@ -841,12 +892,16 @@ scenario selected projection = do
               CleanupConfirmed
               [ "backup.created-with-manifest"
               , "restore.corrupt-backup-refused"
+              , "restore.same-size-content-corruption-refused"
+              , "restore.unverified-legacy-retained"
               , "restore.rolls-back-secret"
               , "restore.sealed-then-same-identity"
               , "restore.keeps-replaced-data"
               ]
               [ "Backup complete" `isInfixOf` textOf backupRun
               , "do not match its manifest" `isInfixOf` textOf corruptRestore
+              , "do not match its manifest" `isInfixOf` textOf contentCorruptRestore
+              , "format-1 backup contents cannot be verified" `isInfixOf` textOf legacyRestore
               , "Restore complete" `isInfixOf` textOf restoreRun
               , ok unlockAfterRestore
               , "replaced-" `isInfixOf` textOf restoreRun
@@ -857,6 +912,15 @@ scenario selected projection = do
                   && unsealedWith healthAfterCorrupt
                   && changedWritten /= Nothing
                   && ok unlockAfterBackup
+              , contentChanged
+                  && not (ok contentCorruptRestore)
+                  && persistAfterCorrupt == Just changedValue
+                  && unsealedWith healthAfterCorrupt
+              , ok legacyCopied
+                  && legacyMarked
+                  && not (ok legacyRestore)
+                  && legacyRetained
+                  && persistAfterCorrupt == Just changedValue
               , persistChanged == Just changedValue && persistRestored == Just persistentValue
               , sealedWith healthAfterRestore && unsealedWith healthRestored && sameCluster cluster1 healthRestored
               , replacedKept
@@ -1016,7 +1080,7 @@ backupNameOf text = case breakOn "backups/backup-" text of
     [] -> Nothing
     (_ : rest) -> breakOn needle rest
 
--- | The same manifest with its file-list digest replaced by a wrong one.
+-- | The same manifest with its content commitment replaced by a wrong one.
 replaceTreeDigest :: ByteString.ByteString -> Maybe ByteString.ByteString
 replaceTreeDigest bytes = case Aeson.decodeStrict bytes of
   Just (Aeson.Object fields) ->
@@ -1024,8 +1088,23 @@ replaceTreeDigest bytes = case Aeson.decodeStrict bytes of
       ( LazyByteString.toStrict
           ( Aeson.encode
               ( Aeson.Object
-                  (KeyMap.insert (Key.fromString "tree_sha256") (Aeson.String (Text.pack (replicate 64 '0'))) fields)
+                  ( KeyMap.insert
+                      (Key.fromString "tree_hmac_sha256")
+                      (Aeson.String (Text.pack (replicate 64 '0')))
+                      fields
+                  )
               )
+          )
+      )
+  _ -> Nothing
+
+markLegacyFormat :: ByteString.ByteString -> Maybe ByteString.ByteString
+markLegacyFormat bytes = case Aeson.decodeStrict bytes of
+  Just (Aeson.Object fields) ->
+    Just
+      ( LazyByteString.toStrict
+          ( Aeson.encode
+              (Aeson.Object (KeyMap.insert (Key.fromString "schema_version") (Aeson.Number 1) fields))
           )
       )
   _ -> Nothing

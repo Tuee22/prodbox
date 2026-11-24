@@ -8,9 +8,9 @@
 > **Purpose**: The real public control/context slice creates and diagnoses isolated kind environments whose host-backed data survives node loss, and a bounded evidence/mutation runner detects fabricated results.
 
 **Phase**: 1
-**State**: Complete
+**State**: Active
 **Prerequisites**: Phase 0 complete; supported Linux host and pinned container-runtime/kind prerequisites. No Vault, cloud account, SES, public domain, or later runtime adapter is required.
-**Acceptance**: A01-01, A01-02, A01-03, A01-04, A01-05, A01-06, A01-07 in [acceptance_cases.md](acceptance_cases.md).
+**Acceptance**: A01-01, A01-02, A01-03, A01-04, A01-05, A01-06, A01-07, A01-08 in [acceptance_cases.md](acceptance_cases.md).
 **Critical mutations**: M00, M01, M02 in [mutation_cases.md](mutation_cases.md).
 **Owned removals**: L04, L05 in [legacy_tracking_for_deletion.md](legacy_tracking_for_deletion.md).
 **Inherited removals**: B020, B021, B039, B055 in [legacy_tracking_for_deletion.md](legacy_tracking_for_deletion.md).
@@ -25,6 +25,689 @@ The real public control/context slice creates and diagnoses isolated kind enviro
 Only capabilities delivered through this phase may be active in its public commands. Later capabilities stay explicitly unavailable; do not add successful stubs or private-only replacements and postpone public use to Phase 10.
 
 ## Implementation tasks
+
+Verifier isolation work in progress (2026-11-23): the failed probe cleanup
+family and original kind family use the same systemd slice, so a successor in
+that slice cannot hold their retirement observations while running. The
+successor now has a versioned controller identity, publication namespace and
+separate slice; version 1 records retain their original interpretation. A
+version 2 verifier may inspect a published, retired predecessor without a
+removal-attempt record, but only a separately bound, positive-control-bracketed
+namespace inventory can establish absence. This follows the independent
+read-back and retained-identity requirements in
+[control_plane.md](../documents/engineering/control_plane.md) and the live
+campaign evidence requirements in [plan standards](development_plan_standards.md#evidence-and-live-campaigns).
+The implementation and adversarial qualification are still in progress; no
+new live cleanup or phase acceptance is claimed. The retained test node and
+its scoped recovery records remain in place. The publication-kind codec and
+28 controller-submission controls passed, including the new identity; the
+preparation fixture passed both versioned requests and distinct-slice checks.
+The longer recovery fixture reached the new missing-attempt controls, then
+failed on its own restored fixture file mode; that fixture is being corrected
+and rerun. Its next run reached the later pre-publication verifier case but
+exhausted the fixture's shared 120-second deadline; the fixture window was
+expanded for a fresh run. An initial 660-second fixture window was correctly
+refused by the host operation limit, so the retry uses the supported
+590-second outer window. A never-sent fallback regression found on the first
+run was fixed. The supported-window run passed the new missing-attempt and
+legacy verifier cases, then exposed a stale assertion expecting network
+failure where the no-intent path now reports no effect planned. The assertion
+was corrected. The expanded isolated fixture then reached its public
+reconcile assertion with an older copied binary that did not recognize the
+version 2 request; the documented operator binary is being refreshed for the
+next run. The isolated publication/retirement chain still needs a full pass.
+These fixture outcomes do not establish live recovery.
+
+The refreshed-binary run subsequently passed the complete manager-backed
+[KindControllerInput fixture](../test/qualification/KindControllerInput.hs),
+including isolated publication, missing-attempt readback, refusal of live
+predecessors and verifier, retirement, and never-sent recovery. The fixture
+SHA-256 was `55c90cc6ca4b5e40a0671e727adaa1c247086ada62028885e606b59b3d84b445`
+and the public binary SHA-256 was
+`74e6e7f07bad9bfb790fda490eb84600e3e18ac38358e0672ca7ab58229fee73`.
+The bounded completion fixture also passed. These controlled results do not
+establish real Kubernetes readback or phase acceptance.
+
+Real in-hand recovery continuation (2026-11-23): public `control delete
+--yes` on the retained `run-7ae426bc5f920fb9fb91a516f104e4f7` configuration
+submitted isolated verifier `a8e26645a5b02fb0b006439e73ecb3c2`. Both
+predecessor retirement checks closed and the public command independently
+observed the verifier retire, but no probe readback record was written.
+The verifier service exited status 1; the manager journal exposed no more
+specific worker outcome. Public delete retained the node and returned
+incomplete. Exact output is
+`.build/phase1-isolated-verifier-recovery-20261123.log`; the verifier locator
+and possible-send publication remain durable. A successor must preserve that
+identity and establish its retirement rather than replacing it. Diagnose and
+reproduce the missing worker outcome offline before any further live send.
+The manager service explicitly discards both output streams. A subsequent
+implementation in progress records only closed verifier outcome categories
+under the scoped operation, after the bound verifier returns; this diagnostic
+is non-authorizing and cannot recover an outcome that was not recorded for
+the failed run. Its qualification and the successor protocol remain open.
+The manager-backed fixture subsequently passed with the diagnostic write and
+read-back, including refusal before verifier publication. Fixture SHA-256:
+`4078bed39a23415e880bc022db6bc68212ae5dbf96cee9c61f17612903fd2320`;
+binary SHA-256:
+`68c768d724adfa7eff1cbdeead3822586435e01c4383a8cce117a1bb9be6af12`.
+The record is best-effort: an input failure, interruption, or expired window
+can leave no category. It is not evidence that a verifier retired or that a
+namespace is absent.
+An offline slow-admission control reproduced a verifier-locator refusal under
+the ten-second writer limit: a 250 ms admission check was repeatedly nested
+inside each record read. This is a reproducible timing-class failure, not a
+diagnosis of the unrecorded live worker outcome. The writer now brackets its
+local prerequisite snapshot with the retained lease/root checks instead of
+repeating the external check inside every read; its positive and false-
+admission controls are being rerun.
+The [slow-admission qualification](../test/qualification/ProbeVerifierBudget.hs)
+then recorded and independently read the locator with the same 250 ms check;
+false admission and admission changing across the snapshot both refused. The
+test does not identify the cause of the unrecorded live verifier failure.
+Decision (2026-11-23): a successor chain must retain each verifier's immutable
+identity and publication, bind each new request to its predecessor, and hold
+the complete predecessor retirement chain while independently observing the
+same namespace. A new versioned controller identity may use a per-execution
+slice; the existing static-slice identities and wire formats must never be
+reinterpreted. This follows the exact-identity and independent-observation
+contract in [lifecycle.md:59](../documents/engineering/lifecycle.md) and the
+bounded self-heal requirement in [plan standards:94](development_plan_standards.md#evidence-and-live-campaigns).
+No successor is authorized merely because a prior outcome is absent.
+The new successor identity and key-derived slice are only a foundation; no
+successor request or public launch is wired. Native publication codec checks
+and all 30 submission controls passed, including old codec round-trips,
+wrong-kind rejection and distinct slices for distinct successor keys. The
+retained verifier and node remain unchanged.
+The successor request now has a canonical predecessor-bound format and a
+bounded structural chain check; the manager-backed fixture passed its first
+immutable successor locator/publication checks, including refusal to treat an
+unpublished link as settled. These checks do not establish physical
+retirement of a successor or authorize a public send.
+The successor's exact-submission retirement boundary now has a controlled
+manager test: a live registered sender was refused, and after that sender
+closed, exact family retirement and published-input retirement were observed.
+The same fixture passed the one-successor chain boundary with its active
+sender refused and its settled owner held and rechecked around the callback.
+Fixture SHA-256:
+`140aef4b9a8b5f503e78afe98fb11dcb936311cec9a06aecc8fbd02f1a26ebf1`.
+Multi-successor evidence and public successor dispatch remain open.
+The staged-successor check also passed: an existing unpublished locator was
+accepted only as that exact staged identity, and was refused as a fresh
+transition. The controlled manager fixture now also passed a two-link chain
+containing a retired submitted family and a separately held never-sent
+publication proof, including exact input retirement. Fixture SHA-256:
+`269ef4780c9dd955ed063d62eb2015bea3eb75e9505b3ef93f0208ff5b23ae56`.
+The controlled fixture also passed a third, pre-publication-cancelled link:
+its cancellation fenced a later publication and the complete mixed chain was
+rechecked. Fixture SHA-256:
+`edaa95d0bb0efcd8e964c1b1462bc0b0a6ed9ec6e75f2ab22f41f9997cfed7ba`.
+Public cancellation and successor recovery orchestration remain open.
+The successor publisher was subsequently changed to establish its durable
+publication owner before writing the send-attempt marker. A cancelled staged
+link must now also establish exact publication-directory absence or hold a
+never-sent owner and retire its inputs. Those new ordering and cleanup checks
+are under qualification; they do not alter the retained failed verifier.
+The updated manager fixture passed both cancellation cases: an exactly
+absent publication directory and a created-but-never-sent publication whose
+inputs were retired under a held proof. Fixture SHA-256:
+`26c7ece8356eed5753e943e7fbe040e7e4a833f661b3fabc104a0523cb138947`.
+The expanded fixture also passed pinned successor input decoding and rejected
+the same publication as the older verifier kind. Fixture SHA-256:
+`b595711a427539fc8f114f5503b72f02394f01e21a1bfad19ca2e6a500d72fe3`.
+Public successor recovery and terminal-readback cleanup have since been wired
+for qualification. A controlled public-command fixture is in progress; it
+must prove the never-sent, cancellation, active-family refusal and successor
+readback cases before a new live recovery is considered.
+The first expanded run stopped because the disposable fixture left its prior
+readback file in place when switching scenarios; the fixture cleanup was
+corrected. This is not a live or acceptance result.
+The corrected manager-backed fixture then passed the complete controlled
+sequence: wrong-digest publication was proven never sent, a staged successor
+was cancelled, a live successor blocked delete, and recorded successor
+readback was accepted by public delete only after the full chain settled.
+Fixture SHA-256:
+`70d12b9d1d0af42f6a6ce6b7e25c7a6b4716c89e1067a82d4d190546bb2744a4`;
+the public binary used by the fixture was
+`beb922b0665e8da0c585e307d5cd541a74653d44ad09b88ed031e83a3e1bbf88`.
+The subsequently built binary
+`70201e3c823a6a3af80ce4dbb38db0877035fc0a8238f29406ce2c224f432045`
+adds only descriptor-close masking to the exact publication-directory
+observation; its focused cancellation fixture also passed. This is controlled
+evidence, not real Kubernetes readback or Phase 1 acceptance.
+Before the next live recovery, the same nested-admission timing class was
+removed from the successor chain and readback snapshots. The focused fixture
+passed with a 250 ms admission check and refused admission that changed
+across the snapshot; fixture SHA-256:
+`2885da13c36eb53240ebf56ce4126abcb7a1d5ae851e5dab4811e1a4a85502b8`.
+This does not identify the earlier verifier's unrecorded failure.
+The complete public-command fixture then passed again with the timing changes.
+The binary SHA-256 was
+`d4c5fd554487349ab9510049e6df14b84c09a7f3413facf898a5559ed79d76a4`;
+the fixture SHA-256 remained
+`70d12b9d1d0af42f6a6ce6b7e25c7a6b4716c89e1067a82d4d190546bb2744a4`.
+This still does not prove real Kubernetes readback or close Phase 1.
+The next in-hand public delete (2026-11-23), using that binary, submitted
+successor `f8dabe12d0e591314c76aaa23aba891a` and independently observed its
+retirement. It produced neither a successor readback nor the best-effort
+diagnostic record; the manager recorded exit status 1 and 11.594 seconds of
+CPU time. Public delete retained the node and returned incomplete. Output:
+`.build/phase1-successor-recovery-20261123.log`. The exact failure stage is
+unobservable; the prior timing reproducer does not establish its cause.
+Preserve both verifier identities and review the repeated missing-diagnostic
+class before another live send.
+Class review (2026-11-23): both managed observers exited unsuccessfully
+without a durable diagnostic, so their exact failure stages are unknown. The
+earlier slow-admission reproducer justifies the snapshot timing correction but
+does not identify either live failure. Successor controllers now return fixed,
+non-secret manager exit categories even when pinned input fails before a
+scoped diagnostic can be written; an uncontrolled crash can still be
+unclassified. The focused public-entry fixture passed an exact pinned-owner
+refusal category and the pure category mapping. Its first run expected a
+digest-stage refusal, but actually observed the earlier owner mismatch; the
+assertion was corrected. Fixture SHA-256:
+`6557664439fc02ad9504da952124b461105a1fa789a50a90e0196db1ddf064c4`;
+binary SHA-256:
+`b5b48d268603813f196c7212c96f4e8c0f94a0319df9fee11f78c89decc5dd22`.
+Sibling state: the original verifier and first successor remain recorded and
+retired, with neither readback recorded; the node, network, volume and scoped
+root remain in hand. No manual cleanup or successor replacement occurred.
+The next in-hand public delete (2026-11-23) submitted successor
+`8f6830342fba47eb4f19c4f0f8a99798` and observed it retired. It recorded
+`VerifierLeaseUnconfirmed`, and the manager recorded exit category 26; no
+readback was written. The node and its test resources remain retained. Output:
+`.build/phase1-successor-diagnostic-recovery-20261123.log`. This category
+covers more than one lease boundary, so it does not yet establish which lease
+failed or why. The original verifier and both successors are immutable chain
+members. Review and reproduce the contention class offline before further
+live submission.
+An offline control held the exact scoped operation lease and reproduced the
+nonblocking `KindLeaseBusy` refusal on a competing recovery call. This proves
+the contention behavior, not that contention caused the live category 26.
+The diagnostic categories are being split by original, cleanup, first
+verifier, chain and worker lease boundary before a bounded retry is tested.
+The controlled fixture now passes a real manager-backed family-retirement
+handoff while the operation lease is briefly busy, plus held-lease deadline,
+pre-expired deadline, callback-once and split-category checks. The retry
+applies only to a confirmed `KindLeaseBusy` before callback entry; other
+refusals and uncertain closing states are not retried as success. Fixture
+SHA-256:
+`6e841596d5edb19762bb45396e34c23c77c51cd666c77eaa186717c7b4df8701`;
+binary SHA-256:
+`4def674bd644861fd7de2991f50fb5599a9b9649ef82de849a841f43d8fea367`.
+This establishes the controlled contention behavior, not the exact cause of
+the earlier live category 26.
+Three-attempt recovery class review (2026-11-23): verifier
+`a8e26645a5b02fb0b006439e73ecb3c2` and successor
+`f8dabe12d0e591314c76aaa23aba891a` retired without a recorded failure stage;
+successor `8f6830342fba47eb4f19c4f0f8a99798` retired with the broad
+lease-unconfirmed category. None recorded namespace readback. Read-only
+manager inventory after the last attempt listed no units matching the
+`prodbox-kind-verify*` and `prodbox-kind-successor*` name patterns; it did not
+inspect slice names. Exact Docker inspection reported node
+`68fec6d8c89cb4cd246be1fbe261a9faa3b37c78034cb536c4246c46f32b0598`
+running. These observations do not prove resource absence. The retained
+locators and publication records remain chain members; no manual cleanup was
+performed. The offline busy-lease reproducer and bounded wait address a
+plausible contention class, while the new split categories preserve the
+actual failure stage if a future controlled run returns one. The combined
+public fixture is being rerun; no next live attempt is qualified until it
+finishes.
+That combined public fixture subsequently passed with binary SHA-256
+`4def674bd644861fd7de2991f50fb5599a9b9649ef82de849a841f43d8fea367`
+and fixture SHA-256
+`70d12b9d1d0af42f6a6ce6b7e25c7a6b4716c89e1067a82d4d190546bb2744a4`.
+The controlled evidence does not establish why the earlier live lease was
+unconfirmed or prove any live namespace absence.
+The subsequent in-hand public delete (2026-11-23) submitted successor
+`4b694442d6294d1e769f5575e7d2bddf`, observed it retired, and recorded
+`VerifierAbsenceUnconfirmed` (manager exit category 32). No readback was
+written; the node and its test resources remain retained. Output:
+`.build/phase1-successor-lease-wait-recovery-20261123.log`. A separate,
+read-only `kubectl` observation of the selected kubeconfig obtained matching
+`kube-system` UIDs around an empty field-selected namespace inventory, but
+the actual client response used `apiVersion: v1`, `kind: List`, while the
+current decoder accepts only `NamespaceList`. This independent point
+observation is diagnostic only; it is not a managed-family readback or cleanup
+proof. A controlled regression is being run before changing the decoder.
+The controlled regression first failed on the observed empty `v1 List` shape.
+After allowing that shape for the explicitly field-selected namespace query,
+the same test passed for both cleanup and successor readback; nonempty lists,
+wrong versions, wrong kinds, missing items and unavailable positive controls
+were refused. Fixture SHA-256:
+`23f44e1f310c99bd2f732aca041dfdaf445824d277da06c3ff7742f7484c318d`;
+decoder SHA-256:
+`8670b2e318bcfe3e883fb70d779e812a8aca955b170c52c0d30c854fa7b615c5`.
+The real worker still must independently perform and record its own readback.
+The next in-hand public delete (2026-11-23) submitted successor
+`fbb16e4b440edf54413ca0d0b70bf8d7` using binary SHA-256
+`6bb7933e4ae34f6416bad945ecc94fd54e122cd1a8a7593e37170165593d4d0f`.
+The successor retired and recorded `VerifierRecordRefused`; it did not write
+the readback. Public delete retained the node and returned incomplete. Output:
+`.build/phase1-successor-list-recovery-20261123.log`. This category does not
+yet distinguish refusal, partial write or an existing record. The prior
+verifier and all four successor identities remain chain members. Reproduce
+and narrow the readback-write failure offline before another live submission.
+An offline multi-link fixture reproduced a pre-write `ProbeRefused` with a
+two-second admission check under the prior ten-second writer deadline. This
+shows a reproducible timing class; it does not establish which write outcome
+the live worker saw. The writer and closing read are being bounded at 60 and
+30 seconds respectively, with the readback itself bracketed by the retained
+operation admission. Separate fixed diagnostic categories now preserve
+refused, already-existing and incomplete write outcomes.
+The same multi-link control then passed: the two-second admission check wrote
+and read back the exact record within the new bounds, and admission changing
+after a separate diagnostic write returned `ProbeIncomplete` while preserving
+the written record. Fixture SHA-256:
+`766bb245b23b62281c19db165292f8432e847ecb8a3ed2b051b3e3e7a9000a36`;
+writer SHA-256:
+`3a2160e6361682be3565381bb7c7e54a58160f6fe0ba96947d80ca0218e7d9b8`.
+This remains a controlled timing-class result, not a reconstruction of the
+live worker's unrecorded write disposition.
+The complete controlled public-command fixture subsequently passed with the
+readback-writer changes. Binary SHA-256:
+`0dd2a7de93dee1113114b537d10fb65018794cca69d96f444d626f5e7676ac06`;
+fixture SHA-256:
+`70d12b9d1d0af42f6a6ce6b7e25c7a6b4716c89e1067a82d4d190546bb2744a4`.
+It does not prove the live namespace result or close Phase 1.
+The next in-hand public delete (2026-11-23) submitted successor
+`184445562ba8b2cfba32ef5b0d456a71`, observed it retired, and found no
+readback or diagnostic record. The manager recorded exit status 251; public
+delete retained the node. Output:
+`.build/phase1-successor-readback-recovery-20261123.log`. A separate,
+non-secret synthetic GHC program under an 8 MiB heap limit exited 251 with
+`Heap exhausted`. The live controller was configured with a 64 MiB heap cap,
+but its stderr was discarded, so status 251 alone does not prove its cause.
+
+Live-campaign class review: the three attempts since the preceding review
+reached, respectively, an unconfirmed namespace observation, an unconfirmed
+readback write, and an unclassified exit 251. The real `v1 List` mismatch and
+a slow readback-writer refusal were each reproduced and corrected offline; the
+latest exit has only the synthetic RTS correlation above. The original
+verifier and all five successors remain recorded chain members, and the
+test node and its network/volume remain in hand. No next live send is
+qualified until the memory/runtime class is reproduced against the actual
+non-secret composition, its resource envelope and cleanup are reviewed, and
+the relevant controlled checks pass.
+An optimized synthetic fixture using the same non-secret record and retirement
+modules passed under `+RTS -M64m -N1`; its test Docker path was nonexistent,
+and its process environment contained only `PATH` and `HOME`. Fixture binary
+SHA-256:
+`24b7bc6ed53f05ffa24e87afd73195f37963f751eb9a50e89294fc3b863496bd`;
+source fixture SHA-256:
+`766bb245b23b62281c19db165292f8432e847ecb8a3ed2b051b3e3e7a9000a36`;
+output `.build/phase1-rts-probe-64m.log`. This run did not execute the exact
+live managed worker and therefore neither reproduces nor rules out its exit.
+An exploratory 11-link run under the same heap cap completed, but most links
+were synthetic pre-publication cancellations rather than the retained live
+chain's submitted families. Its peak GHC residency was about 2.4 MiB. It is
+not an exact reproduction; the fixture is being extended to hold multiple
+independently retired submitted-family owners before deciding the envelope.
+The expanded 11-link fixture with seven submitted-family records and four
+never-sent/cancelled dispositions also passed at 64 MiB; maximum GHC residency
+was about 2.4 MiB (`.build/phase1-rts-probe-physical-scale-64m.log`). It did
+not execute the managed worker's readback writer. The next isolated case adds
+that writer while all predecessor owners remain borrowed.
+That extended isolated case passed with `+RTS -M64m -N1 -s`, reporting
+10,765,664 bytes maximum heap residency and 30 MiB total memory in use; output
+is `.build/phase1-rts-probe-readback-scale-64m.log`. Fixture source SHA-256:
+`303c0cd90c0fb95373ede023f0f93f3b163c2e05e02ccbb29e5bcc5c68b5f2a6`;
+optimized fixture binary SHA-256:
+`1a435958ccb792643ca5676d7de831d512f6ae3437454f180dc5b205f7c80b88`.
+It holds the synthetic predecessor owners during the actual readback writer,
+but does not include the complete original family, Kubernetes subprocess, or
+the managed public worker. It therefore does not explain exit 251 or qualify
+another live send.
+The next isolated case additionally held the original, cleanup and first
+verifier retirement owners and rechecked their admissions with every chain
+admission. It passed under the same cap with 10,526,608 bytes maximum heap
+residency and 29 MiB total memory in use, and retired its synthetic parent and
+successor inputs. Output: `.build/phase1-rts-probe-full-family-scale-64m.log`;
+fixture source SHA-256:
+`392b0e084bf47a8252420cb2cd4eb65908886446cfd23882eb0a26b91d5afe99`;
+fixture binary SHA-256:
+`1f43ad8dd883473e414fbde7f6b092e5f5ca62f6e2bac8219a0e410117f87769`.
+The real managed worker, node/CA binding and Kubernetes subprocesses remain
+outside this synthetic case, so the exit remains unclassified and the live
+send restriction remains in force.
+The same rebuilt fixture's ordinary regression path also passed under the
+64 MiB cap (`.build/phase1-rts-probe-regression-20261123.log`), including
+bounded lease waiting, slow and changing admission, successor retirement and
+input recovery. This is controlled evidence, not a live acceptance result.
+An optimized isolated sealed-kubeconfig TLS test also passed at 64 MiB,
+including real `kubectl` against a disposable loopback endpoint and rejection
+of a different CA (`.build/phase1-rts-tls-64m.log`, source SHA-256
+`085fff9da8e73ca14b154db1b029d564ccc6b6db407588755b70e7dc5ac0ad85`,
+binary SHA-256
+`fdc2bd4b426512b07643eaa6097c37b3daaf9af4b0cb00b5c6eca4f764dc0bc2`).
+The expanded parent-and-chain fixture now also takes a sealed kubeconfig
+snapshot and makes three bounded real `kubectl` TLS requests to a disposable
+loopback server, bracketing them with kubeconfig and retained-family checks.
+It passed at 64 MiB with 10,521,104 bytes maximum heap residency and 29 MiB
+total memory in use (`.build/phase1-rts-probe-tls-family-scale-64m.log`,
+source SHA-256
+`24f22a222a9232b731a618618032442a3e809a25a1d42046c39e8e1b545f6915`,
+binary SHA-256
+`3680403b7ac28d3b35453b91dc28a7834828cfef0db745571de89d32fdeae450`).
+These are raw readiness requests, not namespace inventory, and do not exercise
+the actual managed subprocess family or Docker node/CA binding. The live
+exit therefore remains unclassified and no new live send is qualified.
+The subsequent isolated case used a disposable loopback TLS Kubernetes API
+fixture and the actual `confirmAttemptedProbeAbsenceWith` sequence: real
+`kubectl` performs the two positive-control reads and selected namespace
+inventory, then the readback writer runs under all parent and successor
+retirement admissions. It passed under `+RTS -M64m -N1 -s` with 18,874,056
+bytes maximum heap residency and 43 MiB total memory in use. Output:
+`.build/phase1-rts-probe-namespace-family-scale-64m.log`; source SHA-256:
+`a751d0ede0e47f71ea5a45fa75270492a90edcbe8ffd27c86a4754435fc88428`;
+binary SHA-256:
+`a24231edb6e9e4156edf6df9e7e02a79d1d2c7e99a7ae3cb36c9b46c5442fa41`.
+It uses the bounded standalone subprocess capture and synthetic API rather
+than the managed subprocess family and actual Docker node/CA binding. It is
+not a reproduction of the exit or qualification to send another live worker.
+The ordinary fixture path also passed after that change under the same heap
+cap (`.build/phase1-rts-probe-namespace-regression-64m.log`).
+The successor worker and separate readback record are under construction: they
+require the complete recorded predecessor prefix, its held retirement owners,
+the original node/CA binding and a positive-control-bracketed namespace
+inventory. These paths have not yet been qualified through the public
+command, and no successor has been sent.
+An initial chain-fixture rerun refused an existing synthetic publication
+because it reused fixed fixture keys. The test now generates distinct scoped
+identities for each run; the earlier terminal fixture publication is
+retained. No provider or Kubernetes effect was submitted by that fixture.
+
+2026-11-23: The public family completion path now waits within its existing
+bounded observation deadline when the exact recorded family is still present.
+Unobservable or changed identity remains a refusal; expiry retains the last
+observation. A controlled-clock qualification exercised retry, immediate
+refusal, and deadline behavior; it does not establish real family retirement.
+The test fixture also has a settled-publication cleanup path gated by exact
+scope, retirement and no-effect observations. Its refusal of an unsent
+publication was exercised; successful submitted-family cleanup remained
+unqualified. At that point the kind submission guard was still active, so
+that work did not create a kind node or satisfy phase acceptance. Existing unclassified
+runtime publication directories remain untouched.
+
+Subsequent controlled manager attempt (2026-11-23): the bound publication
+and manager admission path was enabled for kind. A public reconcile using a
+private fake Docker endpoint and deliberately absent artifacts submitted
+operation `d1606244f4fe62003f771c4db023940b` to the user manager. The
+controller ran and recorded `FamilyPostPreconditionFailed` with
+`FamilyWorkerNotStarted`; the fixture timed out before reporting its Docker
+request log, so that log is not evidence. The manager retained the original expiry timer after controller
+exit, and the old 120-second fixture deadline terminated the caller before
+the 510-second hard deadline. The test failed and preserved
+`/tmp/prodbox-family-reconcile-b45c2fc7223246b8` and the corresponding
+publication for recovery; their presence is not absence or cleanup evidence.
+The attempted operator binary SHA-256 was
+`301708c5d4e42b86bee298bf86b99bbd7043120ba52649c8afa433702150184a`.
+After the original timer elapsed, the manager listed no remaining units for
+the operation. Public test-scope delete retired the family inputs and reported
+no node or volume attempt, but refused the network step because no network
+identity was recorded. The network no-attempt path is being corrected to
+require the settled owner-first protocol, stable lease, and independently
+read absence of all five network records; that result describes an unstarted
+effect, not independent Docker absence. The failed public delete and retained
+test root remain evidence until the corrected recovery is exercised.
+The corrected public delete subsequently returned success for that same
+operation, reporting the node, volume and owner-family network as unstarted.
+The original manager roles had already disappeared. The fixture root and
+terminal publication metadata remain retained for diagnosis; the fake
+Docker request log was lost with the failed fixture, so this is not a real
+Docker absence observation or Phase 1 acceptance.
+The family definition is being changed to retire its timer when no dependent
+family unit remains, and the fixture deadline was lengthened. These changes
+are not yet proven by a subsequent manager run. No real kind node was created.
+The public completion path has also been connected to its existing positive
+family-readiness predicate: success requires the retired family, matching
+node and kubeconfig CA, authenticated readiness before and after the recorded
+network proof, and stable closing observations. This implementation change is
+not a real Docker/TLS or kind acceptance result; those controls and the
+public success path still require qualification.
+With the timer change, the controlled public-command regression then passed in
+5.64 seconds. It observed no fake-Docker POST or DELETE, required exact
+manager-family retirement and input teardown, and removed its own publication
+metadata; the count of existing runtime publication directories remained
+362 before and after. This is a real manager submission with a fake Docker
+endpoint, not real kind acceptance. The current operator, family, delete,
+app and integration-test source SHA-256s are respectively
+`337aa8c6fbc916adf37a8270e5c6c99cb8b3b9f461aad438f2c661b78de03230`,
+`5f2684fef7df21b62d5a36dd6878b24d54131b069091b4359acdf56b9c1203cf`,
+`7ede4a147f2fad52d8377db58570d3aa7c89856e3edcd44c0eb5a10bd7646594`,
+`beb040bb71f148204510daa082f41a2f67f2ca857b88ff0192e37e31d82be083`, and
+`2a88b891e81def8db5e2aa42b2d75682ffe8b27f551ad99b11c98008263ecc65`.
+
+Real harness attempt (2026-11-23): `prodbox test run phase-01` prepared
+test identity `run-86119e1c087015844638fda514f90e2d`, imported the pinned
+image, and submitted operation `5a0fe550233eddfe3e61769053fcb846`. The
+family recorded an image load reply but did not reach node creation; its
+dispatch summary recorded a prerequisite failure with unconfirmed parent and
+input closing. The harness continued into sibling scenarios after the initial
+failure and exited with failed acceptance and unconfirmed fixture cleanup.
+The complete non-secret output is
+`.build/phase1-owner-family-live-20261123.log`; the selected test root and
+`.build/phase01-fixtures-fc09de386d0a19f99e09ed2569e2ab9a` remain retained.
+Once manager units disappeared, public delete completed for the main and both
+sibling operations, reporting no node, volume or network attempt. Read-only
+Docker inventory subsequently showed no containers and only the default
+networks. The imported pinned image remains present. These observations do
+not establish a successful lifecycle, or exact cleanup of all retained fixture
+files and publication metadata.
+
+The bounded completion wait now re-observes an unconfirmed operation lease
+without treating it as retirement, and the harness is being changed to stop
+after an unsuccessful first reconcile rather than launch later scenarios.
+The retained dispatch summary is also being extended with bounded prerequisite
+stage names so a future failure identifies its stage without recording arbitrary
+exception or subprocess text. These changes need validation before another
+real attempt.
+The controlled-clock qualification passed the live-family, unconfirmed-lease,
+deadline and diagnostic-stage cases. The public manager regression passed
+again, and a public delete adverse test refused an orphan network-attempt
+record. Running the selected-scope harness against the retained failed
+operation then stopped after its initial reconcile, reported the original
+failure and public cleanup separately, and removed its empty fixture
+directory; it did not start sibling scenarios. Its output is
+`.build/phase1-early-stop-regression-20261123.log`. These are regression
+controls, not a real kind success.
+
+Second real harness attempt (2026-11-23): test identity
+`run-bc5bcfb9c7b6a4d6ddda0ea4745ce50f` submitted operation
+`dc1729bbbcea61e01be3ce57c1d02ff9`. The public caller remained active until
+the family retired, and the early-stop path prevented sibling scenarios. The
+bounded result recorded `FamilyPostImageAttemptFailed` with complete parent
+and input closing. The retained transport receipt says HTTP 200 with one
+progress message; a later read-only public image inspection independently
+observed the expected linux/amd64 image through both connected and CLI reads.
+Those later reads do not prove the earlier admission or readback. Public
+cleanup reported all node, volume and network effects unstarted, and the
+empty fixture directory was removed. The root and loaded image remain. The
+full output is `.build/phase1-owner-family-live-2-20261123.log`; the clean-image
+case was explicitly unproven because the preceding attempt loaded the image.
+The image-attempt failure must be classified and reproduced before another
+real attempt.
+
+Offline image-result timing control (2026-11-23): a private test scope with a
+synthetic daemon identity and no Docker effects supplied a slow, successful
+admission recheck. The original ten-second writer returned
+`NodeImageResultIncomplete` even though a subsequent normal-speed read found
+the exact durable HTTP 200 result. This reproduces a timeout class consistent
+with, but not proven to be, the real failure. The writer and nested observer
+are being given separately bounded windows so the closing read fits inside
+the writer's budget; operation admission remains checked. Positive and changed
+admission controls and a real regression remain required.
+With the revised 60-second writer and 30-second nested observer budgets,
+the same controlled slow-admission case confirmed its durable result, and a
+false admission was refused. The family result now distinguishes bounded
+image result, readback, transport and closing failure categories for a future
+attempt. This does not prove that the timeout was the real cause.
+The rebuilt executable and integration suite passed, as did the controlled
+manager regression and bounded wait/diagnostic qualification. The current
+operator, image-result recorder, reconcile module and timing-control source
+SHA-256s are respectively
+`46859bb27cb1e49f7e1b9d3b4e29e78cea1f9abe48254a7ca93dffa219529ed0`,
+`c67f9c0611dbb9f81fd84f7554cb65dfb7741ab9a7ada4495d7e832f030cf87c`,
+`da2f45fca4e572512b63ab42e61f7e33b3040fffa0bb9d1d08090cbbebabf10f`, and
+`acff33ab6048da132d85ab44bf99c6e6e8430d75f866253700e7eea37dc0eef5`.
+
+Third real harness attempt (2026-11-23): test identity
+`run-c76b2e9a5abb136795ab95c24eac4720`, operation
+`ddbc58a0c2a369da496f588ce3fc619f`, passed image preparation and created
+and started the exact scoped kind node. Its worker completed, the independent
+readiness check returned true, but the family recorded `FamilyPostProbeFailed`.
+The harness stopped at that first failure; public cleanup timed out in its
+connected node-removal callback and retained the root. A node-removal positive
+control was recorded; no removal-attempt record was observed. The node remains
+running and the network and volume remain in scope. Output is
+`.build/phase1-owner-family-live-3-20261123.log`. This is not acceptance or
+cleanup proof. Recovery is being amended to revalidate the exact existing
+positive control and use a larger bounded connected cleanup window; the
+exclusive attempt marker still precedes any delete. The in-hand operation must
+be driven to a verified recovery disposition before another live attempt.
+The first public recovery retry revalidated the existing control but refused
+before recording a removal attempt. A subsequent read-only check under the
+retired family and recovered operation lease observed the exact control,
+missing attempt and a matching positive node sample, including on the held
+Docker peer. Those are point observations, not a delete authorization or an
+absence proof. The refusal is being split into bounded prior-record,
+positive-control and attempt-write dispositions to identify the failing
+boundary; the node remains in scope.
+The next recovery attempt returned `NodeRemoveAttemptWriteUnconfirmed` before
+writing an attempt. Review found that the empty-probe admission repeatedly
+rechecked the complete family retirement inside each nested local journal
+read. The implementation now brackets the local snapshot with the retained
+family/lease proof instead. With that change, public delete recorded and
+received 204 replies for the exact node, named volume and network. Separate
+Docker inspections by the recorded container ID, network ID and volume name
+then returned not found; label-filtered inventories were empty. The loaded
+image, test root and terminal records remain, and these point observations do
+not establish anonymous-volume cleanup or Phase 1 acceptance. The connected
+Docker controlled regression passed (one test, 112.34 seconds).
+Before removal, a separate read-only diagnostic observed the exact recorded
+daemon, running-node configuration and matching CA archive. Its full binding
+predicate was false because the removal positive-control record had already
+been written; this later sample cannot establish the earlier probe failure.
+The probe had not recorded a namespace intent. A controlled slow-admission
+check against an isolated Docker fixture reproduced a five-second node
+observation timeout and a false CA-binding result despite matching inputs.
+The node and CA observation budgets have been increased, and the full
+API/node binding now brackets probe journal writes while the family admission
+remains checked inside them. The node's local record snapshot is likewise
+bracketed by the held lease and Docker peer rather than recursively repeating
+the full family proof for every journal read. A changed closing admission
+still refuses further work. These changes are awaiting their post-change regression; the controlled
+timeout is consistent with, but does not prove, the original probe cause.
+The post-change connected-Docker regression passed (one test, 99.93 seconds):
+the slow valid node and CA observations succeeded, a changed closing
+admission was refused, and the existing conflicting-CA control still failed.
+The injected probe-record admission control also passed its initial-refusal,
+changed-closing and stable cases. The public success message now exposes the
+network-policy proof only when the complete readiness predicate succeeds.
+Real probe behavior remains unqualified on this build.
+The rebuilt operator also passed the controlled managed-family regression.
+The operator, node-status, network-enforcement and integration-test source
+SHA-256s are respectively
+`5afbc72b7b7e7d6a0bc954be3bf2db9c2c0138437f43d5797458cd4a10e4cbc2`,
+`a99f5a6357f6cd5117a45a629953cd368b2c3dee3cc343bd92fe9204542bf066`,
+`a897f7300cfc6deeccd1688167e3a7601b521464f0ee6f489483486cb8dbbf39`, and
+`f7255bb7e392c5c5ee3c01c2cd364ef2f177cfc01e32b2663b81afdfbc0e135c`.
+
+Fourth real harness attempt (2026-11-23): test identity
+`run-8ed37a47517681445196124f548a187b`, operation
+`c53cc7b94a8c91c5e4532ab30ac497a2`, passed image, network and named-volume
+creation but reported `FamilyPostNodeIntentFailed` before a node intent was
+recorded. The harness stopped at the initial lifecycle and public cleanup
+received successful volume and network removal replies. Separate Docker
+inspection of the exact recorded network ID and volume name returned not
+found; a scoped container inventory was empty. The test root and loaded image
+remain. Output is `.build/phase1-owner-family-live-4-20261123.log`. This is
+not an acceptance pass. The node-intent failure requires class review and an
+offline reproducer before another real lifecycle attempt.
+A read-only reconstruction using the retained configuration, image ID,
+network ID and currently observed daemon successfully constructed the node
+intent. This rules out a permanently invalid retained input, not a transient
+daemon or admission failure at the original time. The intent writer also has
+the same nested ten-second admission/read-back budget pattern as the earlier
+image-result failure; that timing class is being tested independently.
+Class review after the last three real runs: the second stopped during image
+result confirmation, the third reached node readiness but failed before probe
+intent, and the fourth stopped before recording node intent. The latter two
+performed their own failure cleanup; exact node/network/named-volume read-back
+for the third and exact network/named-volume read-back for the fourth found
+those recorded resources absent. Their roots and the shared loaded image remain.
+The common concern is nested, bounded admission work rather than a proven
+single cause. Sibling node, network, volume and probe recorders still have
+their own deadlines and remain subject to their own tests; they have not been
+globally relaxed. The managed prerequisite call is being changed to avoid
+wrapping the owner-first protocol check twice, while retaining that check in
+the prerequisite coordinator and node worker. No further live lifecycle is
+qualified until these changes pass their controlled checks.
+The private slow-admission node-intent control reproduced a pre-write refusal
+under the original ten-second limit. With a 60-second writer and a 30-second
+closing reader, the same control recorded and read back the exact intent;
+false admission still refused the write. This is an offline timing-class
+reproducer, not proof of the precise fourth-run cause.
+The executable and integration suite rebuilt, the controlled managed-family
+regression passed, and the bounded wait/diagnostic qualification passed. The
+operator, controller, node-intent and timing-control source SHA-256s were
+`1f94fedf8ebc815c48be7355fc446e0c52285ac0c1cd4eb536e40348ed54b6e4`,
+`32012fb43105e72e5bdfabad9a98afd2c4f4c049a872cc698a0994e51d63c50c`,
+`4ef58ee637a1a185dbc77c0bd4d6da27995cd236e5a97edc08c044b2585151a5`, and
+`2506e837796bdf4a2a20792e283bf06af04b6358b324f18186af0eaf4fb04e55`.
+
+Fifth real harness attempt (2026-11-23): test identity
+`run-7ae426bc5f920fb9fb91a516f104e4f7`, operation
+`e69453b00acc4c3133b7e9730a381844`, passed the node-intent boundary,
+created and started the node, and reached the probe namespace creation record
+for UID `4c58a565-fc9e-460f-9dd8-6b29ecfc6afb`. The probe did not record
+removal; public delete retained the node and refused cleanup. Read-only
+diagnostics later found the exact node running, its recorded Docker identity
+and CA binding matching, the `kube-system` positive control reachable, and
+the probe namespace name not found. That individual lookup is not a recorded
+absence proof. The full harness output is
+`.build/phase1-owner-family-live-5-20261123.log`. The node, network, volume,
+test root and records remain in hand; no manual cleanup is authorized or used.
+
+The public delete path is being extended to launch or resume the separately
+identified managed probe-recovery family only after its existing retirement
+and journal checks. For a namespace already absent, the worker must obtain a
+structured empty inventory bracketed by the same live API positive control,
+record the exact UID's cleanup, and itself retire before node removal. These
+changes and their negative controls are under validation; the live operation
+must be driven to a confirmed recovery disposition before another lifecycle.
+The controlled absent-namespace case recorded cleanup only after a matching
+positive-control-bracketed empty inventory; unavailable inventory refused and
+issued no delete. The executable/integration build, managed-family regression,
+bounded qualification and HLint passed. The current operator, delete and
+network-enforcement source SHA-256s are
+`a2486e954e25201d4322ad81d81a26de47d6d1222a051749b97520912c265f36`,
+`fd85b1a3b73c15c26ac53ef7b8f46ada15a3bd6600751523eabc57ec134847ca`, and
+`e277992410cba9de5e6c0ea5d77e16080db72715f402e05bda9c3daa877352a4`.
+The public delete recovery submitted distinct cleanup identity
+`490f6edcb91dff3bea7d8991930f5cc2`, but its original-family closing check
+reported `RetirementRolePresent OperationSlice`: both families currently use
+the same kind slice. The manager subsequently listed no remaining kind-family
+units. No probe removal receipt or recovery-attempt marker was recorded, and
+the node remains running. The recovery locator and possible-send publication
+are retained; they cannot be treated as never sent or replaced. Output is
+`.build/phase1-probe-recovery-20261123.log`. Slice isolation and a safe
+successor rule for this already-submitted recovery must be implemented and
+validated before cleanup can continue.
+Subsequent public delete observed the cleanup family retired and retired its
+exact published inputs; its terminal metadata and locator remain. The public
+path now refuses new cleanup sends while the shared-slice defect remains.
+The node and the recorded namespace cleanup remain unresolved.
+The bounded-wait qualification executable returned success; HLint and
+`git diff --check` passed. The rebuilt focused unit group passed 73 tests;
+the public owner-first refusal regression passed one test against the rebuilt
+operator (the integration executable predated the wait change). The operator
+binary, recovery module, app module,
+fixture cleanup module and wait qualification source SHA-256s were
+`189341e7f346cdf5ba78286948366bbe22231601a4e0c947f4b8aa34da9264fe`,
+`f1e654a0a1f176441c6992b1060ce30a21ff58c121e8a55c5c0379b4fb6d9cf7`,
+`6ac537e967f68732aae99435439ee366b56e3dcdabe89c6d4dc4ed384500b524`,
+`c8cc93fc7a68c595f8fd8bcc00d6919dccbb908e9abba1ec94527ab98261ea8d`, and
+`f3b4751701b1e5b6aff5a38161eddcc9ce6a53c031b7a3e380df692565fb60bd`.
 
 `control status` now provides a partial public read-only diagnostic using the
 selected bootstrap projection and its explicit Docker socket. It observes the
@@ -9339,11 +10022,1511 @@ at this point; owned removals L04 and L05 are the only open completion item.
 
 - [x] **P01-T01** — Refactor the typed CommandSpec/parser/dispatch boundaries and visibility model. Add explicit --config, minimal bootstrap context and scoped diagnostics; activate only completed commands, without successful future-feature stubs.
 - [x] **P01-T02** — Implement production/test identity and safe path construction: distinct project roots, kind names, mounts, kubeconfigs, ports, networks, metadata and resource ownership. Reject overlap, symlink escape, foreign context and ambient target selection before effects.
-- [x] **P01-T03** — Implement the kind adapter with exact host extraMounts, deterministic PV binding, pinned node/bootstrap artifact identity and explicit node port reservations for the accepted MetalLB/Envoy publication contract. Constrain kind's Docker effects to the admitted scope, including duplicate-network removal and image pulls, and preserve interrupted-operation recovery. Existing RKE2 identity import is not new enrollment.
+- [ ] **P01-T03** — Implement the kind adapter with exact host extraMounts, deterministic PV binding, pinned node/bootstrap artifact identity and explicit node port reservations for the accepted MetalLB/Envoy publication contract. Constrain kind's Docker effects to the admitted scope, including duplicate-network removal and image pulls, and preserve interrupted-operation recovery. Existing RKE2 identity import is not new enrollment. Reopened for the controller completion and recreation-record defects identified below.
 - [x] **P01-T04** — Implement management CNI policy enforcement and host/node capacity discovery, real requests/limits/quotas and a funded simultaneous management/secret-worker envelope before later secrets work.
 - [x] **P01-T05** — Implement the common real scenario/evidence runner, independent evidence validator and bounded source-mutation executor. Bind outcomes to actual source/build/test identity; distinguish detected, surviving, invalid and inconclusive calibration faults.
-- [x] **P01-T06** — Activate early control removal only for exact new identities that cannot have admitted cloud effects. Foreign/existing/unknown identities refuse; do not bypass Phase-3 obligation semantics.
-- [x] **P01-T07** — Run real kind recreation, cross-environment negative controls, allow/deny connections, capacity worker completion, evidence/mutation calibration and outer cleanup. Re-run M00 through the new automation.
+- [ ] **P01-T06** — Activate early control removal only for exact new identities that cannot have admitted cloud effects. Foreign/existing/unknown identities refuse; do not bypass Phase-3 obligation semantics. Reopened for the unconfirmed node-create attempt defect identified below and its required real regression.
+- [ ] **P01-T07** — Run real kind recreation, cross-environment negative controls, allow/deny connections, capacity worker completion, evidence/mutation calibration and outer cleanup. Re-run M00 through the new automation. Earlier evidence remains historical; the revised runner and mutation catalog require their own validation.
+Decision (2026-11-22): the prior Phase 1 runner explicitly assumed that the
+selected root already contained the kind tool and archive
+([Phase01Runner.hs](../src/Prodbox/Test/Phase01Runner.hs), lines 150–155), while
+the adopted runner is responsible for its registered setup and cleanup
+([testing.md](../documents/engineering/testing.md), lines 10–13 and 33–39).
+The user has confirmed that the harness should create the kind node and asked
+that missing preparation be addressed. Keep public, scoped and digest-bound
+artifact import as the only runtime ingress; add supported acquisition and
+preparation in Phase 1 before claiming the harness is self-preparing. Existing
+Phase 1 observations are historical evidence for their original inputs.
+
+First implementation slice (2026-11-22): `Control/NodeRegistryManifest.hs`
+checks the exact manifest digest before decoding a bounded OCI/Docker schema-2
+manifest and refuses unsupported media types, nonpositive or excessive blob
+sizes, duplicate digests and excessive layer counts. The module is a pure
+planning input only: it downloads nothing, does not prepare an archive or
+activate a public path, and cannot satisfy A01-08. A standalone typecheck and
+synthetic positive parse passed; the new unit suite and executable build are
+running. Next implement bounded authenticated registry reads, verify each
+content digest and size, assemble an accepted OCI archive, and wire public
+preparation and exact cleanup before attempting real qualification.
+
+Registry observation (2026-11-22): the historical retained OCI manifest digest
+`sha256:e98b1342735c81a32480dfe017d6b1599bc006d88bf1635255e454d75a60fb28`
+returns HTTP 404 when requested as a Docker Hub manifest. A read-only request
+for `kindest/node:v1.36.1` returned an amd64 schema-2 descriptor
+`sha256:21c46cf61fd45873f89e6a1bfcba4b7904dffa84c2bec88aeeca9a0409af4725`;
+its exact response bytes hash to that descriptor and its config digest is the
+same pinned image ID `sha256:152b34afd8a2de5c8348a264426bc99b71058ee0e1a15eab9b30849605e4752d`.
+`Control/NodeRegistryClient.hs` now performs a bounded anonymous token and
+manifest read for the fixed public repository, keeps the token in memory,
+disables ambient proxy and redirects, and validates the selected digest using
+the pure parser. A direct read of the published descriptor was accepted; the
+historical descriptor produced a structured refusal. This is not artifact
+acquisition or image-load evidence: no layers were downloaded and no Docker
+resource was created. The selected identity must bind the actual published
+manifest, and archive inspection must independently establish the expected
+config ID before use; do not conflate converted OCI and registry manifest hashes.
+The first combined build failed because the registry-client module was added to
+the test source while the older library configuration was already building.
+Both new source modules typechecked directly and targeted HLint reported no
+hints; an incremental rebuild with the current package definition is required.
+
+Blob preparation slice (2026-11-22): `Control/NodeRegistryBlob.hs` verifies a
+manifest-declared blob by streaming bounded chunks, checking exact size and
+SHA-256 under a deadline; it neither publishes nor loads the blob. Synthetic
+cases cover matching content, short and long reads, and changed equal-size
+content; the module typechecked but those cases have not yet run. A read-only
+anonymous Docker Hub probe of the small public config blob observed a GET
+redirect to `production.cloudfront.docker.com`, returned 1,982 bytes and matched
+the declared config digest. No token, redirect query or response body was
+recorded. The download adapter must validate HTTPS redirect destinations, never
+forward registry authorization to the redirected host, enforce the declared
+size and digest during staging, and keep any signed URL out of logs or evidence.
+No layer or archive was acquired by this probe.
+The in-progress registry client now retains the digest-verified manifest bytes
+and can stream a declared blob to a caller-owned unpublished handle, checking
+the exact byte count and SHA-256 while restricting redirects to the observed
+HTTPS CDN without forwarding registry authorization. The caller must discard
+partial files on failure. This adapter is not yet connected to the public test
+workflow or archive assembly and has not yet been validated end to end.
+The client subsequently retrieved the 1,982-byte pinned config blob through
+that restricted redirect into a temporary file and returned success after its
+size and digest checks; a second probe with a one-byte-short declared size
+returned `NodeRegistryReadBlobMismatch`. No layer or Docker effect occurred.
+Four focused unit
+tests passed for manifest validation, invalid-request refusal and blob byte
+verification. `Control/NodeRegistryArchive.hs` is an in-progress streaming
+OCI layout writer that rechecks input bytes; its inspector integration and
+public workflow use remain open. Its focused synthetic archive test passed,
+including rejection of an equal-size source alteration; this is not a real
+archive import or lifecycle acceptance. The five registry/assembly unit cases
+and the canonical mutation-binding metadata test passed after the complete
+executable and unit-suite build; the mutation itself was not executed.
+The first canonical `dev check` on this slice failed its Haskell style lint for
+a nested response case in the new registry client; that code has been
+refactored. A further lint attempt exposed formatting differences from the
+shell's formatter version; the repository-pinned formatter was applied and
+the reviewed mutation hashes were updated. On 2026-11-22 the canonical
+`./.build/prodbox dev check` completed successfully, including the
+warning-clean build and gated unit suites; the synced binary SHA-256 was
+`7ee02917f591e0e07f81d7689990742a6eb4bd43776775dfc7887af2d24b1b04`.
+The mutation-binding metadata test also passed separately. This quality result
+does not establish the unrun real or mutation acceptance.
+The unavailable-image adverse case in `Test/Phase01Runner.hs` previously
+replaced one hard-coded historical digest. It now derives the selected image
+from the validated projection and refuses to run if substitution does not
+change the document; the unchanged negative case still requires no Docker
+effects. This change requires a fresh build and real scenario validation.
+
+Preparation integration slice (2026-11-22): the public Phase 1 runner now
+observes its selected test identity's node archive and, only when it is
+confirmed missing, invokes `Test/NodeRegistryPreparation.hs` to fetch the
+selected pinned manifest and blobs into private staging. It checks the root
+generation, exact manifest and blob bytes, generated archive digest and size,
+then invokes the public `control import-artifact node-archive` command and
+independently observes the retained result. Staging is descriptor-held and
+cleanup reports its result and staging path separately from the primary
+outcome. A manifest whose blobs plus projected archive would exceed the 1 GiB
+staging budget is refused before any blob fetch; this does not bound the
+separately retained import or Docker storage. Existing artifacts continue
+through their independent observation;
+unknown or conflicting artifacts refuse. This path currently requires an
+already enrolled test root and a configuration declaring the digest of the
+generated archive. A subsequent unvalidated implementation now fetches the
+exact pinned Linux amd64 kind release when the declared tool is missing,
+verifies the bytes twice, and invokes the public importer. A further
+unvalidated default-route integration authors a fresh identity as described
+below. The public workflow does not yet satisfy A01-08. Replaced-directory
+recovery identity, exact residue read-back, and controlled cancellation
+settlement also remain to be proven.
+Controlled source and cleanup tests are in progress; no
+real kind lifecycle or mutation execution is claimed by this slice.
+An initial controlled disappeared-file check failed against a test executable
+linked before the source change that requires the complete created-file set.
+That is not a mutation kill or passing result. The updated source was rebuilt
+for a fresh test run, which passed all eight controlled
+preparation cases, including the disappeared-file and replaced-file cases;
+the five manifest and archive unit cases also passed. These tests use
+controlled sources and do not replace real provider or lifecycle acceptance.
+After fresh-route staging and entropy checks were added, the rebuilt focused
+preparation suite passed all 12 cases. `test list` reported `phase-01`, and
+default `--coverage` and `--substrate aws` requests refused before preparation.
+A separate read-only inventory of the explicitly selected Docker daemon did
+not list the pinned node image at that observation; it was not a lifecycle run
+and does not establish absence at a later time. The operator binary used for
+the latest controlled checks had SHA-256
+`5340a7f28a9ada6008e8a390ba8bce125adcf38277265b8ebbda6b44e7ccd212`.
+The rebuilt operator binary for these checks had SHA-256
+`82316493f8f17c0cdf5f2fa543d203bd7894a3ddbb5e850f36fbf680af1eb2d7`;
+the earlier complete `dev check` applies to the preceding source slice, not
+this subsequent integration.
+The default `test run phase-01` route previously fell through to the
+unimplemented cumulative-runner error in `TestRunner.runTests`. An
+unvalidated implementation now creates a random test scope, stages the pinned
+archive, invokes the public fresh-test setup and scoped import commands, and
+then enters the selected-identity scenario. It is registered with the named
+local suite catalog, so `test list` includes it rather than maintaining a
+second default command path. It uses the explicit local
+`/run/docker.sock` endpoint and randomly selected disjoint host-port ranges;
+provider and port collisions still refuse through the existing adapters. The
+automatic preparation case remains open until this route and its owned
+resources have real independent observation and cleanup evidence.
+An in-progress A01-08 report now attempts public altered-source,
+missing-source and wrong-generation imports with separate before/after
+observations of both retained artifact digests, the generation and import
+staging names. It also binds the initial image inventory, source, binary and
+boot observations to the two lifecycle and cleanup observations. The report
+and a controlled public-import regression are not yet validated. Its first
+warning-clean build reached the test and failed because the new observation
+type lacked an equality instance; the type was corrected and needs rebuilding.
+The fresh route observes the image inventory on the explicitly selected
+daemon and distinguishes absence, presence and unobservable state; an already
+cached image is preserved and makes the clean-image case unproven. Until the
+automatic-preparation report and adverse controls are delivered, even a pass
+of the prior scenario cases returns a non-success status with that limitation,
+rather than presenting the complete Phase 1 case set as passed.
+The updated `test configuration isolation` CLI case passed. An initial
+inventory-case run overlapped another Cabal build and failed while both tried
+to create the same package database; after the build completed, the inventory
+case and configuration-isolation case both passed sequentially. The first
+failure does not count as a code failure or passing result.
+The first default-route build failed on the repository-root error branch's
+return type; it was corrected to return the scenario's ordinary failure code
+and the rebuilt route remains under validation.
+Decision (2026-11-22): the default local test selects `/run/docker.sock`
+explicitly, consistent with `documents/engineering/configuration.md` lines
+89–93; it does not discover an endpoint from an ambient Docker context. The
+generated ports are candidates, not reservations, and the public adapter must
+still refuse any observed collision.
+The shared scenario entropy reader formerly substituted a fixed string when
+the random device failed. It now returns a structured refusal for unreadable or
+short input, and the Phase 1–3 callers refuse before building scenario IDs.
+This is unvalidated until the rebuilt affected runners and tests pass.
+The Phase 1 runner also previously hashed the literal `unknown-boot` when its
+boot identity could not be read. It now validates the observed UUID and
+refuses an unavailable or malformed value before lifecycle effects; this
+change likewise awaits the rebuilt tests.
+Safety correction (2026-11-22): the pre-existing foreign-network test used the
+Docker CLI's default endpoint and unconditionally removed the fixture name,
+even if fixture creation failed. The updated runner supplies the selected
+runtime socket to every Docker observer and fixture operation, and removes a
+network only by the exact ID returned by successful fixture creation after
+unchanged label and attachment checks. It reports unconfirmed cleanup and the
+observed ID instead of deleting by name. Phase 2 and 3 callers of the shared
+observers now supply their selected socket as well. These changes need a fresh
+build, targeted adverse controls and real fixture cleanup evidence; no prior
+network test is retroactively upgraded.
+Decision (2026-11-22): fresh automatic setup must not use the existing setup
+recovery prompt to adopt an already-present root. The stricter reading of
+`documents/engineering/configuration.md` lines 209–228 and
+`documents/engineering/testing.md` lines 10–13 is to expose a fresh-test-only
+mode on the existing public setup command: it must first receive
+`FreshScopePrepared`, refuse existing or incomplete roots, and only then
+publish the new test document. The harness can feed non-secret coordinates
+through that public mode without changing a production sibling.
+The first documentation-generation attempt correctly refused the unlisted
+`--fresh-test` option; after adding its command and option dispositions,
+`prodbox dev docs generate` exited successfully. A rebuilt public binary and
+controlled temporary-root test then confirmed fresh test creation, refusal of
+the second identical setup without changing the marker or configuration, and
+refusal of production input without creating a production root. The parser
+test and four regenerated CLI golden checks passed. These results do not
+establish the fresh `test run phase-01` route or its real cluster lifecycle.
+The explicit Phase 1 dispatch previously ignored coverage, substrate and
+profile flags. It now rejects unsupported selections before beginning the
+scenario. Public `--config /tmp/nonexistent-prodbox-test-config test run
+phase-01 --substrate aws` and the equivalent `--coverage` invocation each
+exited 1 with the specific unsupported-option diagnostic before trying to read
+the selected config; no resource was created. The profile flag remains untested.
+Read-only kind-tool source probe (2026-11-22): the public v0.32.0 Linux amd64
+release is 10,522,750 bytes and hashes to the provider's pinned executable
+digest `sha256:50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54`.
+An initial HEAD diagnostic inadvertently displayed a short-lived public asset
+redirect URL in the session tool output; it contained no user credential.
+The later bounded streaming digest probe did not record the redirect or body.
+The new Haskell downloader subsequently returned success for the pinned
+release and refused a 1,000-byte limit with `NodeRegistryReadBlobMismatch`;
+both probes used temporary files, which were removed, without public import or
+cluster effects. Full preparation and interruption evidence remain open.
+The mutation catalog now requires `artifact.rejects_changed_bytes`; a reviewed
+source-bound patch is defined, but its isolated execution and intended-assertion
+kill remain to be demonstrated before Phase 1 can close.
+
+Controlled preparation update (2026-11-22): the warning-as-error build passed,
+as did 18 preparation tests and five registry/manifest/archive tests. These
+include public-binary altered, missing and foreign-generation import refusals
+with independently compared retained state. They are controlled tests, not the
+real A01-08 acceptance. The fresh report binds the setup and import sequence;
+its source and binary comparisons are point-in-time observations. A subsequent
+review found that several older adverse fixtures used fixed workspace paths and
+recursive deletion. Their paths have been moved under a freshly created,
+randomly named scenario directory, but the recursive fixture cleanup still
+requires replacement with exact ownership and cleanup read-back before a live
+run. The path change compiled with warnings treated as errors, and the 18
+controlled preparation tests passed again; those tests do not exercise the
+full scenario's scratch cleanup. No new cluster was created for this update.
+
+Fixture-cleanup follow-up (2026-11-22): a bounded private-tree snapshot and
+cleanup helper now checks identities and exact contents, refuses changed or
+extra entries, and never follows fixture symlinks. A warning-as-error build and
+23 preparation tests passed, including nested-state and recovery-config batch
+cases. The scenario no longer recursively removes fixtures:
+it retains public-created sibling scope records with their config, preflights
+captured fixture trees, removes recovery configs last, and reports incomplete
+cleanup with paths. Its decoy listener now has a bounded observed process
+settlement. The first test build failed on a shadowed test variable and passed
+after its rename. Decision: preserve both conflicting sibling scopes and their
+selected configs, because `src/Prodbox/Control/Reconcile.hs:145` creates the
+fresh generation before admission at line 156 and
+`src/Prodbox/Config/DeploymentScope.hs:345` writes its marker. A subsequent
+change independently checks the selected identity, generation and exact bare
+root before accepting that retention; a warning-as-error build and 24 focused
+tests passed, including a wrong-generation and unexpected-operation negative
+control. A later warning-as-error build and all 25 focused tests also passed
+after the sibling parent observation was extended to reject unexpected staging
+entries. A subsequent warning-as-error build and all 26 focused tests passed,
+including a check that the overall fixture directory contains only the two
+retained scopes and configs. The first build of that check rejected a partial
+test helper and passed after it was replaced. Real acceptance and cleanup under
+interruption remain open; no live
+cluster was started for this change.
+
+Reconcile completion discrepancy (2026-11-22): the A01-08 report requires the
+public reconcile calls to return success, but `src/Prodbox/App.hs:701` always
+reports `ReconcileNodeReady` as incomplete and exits unsuccessfully. A later
+ready status is a separate point observation and cannot erase that primary
+result. The existing controller result is an unstructured diagnostic string
+(`src/Prodbox/Control/KindController.hs:317` and `:379`), so it must not be
+parsed as proof of a completed, settled operation. Resolve the public completion
+contract and its independent read-back before claiming the case or starting a
+live run whose outcome is already known to be incomplete.
+
+The controller wait had an additional counterexample: reaching its deadline
+returned the same value as observing the transient unit absent. The wait now
+returns unconfirmed on expiry, including an absence reply received after the
+deadline. The warning-as-error build and all 25 focused preparation tests
+passed, including an on-time absence, a late reply, an expired deadline and an
+unobservable unit. This does not by itself prove controller success.
+The public reconcile handler has also been changed to skip the result read and
+network-policy probe when controller settlement is unconfirmed; the probe can
+create Kubernetes resources and must not run behind an unresolved worker.
+The warning-as-error build and all 28 focused tests passed, including the
+controlled no-follow-up case. The first test build rejected an ambiguous string
+type and passed after it was annotated.
+
+Guarded existing-control cleanup (2026-11-23): the guarded test-identity
+delete branch now recovers an existing operation-bound absence-control plan
+when the node positive control fails. Under the borrowed family owner it
+retains the sample outcome, attempts exact control cleanup even if sampling
+fails, and, after a recorded 204 control removal, observes and removes exact
+residual volumes with separate results. Interrupted sampling retains the
+primary interruption together with the control-cleanup outcome. The branch
+still reports the node incomplete and does not advance to node-volume or
+network removal: terminal control-container and node absence are not proven.
+The synthetic daemon fixture covered successful sampling and cleanup, a blind
+sample with control cleanup, a retained residual volume, a lost control
+reply, and interruption during sampling with a recorded cleanup outcome.
+Warning-as-error executable, unit and integration builds, all 62 preparation
+tests, the focused composed fixture, targeted HLint, documentation check and
+`git diff --check` passed. The existing static-controller settlement guard
+still refuses this branch in the public executable; neither public cleanup nor
+real Docker behavior is qualified. The binary SHA-256 remains
+`0b2f0bc0ddbdc0533fffcb7b01ffc3ade98864b39cb91dbca87422a20b0a398e`;
+recovery source SHA-256:
+`dc171c9db143fbfd5d010d5a2356647ad7b336d8c13b47c46711506e5582624e`;
+integration test source SHA-256:
+`8d4c6b2d8a85cd95ad97235018b1b620425eff03bfbf914daebce46723c4bcd7`.
+
+Absence-control sample composition fixture (2026-11-23): a simulated Docker
+daemon supplied distinct unfiltered, name, label and volume-filter inventory
+responses while the internal sampler inspected the exact recorded control and
+positive node volume. The positive case wrote the sample, removed the exact
+control with a simulated 204, and observed its recorded anonymous volume absent
+while the node volume remained visible. A blind control-label filter refused
+the sample and sent no delete. Create, footprint and node-volume records in
+this fixture were synthetic; it does not establish ownership or real cleanup.
+The warnings-as-errors integration build, all 57 connected-Docker observation
+tests, targeted HLint, documentation check and `git diff --check` passed. The
+first HLint run suggested a list construction change; the corrected source
+was rebuilt and retested. Integration test source SHA-256:
+`3b9d61dd145ca3829e4806d647831340594b3e706b71dc2f953530121a889acd`;
+the binary SHA-256 remains
+`0b2f0bc0ddbdc0533fffcb7b01ffc3ade98864b39cb91dbca87422a20b0a398e`.
+The test does not prove terminal control-container absence, cancellation of the
+sample, lost-create ownership or public lifecycle completion.
+
+Public absence-control inventory status (2026-11-23): `control status` now
+reports a separately bounded volume inventory alongside the retained local
+journal. The inventory uses the selected Docker endpoint, exact recorded
+footprint and positive node volume, but holds no controller-retirement owner;
+the output labels it unsettled and does not claim cleanup. Its separate time
+budget cannot erase the previously collected journal result. The simulated
+public-CLI fixture reported a residual volume and preserved the unconfirmed
+journal result when the daemon identity changed, without reporting that
+residual as an observable result under the changed identity. Warning-as-error
+executable, unit and integration builds, all 62 preparation tests, the focused
+six-case fixture, targeted HLint, documentation check and `git diff --check`
+passed. Binary SHA-256:
+`0b2f0bc0ddbdc0533fffcb7b01ffc3ade98864b39cb91dbca87422a20b0a398e`;
+status source SHA-256:
+`edd65bc689bf4b3dcd8cdb30329928e75638343166b7821f46e9f0071f7b9556`;
+integration test source SHA-256:
+`8d939726e44f0585b9a6e737ce24ec3aa4a02aab13cfabeccd0875d867ad9adf`.
+The fixture does not establish real Docker absence or operation settlement;
+public delete and real Phase 1 acceptance remain open.
+
+Public absence-control journal status (2026-11-23): `control status` now
+recovers the control plan from its operation-bound attempt record, then reads
+the identified control, footprint, sample marker and typed container and
+per-volume removal results under the recovered operation lease. Missing,
+damaged or unobservable records remain distinct, and the output explicitly
+disclaims resource presence, cleanup and worker settlement. A simulated
+lost-reply fixture exercised the public binary and observed the retained
+unconfirmed volume result; the container fixture checked 204, lost reply and
+interruption result recovery. The plan-recovery test refused a damaged
+attempt. Warning-as-error executable, unit and integration builds, all 62
+preparation tests, the two focused protocol fixtures, targeted HLint,
+documentation check and `git diff --check` passed. Binary SHA-256:
+`224b8cfdb9ec025d8ccc217609293616cf6e9f2b8f67daa7d47ad35127f1b436`;
+status source SHA-256:
+`ac77ed15a539b86b75334797eebe8dc0813a161d4304141a2fe2b5d8b2af11c8`;
+integration test source SHA-256:
+`1efae7887a4d3b4130b87b76dade4f985d7bbf68324a0950ae2a3a4b44235658`.
+This exposes local recovery information; it does not establish real Docker
+absence, settle an earlier request, or complete the public delete path.
+
+Residual volume recovery observation (2026-11-23): recovery can now read the
+exact per-volume attempt and bounded transport result without guessing the
+status, and independently retain the current positive-controlled volume
+inventory and closing owner check. Missing attempt, missing result, observed
+result and malformed/unobservable record stay distinct. The journal test
+covered those states and a damaged result; the six-case simulated-daemon
+fixture matched the retained 204 or unconfirmed result with either absent or
+still-present volume readback. The observation does not settle the earlier
+request or authorize a retry. Warning-as-error executable, unit and integration
+builds, all 62 preparation tests, the focused simulated recovery fixture,
+targeted HLint, documentation check and `git diff --check` passed. An earlier
+combined build failed after the source changed during compilation; the
+subsequent consistent build passed. Binary SHA-256:
+`164a5f9bc12079f91fe4f10045e3bd35255cf597e8a68c6b44fd4c0b848414e7`;
+recovery source SHA-256:
+`6e69d589fbf5a4b5df26f890691761a5c02bc970bb8ec86c4a49681d275aae9e`;
+integration test source SHA-256:
+`536bde80f980bb2e2eeedd709e558ff63b1294c4dddf59dd7a6d7b0cd8515f52`.
+At that revision the observation was not visible through the public CLI; the
+later status above adds a separately labeled unsettled inventory observation.
+No real Docker result is claimed.
+
+Residual volume interruption fixture (2026-11-23): the composed simulated-daemon
+case now covers a dropped reply after a simulated deletion, interruption after
+the request arrives, and a dropped reply where the volume remains. Both
+uncertain outcomes retained the bound unconfirmed result. In the still-present
+case, a subsequent invocation observed the residual and refused a second
+delete because the attempt already existed. The focused six-case fixture,
+warnings-as-errors integration build, targeted HLint, documentation check and
+`git diff --check` passed. Test source SHA-256:
+`fc0af81728523ecbfee8818b4893b92ed9ebe95e25780d8ba4366806c55a5048`;
+the binary SHA-256 remains
+`3f46e22748b114ec767017592b32fb5cb3b8ef674e11f4f4f0c90e905407192e`.
+These are controlled protocol results, not real Docker evidence or a complete
+resolution for a still-present volume after an uncertain attempt.
+
+Residual volume composed fixture (2026-11-23): the composed internal recovery
+path ran against a simulated Docker daemon and its CLI inventory endpoints.
+With synthetic retained create, sample and removal records, it observed the
+positive node volume and one unattached residual, wrote the exact per-volume
+attempt before the simulated delete, retained the 204 result, and observed
+the residual absent afterward. Separate fixture cases refused an attached
+volume and a missing positive volume without a delete. The warnings-as-errors
+integration build, all 56 connected-Docker observation tests, targeted HLint,
+documentation check and `git diff --check` passed. The test source SHA-256 is
+`4ba5eb78d4b1204369b2231db012bf88b5e154bc37829fd167816c4e11bd89fa`;
+the binary SHA-256 remains
+`3f46e22748b114ec767017592b32fb5cb3b8ef674e11f4f4f0c90e905407192e`.
+This fixture does not prove a real Docker cleanup or the authenticity of its
+synthetic sample marker. At that revision lost replies and interruption were
+untested; the subsequent fixture above covers simulated cases. Independent
+container absence and public lifecycle wiring remain open.
+
+Residual absence-control volume recovery (2026-11-23): repeated post-removal
+inventory now distinguishes exact recorded volumes that remain visible and
+unattached from an absent footprint or an unobservable/attached one. An
+internal non-forced removal path binds each attempt and result to the exact
+footprint, a prior control sample and matching create reply, repeats the
+positive-controlled residual observation before the effect, and preserves
+uncertain results separately from closing ownership. Per-volume journal tests
+covered ordering, a foreign ID, duplicate attempts and conflicting results;
+the sample in that test was simulated. A controlled socket test checked the
+exact non-forced volume request, invalid-ID and admission refusals, 204 and
+lost-reply transport. The prior control-removal and node-volume transport
+fixtures also passed. Warning-as-error executable, unit and integration builds,
+all 62 preparation tests, targeted HLint, documentation check and
+`git diff --check` passed. The first build caught a shadowed name in the
+transport refactor; the corrected build passed. Binary SHA-256:
+`3f46e22748b114ec767017592b32fb5cb3b8ef674e11f4f4f0c90e905407192e`;
+volume-removal source SHA-256:
+`59f9e4875bd06f619d6769a736209504aa88264d77096e91b3aa744982d1119a`;
+integration test source SHA-256:
+`47e1b1db2fca9f521667e76987c2ac73ad7846ba0c5a5c896b74e11a546211bc`.
+At that revision the composed residual-removal path and postcondition had not
+been exercised end to end; the later fixture above covers a simulated daemon.
+Real Docker validation and public delete wiring remain open.
+Lost-create ownership, terminal container absence, and real cleanup remain
+open; no provider reply is counted as absence.
+
+Absence-control removal protocol regression (2026-11-23): a controlled Unix
+socket fixture exercised the internal removal boundary with a matching control
+and footprint. It observed the exact full-ID delete only after the attempt
+file existed, then verified the bound result for a 204 reply, a dropped reply,
+and cancellation after the request arrived. The latter two retained an
+unconfirmed result; cancellation propagated after the result was readable
+under the recovered lease. The warnings-as-errors integration build, all 54
+connected-Docker observation tests, targeted HLint, documentation check and
+`git diff --check` passed. Integration test source SHA-256:
+`e35f51f010ca261dbb1752a87c57e10003764f44cb7008ef6855c7425d6fe9ee`;
+the tested binary SHA-256 remains
+`627a52606becd4899b36edf1d7698b470e14df721f952e4b6cb58fa89c9c2d00`.
+The fixture is not a real Docker cleanup and does not establish independent
+volume absence, lost-create ownership, or public lifecycle completion.
+
+Absence-control removal boundary (2026-11-23): an internal recovery adapter
+now requires the matching recorded 201 create reply, exact control and
+anonymous-volume footprint, matching daemon, held operation/family checks,
+and a newly written removal attempt before sending the existing full-ID
+container delete with anonymous-volume removal. It reinspects immediately
+before the effect and records the transport result separately from its closing
+check. On interruption after the attempt it tries to retain an unconfirmed
+result before propagating the interruption. A controlled test with an
+unconfirmed create reply refused removal and left the attempt absent. The
+warnings-as-errors executable and unit build, all 61 preparation tests,
+targeted HLint, documentation check and `git diff --check` passed. The
+adapter source SHA-256 is
+`825431849f9873d077dc4d7f5740b900962fe3840995ea5291defc973d2b2cdd`;
+the binary SHA-256 remains
+`627a52606becd4899b36edf1d7698b470e14df721f952e4b6cb58fa89c9c2d00`.
+This code is not wired into the public lifecycle. A successful delete,
+lost-create-reply ownership recovery, independent container and exact volume
+absence, orphan volume cleanup, cancellation settlement and real cleanup are
+not yet validated; a 204 reply alone is not an absence receipt.
+
+Absence-control sample composition (2026-11-23): an internal sampler holds
+one recovered operation lease and the supplied family-retirement check while
+it inspects the exact control, samples node absence, samples the control's
+volume footprint, repeats the node observation and reinspects the control
+before attempting the sample record. The write result and closing stability
+remain separate. A test with an explicitly missing socket verified that lost
+ownership or unavailable control inspection leaves the sample record absent.
+The warnings-as-errors executable and unit build, all 61 preparation tests,
+targeted HLint, documentation check and `git diff --check` passed. The first
+build caught name shadowing in the extracted lease helpers; the corrected
+build passed. Binary SHA-256:
+`627a52606becd4899b36edf1d7698b470e14df721f952e4b6cb58fa89c9c2d00`.
+No real control was created; the later simulated fixture above covers the
+positive sampling path, but exact real control and volume cleanup and the
+interruption/recovery disposition remain unproven. In
+particular, a readable sample marker alone is not a closing-owner proof; the
+public lifecycle must not treat it as terminal absence evidence.
+
+Kind family fresh request and legacy fence (2026-11-23): the family launcher
+can now prepare its original bounded window, current manager coordinates and
+an incrementally hashed executable candidate without caller-supplied identity.
+Its existing held-input owner still rehashes the executable and rechecks the
+manager before submission. Under the recovered operation lease, the current
+family and legacy submission writers each refuse a present, invalid or
+unobservable opposing launch record. The local manager fixture compared the
+fresh digest to an independent hash and exercised both record orders; it sent
+no controller. This fence applies to the current writers and does not prove
+retirement of a previously running older binary or manager job. The
+warnings-as-errors executable and unit build, all 60 preparation tests,
+targeted HLint, documentation check and `git diff --check` passed. The binary
+SHA-256 was
+`cd3a5c6b733fb0550a3055f0da2a28e2d135627bf54cb72140dffbca31c8010b`, and the
+fixture source SHA-256 was
+`209472098f8708bcc9c7cf6ba9a390ab304f95cf4573e1f1fed79ecad2dda9f0`.
+The public reconcile route remains on the old guarded path; family submission,
+settlement, cleanup and real Phase 1 acceptance remain open.
+
+Kind family non-secret snapshot (2026-11-23): the launcher now derives its
+published Dhall from the validated bootstrap projection instead of accepting
+caller-supplied selected-file bytes. It refuses projections without both
+artifact declarations, renders the scope, networking and artifact coordinates,
+and decodes the resulting source back to the same projection before opening
+the launch boundary. A synthetic test round-tripped a selection containing an
+unrelated secret field and confirmed the generated snapshot omitted it. The
+local manager fixture exercised the updated launcher, refused a legacy
+projection and a foreign manager, and observed the existing guarded send and
+never-sent input retirement; it started no controller or cluster. The
+warnings-as-errors executable and unit build, all 60 preparation tests,
+targeted HLint, documentation check and `git diff --check` passed. The
+executable SHA-256 was
+`bdbae11ab045facf0e5884d430f5db3f0042dd25ac37509d23d777cec65cad9f`, and the
+fixture source SHA-256 was
+`1d97185bef0b6cc3546ef9e235fb9502313193820099e6fbf32b261f84fd6419`.
+The public launcher, real family submission, settlement and Phase 1 acceptance
+remain open.
+
+Node-absence container readback (2026-11-23): added a bounded independent
+inventory observation for the recorded node and separately recorded control.
+Two samples require the control in unfiltered, control-name and control-label
+queries while the target ID, node name and cluster label are absent; changed
+samples, daemon identity, ownership, or invisible control projections refuse
+the result. The 59-test synthetic preparation suite passed after tightening
+its new positive-path assertion to require a parsed sample, including a run
+from the rebuilt unit executable. The warnings-as-errors executable and unit
+build, HLint and `prodbox dev docs check` passed.
+The executable SHA-256 is
+`dbaf9d6d1b5efc9d1855e075e1816cdef76146ece88a2d31681ffcee3084f367`.
+This is a
+read-only sample, not a terminal absence proof: the exact control must also be
+inspected, its volume sample and the node sample must be composed under the
+same held operation and retirement owner, and the marker and cleanup must be
+recorded and independently verified. No real control was created.
+
+Node-absence control volume readback (2026-11-23): added a bounded,
+read-only observer which binds the recorded control and exact anonymous volume
+IDs to the retained operation and daemon. It repeats the volume inventory and
+per-volume container filters, checks the retained node volume independently as
+a positive control, and refuses changed or unobservable results. Before
+removal the recorded volumes must be present and attached only to the control;
+after removal they must be absent from both inventories. The surrounding node
+artifact preparation suite passed 58 tests, including the new adverse-control
+case, the warnings-as-errors executable and unit-test build passed, HLint
+reported no hints, and `prodbox dev docs check` passed. The tested executable
+SHA-256 is `a3358d3124c6bfebf4cfecab7eddd0c5e2377a8877649a837dfc1b9b6380c3a5`.
+This is simulated and read-only evidence:
+the observer is not yet wired into the public lifecycle, the sampling marker
+must be committed by a composed owner after a successful observation, and no
+real cleanup or acceptance case is claimed.
+
+Node-absence control create transport (2026-11-23): decision: retain and
+record exact anonymous-volume IDs for the canonical node image rather than
+assuming that a never-started control has no storage. The earlier real node
+cycle above recorded an anonymous-volume leak at lines 8689–8693; the upstream
+[Moby create path](https://github.com/moby/moby/blob/master/daemon/create_unix.go)
+also creates and populates image-declared volumes during container creation.
+That source is not proof of the currently installed daemon's behavior. The
+new fixed control body uses the same image, isolated networking, no privileged
+mode, a read-only root and a non-executable entrypoint. Its held-session
+transport checks the exact image volume declaration and admission before a
+bounded create; it retains lost replies as unconfirmed. It is not yet wired
+to public delete: the caller must first establish a durable attempt, a
+pre-create ownership boundary, a funded storage budget, and complete
+container/volume recovery and cleanup. No real create has been attempted.
+Warning-as-error executable, unit and integration builds, 57 focused
+preparation tests, all 53 connected Docker observation tests, HLint,
+documentation check and `git diff --check` passed. The initial integration
+build rejected a fixture's shadowed name; the corrected build and tests
+passed. The selected create fixture covered success, lost reply, changed image
+declarations and denied admission. The binary SHA-256 was
+`f026cc80e42d167529e04e2db6024340a996362a8e36b6aa3beb93279aa028e7`, and the
+integration test source SHA-256 was
+`97d9a71614e7e12d172044941287b5d9046b8730f084d31d646bd0d6e3811be0`.
+
+Node-absence control inspection (2026-11-23): the held Docker session can now
+inspect the deterministic control name and compare its actual ID, image,
+operation/generation labels, never-started state, network isolation and exact
+anonymous volume footprint with the retained plan. A missing response remains
+unconfirmed; a matching configuration is a candidate, not proof of ownership
+or permission to remove. Synthetic parser controls reject changed identity,
+generation, state, network and mounts. A connected Unix-socket fixture checked
+the exact inspect request and 404 refusal. No actual Docker control was
+created; creation, lost-reply ownership, per-volume cleanup and the terminal
+independent absence observation remain open. Warning-as-error executable,
+unit and integration builds, all 57 focused preparation tests, the selected
+connected inspection test, HLint, documentation check and `git diff --check`
+passed. The binary SHA-256 was
+`7d2f6263df443cff033927889c507d5726103645dbc1aea78d9f093e611201da`, and the
+integration test source SHA-256 was
+`929660d397340accd672988b3aa35ca14846ebad137f1de084368e4a5cb2c62f`.
+
+Node-absence control journal (2026-11-23): a scoped, exclusive journal now
+binds the control's create attempt and transport result, identified ID,
+footprint, sample marker, removal attempt and transport result to the exact
+recorded node creation, target,
+daemon, root generation, deterministic name and image volume declarations.
+The footprint and later records retain a complete destination-to-anonymous-volume
+ID mapping, so a later removal does not discard the storage recovery identity.
+Removal requires the footprint rather than a successful sample, allowing
+cleanup when sampling fails.
+The writer requires earlier matching stages, syncs each record and checks it
+again; ID recovery refuses damaged or missing provenance. These are local
+records, not proof that a control was actually sampled, its volumes were
+removed, or the node is absent. A real Docker adapter, observation-backed
+sampling, lost-reply recovery, exact volume cleanup and a terminal absence
+disposition are still required before delete can use this journal. The prior
+revision passed warning-as-error builds, 56 focused preparation tests, HLint,
+documentation check and `git diff --check`; the corrected revision passed
+the same checks. A synthetic retained-root test exercised
+stage ordering, duplicate writes, wrong target and footprint, ID and footprint
+recovery, damaged predecessor refusal, cleanup without a sample and refusal
+to add a sample after removal begins. An initial focused `runghc`
+invocation lacked the package flag and did not run; it passed after the flag
+was supplied. An earlier build observed a test/library constructor mismatch
+because the source changed during compilation; the consistent rebuild passed.
+No Docker control was created. The prior binary SHA-256 was
+`1a5e2bc5f323f4bfed986226f7e23587f73d03d43ac515785112b1a01cd50593`.
+The corrected binary SHA-256 was
+`3a806604793ddd78727de7f392182626caa011c1d3366997077b51a4d1a507f4`.
+
+Node-absence control storage input (2026-11-23): the Docker adapter can now
+read the exact image's bounded `Config.Volumes` declaration over its held
+session. Missing or malformed configuration, a different image identity and
+noncanonical paths refuse the observation rather than becoming an empty list.
+This supplies the storage inventory needed to design a journaled positive
+control; it does not create a control, prove volume ownership or remove any
+storage. The earlier unjournaled control remains removed and a node missing
+outside the adapter still fails closed. Warning-as-error builds, all 55 focused
+preparation tests, HLint, documentation check and `git diff --check` passed.
+The parser cases cover empty and declared volumes, missing fields, wrong image
+identity and path aliases; no real image or Docker control was exercised. The
+binary SHA-256 was
+`11015d5675b4db83e6abf1e64d1ef536900b1fcd957f24c4fa1d9bb75bdb0d60`.
+
+Kind family delete wiring (2026-11-23): the guarded test-identity delete path
+now borrows the exact family retirement owner, retires the family's published
+inputs, and carries the owner's provenance/physical checks through the node,
+volume and network removal interpreters and their durable observations. Its
+result preserves any completed steps when the owner or scope closing check is
+unconfirmed. The old static-controller settlement guard remains in front of
+the path: it still cannot be entered for a recorded operation until the old
+controller's independently submitted child scopes are accounted for. The
+unrecorded Docker absence-control creation has been removed; a missing node
+now requires a journaled independent positive control rather than creating an
+unowned control container. Designing and validating that control remains open.
+Warning-as-error executable and unit builds, all 54 focused preparation tests,
+the synthetic family-owner fixture, HLint, documentation check and
+`git diff --check` passed. These checks do not enter the still-guarded delete
+effects; live removal and phase acceptance remain open. The binary SHA-256 was
+`df6351edb7afd9cbd6e9b2a5f896c72b4dbb3a424a91364aaa3d35ccbdc9f731`.
+
+Kind family borrowed retirement owner (2026-11-23): the recovery path can now
+hold the original provider/manager/kernel retirement owner while a callback
+acquires its own operation lease. The borrowed verifier rereads the exact
+retained launch and submission provenance and checks that lease on both sides
+of the physical observation. Input retirement under that owner rechecks the
+same provenance at each permission boundary. The synthetic dispatcher fixture
+closed its original synthetic sender, borrowed the owner, refused an unstable
+lease and a changed launch record, retired the exact published inputs, and
+verified that the owner was closed after the callback. No controller job was
+sent in that fixture. This owner proves only the family it names; the old
+static controller still requires separate settlement, and public delete and
+recreate remain guarded until both proofs and all effect-boundary checks are
+composed and live-validated. Warning-as-error executable and unit builds,
+all 54 focused preparation tests, the fixture, HLint, documentation check
+and `git diff --check` passed. The binary SHA-256 was
+`8a8dca299ef4328d43b1e76db84a417f6deb33bde3eafb2361a271d071556979`
+and the fixture SHA-256 was
+`d2359a476d27a2da78b1d296ec305f32088826d71853a840ef206c9437dc777a`.
+
+Kind family recovery composition (2026-11-23): recovery now reads the
+retained family request under the recovered operation lease and matches the
+original kind, key, window, manager domain and provider-qualified submission
+record at the fixed publisher path. Public `control status` reports the
+provenance observation without claiming a send or retirement. Exact input
+retirement borrows the generic sender/manager/kernel retirement owner and
+checks the retained lease around each retirement permission check, preserving
+the payload result and the closing physical and lease observations
+separately. The [synthetic dispatcher fixture](../test/qualification/KindControllerInput.hs)
+verified that missing submission metadata cannot authorize retirement and
+that an exact synthetic record is observed while its live sender causes the
+specific sender-present retirement refusal. It started no job. The
+[native input fixture](../test/qualification/HostControllerInputRetirement.hs)
+changed the admission check during retirement, observed refusal before any
+payload or journal mutation, and then retired its own fixture. These cases do
+not prove a real family send, physical retirement after work, or the public
+delete/recreate handoff; those remain open, and family submission is guarded.
+Warning-as-error executable and unit builds, all 54 focused preparation tests,
+both fixtures, HLint, documentation check and `git diff --check` passed. The
+binary SHA-256 was
+`270a936cad7e2aa7fadd8019e787d1884efc5861329713092d8a2d04bab826e6`;
+the dispatcher and native fixture SHA-256 values were respectively
+`f87c47b7fd94dbe044eaabeef2207ce11e66ac6543cfba4a9ef459f4cdc3e8ff` and
+`d072e0a3b9d229270cb3699c372274a39b9b92c05881f08eac7fe1105e29ce5f`.
+
+Kind family lease handoff (2026-11-23): before opening worker resources,
+the family controller now waits within its original work deadline for the
+retained operation lease. Only a busy lease is retried; changed input/parent
+ownership, a changed retained root, an uncertain lease close and expiration
+refuse worker start. The worker still reacquires the operation lease at its
+individual resource effects. This handles the launcher's possible overlap
+with worker startup; it is not a live controller or retirement proof. The
+shared summary marks a refused handoff as work not started. The focused test
+held the real root lease, checked deadline expiry and unstable-owner refusal,
+then observed the waiting worker proceed after release. All 54 focused
+preparation tests, the synthetic dispatcher fixture, warning-as-error builds,
+HLint, documentation check and `git diff --check` passed. The first unit
+build failed because a constructor was renamed during compilation; the
+consistent rebuild passed. The binary SHA-256 was
+`6c4cc03f4e7faa780ac6747c1c90b414a6439651a454033417e86c62bfc8a773`
+and the fixture SHA-256 was
+`64cbd54de2c9d4828ac7d7ab47957bdb7ac482a354605c1675d8a98e96796e9f`.
+Submission remains guarded.
+
+Kind family publication composition (2026-11-23): a new internal launcher
+holds the recovered operation lease while it writes the request locator,
+publishes the exact configuration and request, verifies the held executable
+and inputs, and enters the one-shot publication boundary. Its closing result
+distinguishes retained possible sends from confirmed and unconfirmed
+never-sent input retirement. The send boundary also requires the original
+manager domain and rechecks the lease before and after marking a possible
+send. The [synthetic fixture](../test/qualification/KindControllerInput.hs)
+exercised publication against the user manager and confirmed the deliberate
+submission refusal and never-sent retirement; it created no controller or
+cluster. The send-boundary rechecks remain unexercised because the family
+submission guard fires first. The launcher is not wired into the public
+reconcile command. Before enabling it, validate the lease handoff with a live
+controller, wire exact recorded-submission recovery and
+physical retirement through cleanup, and validate live acceptance and the
+owned mutations. The fixture also refused foreign manager and configuration
+inputs before publication. Warning-as-error executable and unit builds, all
+53 focused preparation tests, 17 RPC controller CLI tests, HLint,
+documentation check and `git diff --check` passed; the binary SHA-256 was
+`b6f1aba23893d3d7ed0c64e5784f2c24c454dad28a62fdd30440ace863899055`
+and the fixture SHA-256 was
+`a1ccab1ff379997b14c2e4740f860662816e3704f0a4c5b7a303d6cae15649c4`.
+
+Kind family launch locator (2026-11-23): the retained test root can now hold
+the canonical, non-secret family request under the recovered operation lease.
+The exclusive write synchronizes the file and root and independently reads it
+back; recovery checks the root generation, operation, manager coordinates,
+original window and canonical request. A conflicting, unsafe or incomplete
+record cannot establish submission or absence. This primitive is not yet
+wired to the public launcher: exact publication provenance, manager settlement
+and retirement must be composed before enabling family submission. The focused
+fixture checks recovery, duplicate-write refusal, lost lease and tampering;
+this is not live kind acceptance. The warning-as-error build, all 53 focused
+preparation tests, HLint, documentation check and `git diff --check` passed. The binary SHA-256 was
+`e839f53c28b4b7a6b43bbd2a560d47f94d2339c6dd6b66d76150089aa381a60e`.
+
+Kind family result summary (2026-11-23): after a pinned dispatch callback,
+the dispatcher now writes an exclusive, generation- and operation-bound local
+summary under the recovered lease, reads it back and requires that write for a
+successful controller exit. The write is bounded by the original outer
+deadline. Its closed fields keep the worker observation, worker closing,
+parent closing, input closing, post-write observation and post-lease closing
+separate. Public `control status` reports the summary as local evidence and
+explicitly says retirement is unobserved. This is a bounded summary, not a
+complete serialization of nested error details; resource journals remain
+necessary and full durable failure detail is still open.
+
+The [dispatcher fixture](../test/qualification/KindControllerInput.hs)
+retained an incomplete result in a synthetic test root and read it through the
+public status command; it also checked simultaneous primary/closing outcomes,
+wrong digest and unmanaged-parent refusals. The independent
+[manager fixture](../test/qualification/KindControllerFreshProvider.hs)
+read a synthetic result through public status. Neither submitted a unit or
+created a cluster. Their SHA-256 values were
+`64c8294e538f45a8b6b58d19fd62fbd3f3a0aeed4ac33e6b7b70d06d1a4ef9b4`
+and `92946a2ba3280eb00e369643029ef1c1fa9758bdf6bf282881b90909f908b9ec`.
+Warning-as-error builds, 52 focused tests, the reviewed mutation-binding check,
+HLint, documentation check and `git diff --check` passed. The binary SHA-256
+was `72ce16c24323c9fba99ad188db03106add1aeb5d807c6001baefe108005f5921`.
+Family submission, exact failure detail, real worker/retirement and cleanup
+remain open.
+
+Kind family dispatcher entrypoint (2026-11-23): the current binary now routes
+`internal-kind-family-controller` through the pinned family dispatcher using
+the closed original argument envelope. A zero exit denotes the independently
+observed worker and recorded receipt only; job processing and physical
+retirement remain separate. An expired envelope was refused through the public
+binary without starting a unit. The registry-derived command reference,
+completion files, man page and CLI goldens were regenerated; the command has
+an owned disposition. Warning-as-error builds, 351 parser coverage tests,
+four CLI-output tests, 51 focused preparation tests, the mutation-binding
+check, HLint, documentation check and `git diff --check` passed. The binary
+SHA-256 was `621835c6be41e3bf2a716c373451e6d1b4289898c9563b07a6a478cf188a8cf5`.
+This entrypoint supersedes the prior note's private-only state; supported family
+submission remains explicitly refused, and durable failure results, live
+execution, retirement and cleanup remain open.
+
+Kind family dispatcher composition (2026-11-23): the internal dispatcher now
+combines the pinned configuration/request and held executable digest, family
+preparation, observed process parent and confined worker. On a confirmed
+worker result, the kubeconfig and receipt steps run under the recovered
+operation lease with input and parent rechecks; failures and observations stay
+distinct. The [synthetic input fixture](../test/qualification/KindControllerInput.hs)
+passed missing-root and wrong-digest dispatcher refusals, unmanaged-parent
+refusal against the local user manager, and post-callback input-change
+reporting; it started no unit or cluster. Its SHA-256 was
+`4756c2f9d0f5a8ca533234619c77e17d05b0a8d435ca126e0d10ef1b351aeba4`;
+the dispatcher source SHA-256 was
+`c94089b1fbca9f423ff4a5e04485f5cb78be58b99eb3af189da98ed6db674f70`.
+Warning-as-error builds, 51 focused tests, mutation-binding check, HLint,
+documentation check and `git diff --check` passed. This composition is not
+wired into the public binary: the binary remained
+`82b7793aecb8533708c40528a38341ac77d2384a0bb5ffc6b4380ada92acc9a8`.
+Durable primary-result handling, public dispatch, supported family submission,
+real worker/retirement proof and cleanup remain open.
+
+Kind family observed-parent boundary (2026-11-23): the held executable is now
+hashed from its retained descriptor in bounded chunks, within the original
+work window and the declared 256 MiB ceiling. The family input loader holds
+the same program object required by the existing observed operation-parent
+owner. Before opening that owner, the new boundary compares the executable,
+request bytes, bootstrap projection and manager domain with its preparation;
+it qualifies and rechecks the manager provider and preserves a returned
+primary value when closing observation fails. Read-only program verification
+now permits the kind identity, while the actual family submission path still
+explicitly refuses it. The [held-input fixture](../test/qualification/KindControllerInput.hs)
+passed independent executable-hash comparison, changed digest and domain
+refusals, post-callback input change, and an unmanaged-process refusal against
+the real local user manager. It submitted no job and touched no cluster. Its
+SHA-256 was `e961ff2cb7636cac4469c1e1341368298813b5f1ea5880d8bfebf5b24eeeaaeb`;
+the binary SHA-256 was
+`82b7793aecb8533708c40528a38341ac77d2384a0bb5ffc6b4380ada92acc9a8`.
+Warning-as-error builds, 51 focused tests, the mutation-binding check, HLint,
+documentation check and `git diff --check` passed. This is a negative parent
+observation only: successful managed placement, closing-fault behavior, the
+dispatcher, worker execution and retirement are not yet qualified.
+
+Kind family preparation (2026-11-23): the family now has a transport-capable
+declared host plan, funded sealed-worker snapshots, fixed stream limits and an
+operation intent bound to the request's scope, key and original window. The
+additional role is reserved capacity, not measured usage or evidence that a
+transport ran. The same declared plan was produced from two sufficient
+synthetic host observations, and an insufficient host was refused. The
+[capacity fixture](../test/qualification/KindFamilyCapacity.hs) SHA-256 was
+`fa03a00cbf8f5cf711fdf1abf554cf24a3300ccb9fa75ca706b5d5a94eb809e0`.
+The [preparation fixture](../test/qualification/KindFamilyPreparation.hs)
+passed matching identity, foreign scope, insufficient capacity and expired
+original-window controls; its SHA-256 was
+`bf92dc377d443d71210dad4036f02da0e8e11a1e57a6456bab8e9451a5d14be7`.
+Its first expired-window control had invalidly short stream reserves and was
+corrected before the passing run. The warning-as-error builds, 51 focused
+tests, reviewed mutation-binding check, HLint, documentation check and `git
+diff --check` passed. The binary SHA-256 was
+`7656f4ab5b321215c84d47a832a64d5b214949f8c819ea5d7d57e836392c2542`.
+These synthetic checks create no manager unit and do not establish live host
+capacity, process placement, dispatcher operation or retirement. The family
+submission refusal and recovery guard remain in place.
+
+Kind family worker adapter (2026-11-23): the family command slot can now run
+the existing confined kind worker using the same sealed descriptors, sandbox,
+runtime budget, bounded input and command validation. The archive, Docker
+session, image, network and broker checks are shared with the legacy path;
+family process failures remain a distinct typed result. The family and its
+operation key must match before any Docker or worker action. The
+[binding fixture](../test/qualification/KindFamilyBinding.hs) passed matching,
+foreign-family, foreign-key and invalid-operation controls without starting a
+worker; its SHA-256 was
+`940e67463f5fbd1d1c214f20009fd7291bd3e1dffbf70d05dcf0d9f735dcb180`.
+Warning-as-error executable and unit builds, 51 focused tests, the reviewed
+mutation-binding check, HLint, documentation check and `git diff --check`
+passed. The first build found a shadowed name, corrected before the passing
+build. The public binary SHA-256 was
+`875d76cea9b65fd11a4da878a2f230c1977958cf31478b3fb9f2974a86db8add`.
+This is not a real family-worker execution or retirement proof; the dispatcher,
+submission guard removal, recovery and live acceptance remain open.
+
+Kind family pinned inputs (2026-11-23): the current launcher now derives its
+operation key through the same validated function as the family request. A
+new internal loader reads the bootstrap and request from held, fingerprinted
+descriptors, rechecks them before and after its callback, and preserves the
+callback result when the closing check fails. Its expected manager domain and
+executable digest are supplied by its caller and still require independently
+verified owners; the loader is not admission and is not yet wired to a
+dispatcher. [The synthetic fixture](../test/qualification/KindControllerInput.hs)
+passed a valid load, a changed-digest refusal before callback and a changed-file
+disposition after callback. It started no controller or infrastructure. Its
+SHA-256 was `a5df018538588ca4833b631130a4ce3f4c5f678c8e049ea8d934e787884df4de`;
+the loader source SHA-256 was
+`25c3fa51654f2abfeed054682703088b5dba1334b93da006aa8cb217b3f3b963`;
+the binary SHA-256 was
+`7c31f432f5809bdf9a94846f575233c0c1278fb3cf7ef7ef18187f1626c2ca1b`.
+The warning-as-error builds, 51 focused tests, mutation-binding check, HLint,
+documentation check and `git diff --check` passed. The initial unit fixture
+could not import intentionally hidden owner modules; it was moved to the
+source-level qualification fixture. The first source-level invocation exposed
+two crypto packages with the same module name; the passing run used a temporary
+package environment that hid `cryptonite`. Dispatcher, physical placement,
+retirement and working recovery remain open.
+
+Kind family request (2026-11-23): added a bounded canonical request codec that
+binds the test scope/root/generation/socket to a bootstrap projection and
+compares the operation key, original clock window, manager domain and executable
+digest with independently supplied expected values. It carries no admission or
+live-manager proof. The dispatcher and launcher do not yet use it, and the
+temporary recovery refusal remains in place. The warning-as-error library,
+executable and unit builds, 51 focused preparation tests, reviewed
+mutation-binding check, HLint and `git diff --check` passed. The first unit
+build rejected a shadowed local name and passed after correction. No live
+resources were used. The request source SHA-256 was
+`96316c5ee9b387c2126d23abb14c507c5116060196d2bf06b59675980fc47677` and
+the focused test source SHA-256 was
+`4f8362717a275301d71b8d5623cbc33adc1050832352f82246ace456bb7ea31a`.
+The public binary remained
+`c25d480d6c11724d6f8d7b691d334382de5c188882fc2b539a1236a33e93c45f`.
+
+Kind family identity (2026-11-23): the shared operation-family model now has a
+separate kind controller identity, keyed unit and runtime names, publication
+directory and canonical producer/submission record tags. The generic family
+submitter explicitly refuses this identity until its dispatcher is implemented;
+the existing static kind controller has not been migrated. The native
+publication codec fixture passed all four controller kinds, including malformed
+and cross-kind controls and retirement of its synthetic never-sent inputs. The
+native submission fixture passed 26 controls, including kind record round-trip,
+unknown/nested tag refusal, and distinct unit and runtime names for every other
+family. These fixtures submit no systemd job. Their SHA-256 values were
+`3cea7e1051d38ecd3bff774d202b868c34d2017cdd679d7f86993e6b597dc80e`
+([publication](../test/qualification/HostControllerPublicationKindCodec.hs)) and
+`f21f912e75ba313fbf637f0a108e2f708c61db8de64701991a5f8e9946243104`
+([submission](../test/qualification/HostControllerSubmission.hs)). The first
+attempt to run them as installed-package consumers failed because their modules
+are deliberately hidden; the source-module runs passed. The warning-as-error
+library, executable and unit builds, HLint, all 50 focused preparation tests,
+reviewed mutation-binding check, documentation check and `git diff --check`
+passed. The public binary SHA-256 was
+`c25d480d6c11724d6f8d7b691d334382de5c188882fc2b539a1236a33e93c45f`.
+Dispatcher integration, durable submission and held retirement, recovery
+effects and real kind acceptance remain open.
+
+Controller manager read-back (2026-11-23): public status now reads the exact
+controller unit after observing the retained sender absent, under a freshly
+qualified matching provider and the recovered operation lease. It checks the
+retained records and sender again around that read. Present and absent are
+point observations only; they do not establish request processing, job
+completion or worker settlement, and do not authorize further effects.
+[The real-manager fixture](../test/qualification/KindControllerFreshProvider.hs)
+passed for sender presence, sender absence followed by an observable unit
+read, and a different manager domain. It submitted no job, used an isolated
+test scope and a missing Docker socket. The fixture SHA-256 was
+`a08d1bd3506bfc164620bd43c78cbe6b947675edf66e54b97fcf4a0403ebc454`;
+the public binary SHA-256 was
+`a4d3f49b0d86f719d9fff6ee3b6b21f01d5ad93fff9c6c41f48f8b4ed3f92e3b`.
+Warning-as-error executable and unit builds passed, as did all 49 focused
+preparation tests, the reviewed mutation-binding check, HLint, documentation
+check and `git diff --check`. The focused tests include refusing a different
+boot before contacting the manager.
+Real kind acceptance, physical retirement and the phase's mutation and cleanup
+evidence remain open. The existing test-identity removal and completed-operation
+archive inventory checks do not independently rule out an outstanding
+controller. A temporary fail-closed settlement boundary now refuses both paths
+for a recorded operation, preserving their implementations and records until
+an operation-scoped retirement owner can hold the required proof throughout
+recovery. It does not establish retirement or provide working cleanup. The
+no-intent fresh-operation path also needs provenance sufficient to distinguish
+a truly fresh scope from a legacy, unrecorded controller; missing records alone
+cannot establish that distinction. Do not use these paths to manufacture a
+passing live run. The warning-as-error executable and unit builds and all 50
+focused preparation tests passed, including refusal by both recovery functions
+with the intent retained. The reviewed mutation-binding check initially caught
+the changed source and manifest identities; it passed after the reviewed
+bindings were refreshed. HLint, the documentation check and `git diff --check`
+passed. This is not a mutation campaign or live cleanup proof. The binary
+SHA-256 was `ce9b15f0c21b71d2d1ba1a3d88682a79df3d4c435d41f508b9d8f1d19d74026b`;
+the focused test source SHA-256 was
+`5508d96566612d88a8b90567cbd83a2c3f488abcbb46610c82d86b5156ca2858`.
+
+Controller sender identity (2026-11-23): before the manager request, the
+launcher now records the submitting bus connection's validated unique name,
+bound to the retained operation, manager domain, original window and provider
+binding. It rechecks that name around the send. Public status can read the
+record and observe the sender name under a freshly matched provider; changed
+boot, domain, binding or unavailable reads remain unconfirmed. Name absence is
+only a point observation: it does not prove the request was processed, the job
+finished, or a worker retired. The warning-as-error builds, all 49 preparation
+tests, reviewed mutation-binding check, HLint, documentation check and `git diff
+--check` passed. [The real-manager fixture](../test/qualification/KindControllerFreshProvider.hs)
+observed the recorded sender present while its connection was held and absent
+after it closed, and rejected a changed manager domain. It submitted no job and
+used a missing test Docker socket. The fixture SHA-256 was
+`9282821757bed1a53988582c98344a38a910e7a4500b2cdb639b36e64dbd4370` and
+`.build/prodbox` SHA-256 was
+`ff6f9718f9481c8077671463662221e330b3aa2c556814156a051dd46dfff800`.
+Deletion and recreation still require independent settlement and must not
+infer it from an absent sender.
+
+Fresh controller provider observation (2026-11-23): `control status` can now
+freshly qualify the selected user-manager provider and compare its manager
+domain and structured provider binding with the retained records while holding
+the operation lease. A missing record or failed qualification stays
+unobservable; a different boot or UID is rejected before opening the manager
+socket. The original retained records are re-read and the live provider is
+rechecked around the comparison. A match is a point observation, not job
+processing, physical worker retirement or authority to delete. The
+warning-as-error builds, all 49 preparation tests, reviewed mutation-binding
+check, HLint, documentation check, isolated public-status fixture and `git diff
+--check` passed. Controls cover a different manager, binding and boot; the
+synthetic different-boot case refuses before a manager socket. Follow-up
+on 2026-11-23: [the real-provider fixture](../test/qualification/KindControllerFreshProvider.hs)
+used public `control status`, an isolated temporary scope and a missing test
+Docker socket. Against the local systemd 255 user manager, it matched the
+fresh qualified provider and rejected a deliberately different recorded
+manager domain. It made read-only manager observations and submitted no job.
+The fixture SHA-256 was
+`7262c7fca704c7fbb42c4ba43f928311fd06cf3f36c5666c5add537c6391a349` and
+`.build/prodbox` SHA-256 was
+`df894666ec7535f38a327a608d3a6d071ebcf315a490cf05cb88e8d922e68a41`.
+The fixture is registered in package sources. This does not establish job or
+worker retirement; real lifecycle acceptance remains open.
+
+Controller provider material (2026-11-23): the launcher now writes the
+canonical non-secret provider binding as a separate exclusive record after its
+digest and before submission. The reader checks canonical base64 and provider
+encoding, the digest, the bound manager domain, original window, operation and
+root. Status reports only whether the material was observed, not its bytes.
+Older digest-only records remain readable but cannot provide the structured
+binding needed by the existing retirement machinery. A retained binding does
+not qualify a live provider or establish physical retirement. Warning-as-error
+builds, all 48 preparation tests, the reviewed mutation-binding check, HLint,
+documentation check and `git diff --check` passed. The synthetic controls cover
+canonical binding round-trip, exclusive write, duplicate refusal and unsafe
+file mode. Both qualification fixtures are registered in package sources.
+Actual provider and worker recovery remain open.
+
+Controller provider binding (2026-11-23): the kind launcher now uses the
+existing source-reviewed systemd provider qualification and records a digest
+of its binding, nested under the retained manager domain and submission
+intent, before sending. It rechecks the live provider and manager domain
+before and after the call. Status reports the retained digest as local data;
+it cannot authenticate a future provider without a fresh qualification and
+comparison. Manager job processing, independent worker/kernel retirement,
+cleanup and public completion remain open. The warning-as-error builds, all 48
+preparation tests, reviewed mutation-binding check, HLint, documentation
+check, synthetic public-status fixture and `git diff --check` passed. Controlled
+records included missing, mismatched, duplicate and unsafe provider records;
+they do not prove live provider qualification. No live controller was
+submitted for this slice.
+
+Controller manager-domain record (2026-11-23): the launcher now observes the
+systemd manager domain before submission and records its boot ID, bus ID,
+manager name, UID, PID, start ticks and the original absolute monotonic
+window under the operation lease, bound to the submission digest. It rechecks
+the domain and operation before the send, records a returned job, and
+rechecks the manager domain afterward. `control status` can read the retained
+domain and window without comparing them to today's manager. This is a local
+record of a point observation, not provider authentication, an authoritative
+job identity, physical retirement, or permission to delete. The warning-as-error
+builds, all 48 preparation tests, reviewed mutation-binding check, HLint,
+documentation check and `git diff --check` passed. A synthetic public-status
+fixture observed the retained domain and job with settlement unobserved. The
+first unit build failed because the domain type was package-private; the
+validated interface was exposed and the rebuild passed. Real manager and
+lifecycle evidence remain open.
+
+Controller job receipt (2026-11-23): when the launcher receives a systemd
+job path, it validates the path and records it exclusively under the same
+operation lease, bound to the retained submission digest and scope. A missing,
+changed, unsafe or mismatched intent refuses the receipt. The public status
+reads the retained path as local evidence only. If the manager reply or the
+receipt write is uncertain, the operation remains unconfirmed and its intent
+is retained. A job path can be reused and does not authenticate the manager or
+prove that a job or worker has settled. Independent retirement and safe
+cleanup/recreation, including older unrecorded operations, remain open. The
+warning-as-error executable and unit builds, all 48 preparation tests, reviewed
+mutation-binding check, HLint, documentation check and `git diff --check`
+passed. [The isolated public-status fixture](../test/qualification/KindControllerJobStatus.hs)
+reported the synthetic job while explicitly leaving settlement unobserved; it
+submitted no job and used a missing test Docker socket.
+
+Controller submission status (2026-11-23): `control status` now reads a
+retained controller request digest under the recovered operation lease,
+validates the record against its scope, generation, operation and held root,
+and reports missing, conflicting or unobservable records separately. It
+reads the historical digest from the record rather than comparing it with the
+current executable. The status output explicitly does not claim a send,
+manager state or worker settlement and does not authorize cleanup. The current
+warning-as-error build, all 48 preparation tests, reviewed mutation-binding
+check, HLint, documentation check and `git diff --check` passed. The public
+fixture used a missing test socket and observed a conflicting retained record.
+Its first version selected a different socket from the recorded operation and
+correctly failed to associate it; aligning the isolated projection resolved
+the fixture failure. Actual manager and worker recovery remain open.
+
+Controller submission intent (2026-11-23): before its systemd call, the
+public launcher now records an exclusive scope-, generation-, root-inode- and
+operation-bound digest of the exact launcher request under the recovered kind
+lease. Its digest covers the selected argument vector, executable digest,
+unit/slice/socket, description and resource plan. A retained intent refuses a
+second submission; an interrupted write or uncertain send stays incomplete.
+The lease is released after the manager call before waiting, so the controller
+can acquire it; a controller that starts before release can still refuse and
+must be recovered. The record is not evidence that a send occurred, does not
+authenticate a manager job or provide physical worker retirement. A returned
+job path is now recorded separately and public status reports both local
+records; deletion/recreation recovery does not yet consume them.
+Those recovery paths and the risk of older unrecorded controller attempts
+remain open. The
+warning-as-error executable and unit build, all 48 focused preparation tests,
+reviewed mutation-binding check, HLint, documentation check and `git diff
+--check` passed. The controlled cases cover foreign-operation refusal, a single
+admitted action, duplicate refusal, mismatched request, unsafe mode and a
+malformed record. No live controller was submitted.
+
+Controller settlement correction (2026-11-22): the launcher previously returned
+success after a manager `GetUnit` absence response, and the public handler used
+that result to permit a Kubernetes probe. Unit absence alone does not establish
+that the submitted job was processed or that its physical worker family
+settled. Both on-time absence and an unavailable/late absence now remain
+unconfirmed, so the probe is not admitted. The managed-host retirement code
+currently covers RPC-birth, ordinary-cascade and mutation controllers, not the
+kind controller; a durable kind submission identity and independent manager,
+worker and kernel retirement observations remain necessary. The warning-as-error
+build, all 47 preparation controls, reviewed mutation-binding check, HLint,
+documentation check and `git diff --check` passed. The controls confirm both
+unit-absence outcomes refuse follow-up. No live controller was submitted for
+this correction.
+
+Controller lease composition follow-up (2026-11-22): the public reconcile
+handler now keeps one recovered operation lease while it reads the worker
+receipt, inspects the exact recorded Docker node, checks readiness and runs the
+network probe. It re-reads the receipt and node and checks readiness and lease
+stability after the probe. Changed or unavailable binding retains the prior
+probe diagnostic as unconfirmed. This does not establish peer authentication,
+physical worker settlement or final reconcile success; real composition stays
+open. The warning-as-error executable and unit builds, all 47 preparation
+controls, reviewed mutation-binding check, real `kubectl` snapshot fixture,
+HLint, documentation check and `git diff --check` passed. Controlled tests
+cover mismatch before the probe and a retained result after lease instability.
+
+Kubeconfig snapshot follow-up (2026-11-22): the readiness and network-probe
+consumers previously reopened the retained path after validating it, leaving a
+replacement window in which `kubectl` could consume different configuration.
+They now reconstruct the strictly validated configuration into an anonymous
+sealed descriptor, read it back, and pass its bounded process descriptor path
+to `kubectl`. No secret contents are added to durable files or diagnostics. This binds the
+consumers to the snapshot; it does not authenticate the Kubernetes peer or
+prove worker settlement. The warning-as-error build, four configuration tests,
+46 preparation tests, the reviewed mutation-binding check, HLint, documentation
+check and `git diff --check` passed. A real child process read the snapshot;
+write and retained-file replacement controls preserved its bytes. A separate
+non-secret disposable fixture used the real `/usr/bin/kubectl` v1.35.10 through
+the bounded subprocess with its limited environment: `config current-context`
+returned the selected context before and after the retained path was replaced.
+The reproducible fixture is [KindKubeconfigSnapshot.hs](../test/qualification/KindKubeconfigSnapshot.hs)
+(SHA-256 `fe86827054e863344a979466a8e421ef63ee214eefb84049a2a85d3e8de64f4e`);
+run it with `cabal exec --builddir=.build -- runghc -package=prodbox
+-package=temporary test/qualification/KindKubeconfigSnapshot.hs`. It made no
+network request or resource mutation. The fixture used the Cabal-built library,
+not the public command. The corresponding `.build/prodbox` SHA-256 was `1f0a69432413a1144ff243a384094f35ce2cdcdaa9c488a86091b762f29a4b7c`;
+the snapshot implementation SHA-256 was
+`5d244d24a3007232cecbce3ece199a743765084cad0a455c836f2ff7e9b89333`.
+Real cluster and Kubernetes composition remain open.
+
+Typed enforcement follow-up (2026-11-22): probe cleanup now has distinct
+not-started, unconfirmed and confirmed values. The public reconcile report and
+Phase 2 service gate use the same completion predicate, requiring successful
+socket observations, no primary probe failure and confirmed cleanup; a message
+that happens to say `namespace removed` is not a cleanup result. The Phase 1
+scenario consumes the typed cleanup observation. This does not yet complete
+public reconcile, settle a worker or qualify a real cluster. The
+warning-as-error build, all 46 focused preparation tests, reviewed
+mutation-binding check, HLint, documentation check and `git diff --check`
+passed. The controls reject unconfirmed cleanup even when its diagnostic text
+matches the success message and reject a retained primary failure.
+
+Probe cleanup read-back follow-up (2026-11-22): a successful namespace
+removal reply and wait no longer suffice for a removal receipt. The probe now
+reads a bounded, structured exact-name Kubernetes inventory and requires it to
+be empty between matching live `kube-system` UID observations before recording
+removal. Missing controls, malformed or nonempty inventory and failed reads
+remain unconfirmed. This is a point-in-time API observation, not atomic
+exclusion of a concurrent namespace creation or proof of controller settlement.
+The warning-as-error build, all 45 focused preparation tests, reviewed
+mutation-binding check, HLint, documentation check and `git diff --check`
+passed. The controls cover successful read-back and unavailable, nonempty and
+malformed inventory. Real Kubernetes cleanup and Phase 1 acceptance remain open.
+
+Controller receipt binding follow-up (2026-11-22): the worker and network
+probe record writers now independently re-read the retained kind intent and
+require it to match the record operation while the supplied lease-stability
+check is held, including during read-back. A stability callback for a different
+operation cannot by itself authorize a new record. This check does not acquire
+the lease, establish controller settlement, or prove resource presence or
+absence; public reconcile completion remains open. The warning-as-error build,
+all 44 focused preparation controls (including both foreign-operation writes),
+the reviewed mutation-binding check, HLint, documentation check and `git diff
+--check` passed. These controlled tests do not establish a live controller or
+Kubernetes result.
+
+Typed worker observation in progress (2026-11-22):
+`confirmedKindWorkerNode` recognizes the exact stable archive, peer, scope,
+snapshot, broker, subprocess and recorded create/start result shape, while
+returning no identity for changed, failed or incomplete shapes. This is only a
+worker result, not readiness, ownership or a complete reconcile. Controlled
+negative tests covered changed snapshots/archive, failed worker, retained
+request marker and refused broker; the warning-as-error build and all 27 focused
+preparation tests passed. The interpreter is not yet connected to a scoped
+controller-result channel or the public completion handler. A scoped receipt
+implementation is now in progress: it binds the operation, generation, root
+identity and node ID, writes exclusively, and reads the exact private file back
+under the recovered lease. A warning-as-error build and all 36 focused tests
+passed, including duplicate, foreign-operation, unsafe-mode and altered-record
+controls. The controller entry now records the receipt only after the typed
+worker result and kubeconfig installation succeed, and its diagnostic path is
+validated and created exclusively under the selected root. The warning-as-error
+build and all 38 focused tests passed, including the named receipt assertion;
+the managed controller was not run in this controlled suite. The public
+handler now reads the scoped receipt after settlement, compares its node ID
+with the recorded create/start and a fresh running-container observation, and
+requires a ready single-node observation before the network probe. It still
+reports the operation incomplete. A warning-as-error build and 39 focused
+tests passed, including receipt/path rejection and the namespace controls;
+the running-container composition was not exercised against Docker. A later
+warning-as-error build and all 40 focused tests passed after the diagnostic
+correction and namespace replacement control. Public completion and reviewed
+isolated mutants remain open. A subsequent controlled node-status test now
+checks the receipt ID, running state and removal-attempt state; the
+warning-as-error build and all 41 focused tests passed. Its reviewed isolated
+mutation and real Docker read-back remain open.
+The focused HLint run, `dev docs check` and `git diff --check` also passed for
+this slice. These are not the canonical `dev check` or real acceptance.
+
+Recreation audit (2026-11-22): `src/Prodbox/Control/Recreate.hs:105` uses
+file-existence results to decide whether missing create and removal records can
+stand in for completed removal, but its `exists` helper maps every IO error to
+`False` at line 156. An unreadable record must not be treated as absent. The
+same archive preflight lists only cluster-labelled containers, so it must also
+check the exact selected name and preserve unknown inventory as unconfirmed.
+It also maps every non-`KindIntentMatches` observation to `ArchiveNothingRecorded`,
+including conflicting/unobservable records and a valid volume-bound intent;
+only a confirmed missing intent can mean nothing was recorded.
+The implementation now retains conflicting, unreadable and volume-bound
+intents as unconfirmed, checks both exact-name and label inventories under the
+operation lease, and distinguishes missing records from unsafe or unreadable
+ones. The refused-network exception now reads the bound typed receipt and
+accepts only its 409 conflict response. A warning-as-error build and all 31
+focused tests passed, including missing versus unsafe record paths and invalid
+or unobservable intent. These controlled tests do not qualify a real provider
+run. The archive path now additionally asks the existing typed observers for
+the bound node, volume and network removal receipts, or a verified never-started
+disposition, before moving records. A subsequent incremental warning-as-error
+build and all 35 focused tests passed; the archive entrypoint itself refused
+orphaned and invalid records while retaining their contents. These tests do
+not exercise the typed receipt composition with Docker. Independent resource
+read-back and real recreation remain required; the earlier accepted report
+remains historical evidence.
+
+Deletion audit (2026-11-22): a missing node-create result previously took a
+success branch without checking whether a create attempt had been recorded;
+an invalid result could also be treated as unstarted when the attempt file was
+missing. The code now requires both an explicitly missing result and a
+generation-bound, stably observed missing attempt under the operation lease;
+unknown and invalid results retain recovery state. The warning-as-error build
+and all 29 focused tests passed, including missing, present and unobservable
+attempts and invalid/unobservable results. The first build caught an unused
+import, removed before the passing build. A real interrupted-create regression
+and the required source mutation remain open.
+
+Further deletion review found that `Delete.hs:292`, `:303` and `:317` accept
+returned removal actions or the mere presence of a prior receipt without
+checking the transport outcome and bound receipt. New-action classification now
+requires a 204 response and a successfully recorded receipt for each resource;
+the foreign-network refusal case accepts only a bound 409 response. A
+warning-as-error build and all 32 focused tests passed, including failed,
+unconfirmed and unrecorded replies. A mutation assertion is bound but its
+reviewed mutant and isolated run remain pending. The prior volume and network
+branches now read their operation-bound typed receipts and refuse invalid or
+unobservable results; volume-with-no-intent also requires no create attempt.
+The warning-as-error build and all 34 focused tests passed, including the
+invalid and unobservable receipt decisions. Independent resource read-back,
+the actual public repeat-delete path and its mutation remain open.
+
+Build provenance correction (2026-11-22): an earlier incremental Cabal build
+was still running while the subsequent build and 34-test run completed. Both
+builds were allowed to finish; a later sequential `-Werror` build reported the
+tree up to date and the same 34 focused tests passed again. That is incremental
+evidence, not a clean rebuild or the canonical gate. The subsequent direct
+orphaned-record regression passed as described above.
+The positive-control path also removes the ID returned by `docker create`
+before verifying the ID, name and label of the created container, and treats
+an existing absence-record filename as a valid matching record. Both need
+exact-identity and typed-record handling before this path is used live. The
+implementation now checks the exact created ID, name, label, stopped state and
+`none` network before removal, disables image pulling for control creation,
+and no longer treats an existing filename as a valid absence receipt. Its new
+identity test passed with the warning-as-error build and all 33 focused tests.
+A durable pre-effect intent, interruption recovery and a typed read-back for
+repeat deletion are still needed; until then the path is not qualified for a
+live run.
+
+Namespace fixture audit (2026-11-22): the network-enforcement probe previously
+issued a namespace delete even if creation failed. It now accepts only the UID
+returned by a successful create, skips cleanup entirely if that identity is
+unconfirmed, and submits a raw deletion with a UID precondition before waiting
+for removal. Kubernetes documents [DeleteOptions preconditions](https://kubernetes.io/docs/reference/kubernetes-api/definitions/delete-options-v1-meta/),
+and the [kubectl v1.35.10 delete implementation](https://raw.githubusercontent.com/kubernetes/kubectl/v0.35.10/pkg/cmd/delete/delete.go)
+accepts a raw delete body from stdin; `kubectl version --client` identified that
+client version locally. Controlled creation-failure and UID-body tests passed
+with the 38-test focused suite; the reviewed isolated mutant remains pending.
+The probe now rechecks the namespace UID before each namespaced mutation and
+stops if baseline connections fail; the controlled replacement test passed in
+the 40-test focused suite. These are point checks, not exclusion: they do not establish a
+durable pre-effect intent or prevent replacement between a check and an effect.
+Those obligations remain open before a live qualification run.
+
+Probe identity work (2026-11-22): the public reconcile, service gate and
+Phase 1 runner now use a recovered operation lease and write an exclusive,
+scope- and generation-bound intent before namespace creation. The returned UID
+must be durably recorded and read back before subsequent probe effects; a
+confirmed cleanup also records its UID. A missing response or failed UID write
+retains the intent and does not start another effect. These records are not a
+recovery command: interrupted creation with an unknown UID, safe resumption,
+independent cleanup, and exclusion of namespace replacement between checks and
+effects still require implementation and validation. The client now bounds its
+connection attempt and reports an explicit result; failed, empty or ambiguous
+logs are unavailable rather than a denial. Its pod address is validated before
+being embedded in the client command. This revised observer still needs the
+real allowed/denied/restored traffic case against the pinned node image. The
+warning-as-error executable and unit build passed, as did all 44 focused node
+artifact/preparation tests, including the unavailable-log and probe-record
+controls. These controlled tests are not real cluster or mutation evidence.
+
+Probe recovery visibility (2026-11-22): `control status` now reads the
+deterministically named reconcile probe's intent, creation UID and removal
+receipt under the recovered operation lease. UID extraction validates the
+entire retained record against deployment, generation, operation, namespace
+and held root identity. The output explicitly says that neither worker
+settlement nor namespace state was observed; it does not authorize removal.
+The same record observation is included when Docker observation fails so that
+that failure does not hide the retained recovery identity.
+`captureSubprocessWithInputBounded` documents direct-child cleanup only, so a
+released operation lease cannot establish that an interrupted kubectl and its
+descendants have settled. A durable managed-worker identity and independent
+settlement/read-back remain necessary before resuming effects.
+The warning-as-error build and 44 focused tests passed with the UID extraction
+checks; targeted HLint and the documentation check also passed. These results
+do not validate worker settlement or the public status against a live cluster.
+
+Mutation catalog work (2026-11-22): registered source-bound M01 variants for
+the unconfirmed node-create disposition, unobservable recreation intent and
+failed node-removal reply. Their designated assertion markers now precede the
+ordinary checks in the same unchanged tests, so an ordinary assertion cannot
+mask the intended mutation result. Source, binding and candidate digests are
+listed in [the mutation manifest](mutation_cases.md). Isolated builds and
+designated-assertion kills remain required; registration is not execution.
+The warning-as-error executable and unit build passed, the 44 focused
+preparation tests passed, and the manifest-binding test prepared all three new
+variants and verified their recorded digests. Targeted HLint, the documentation
+check and `git diff --check` passed.
+Executor audit and partial correction (2026-11-22): the previous runner
+recursively removed the campaign directory even after an unconfirmed worker,
+mounted the host Cabal directory writable, and copied prior build outputs into
+mutant workspaces. It now retains the campaign directory, treats results as
+inconclusive until workspace cleanup is proven, stops after the first
+incomplete case, creates a fresh private campaign root, and uses the bounded
+secret-filtered source snapshot writer without copying build artifacts. The
+host Cabal home is no longer mounted; the isolated Cabal home builds offline.
+This intentionally does not yet provide an authenticated dependency store, so
+a clean offline build may be unavailable. Container label inventory is still a
+point observation without the positive control and managed-worker settlement
+needed to authorize a successor, and exact workspace cleanup remains open.
+The container now mounts captured source read-only and uses a separate private
+output root for the build, home and Cabal state. It rejects ambiguous bind
+syntax and lexical overlap with its source or toolchain paths. These lexical
+checks do not establish filesystem identity or exclude mount aliases; source
+and output now have no-follow descriptors held across each Docker invocation,
+with parent/name, ownership, private mode, distinct inode and same-mount
+observations before and after. If a binding changes after a subprocess returns,
+the case result remains inconclusive and records its stage, exit status,
+bounded output lengths and, for a selected test, decoded assertion outcome.
+Failed or unobservable container-inventory observations are retained alongside
+that primary outcome; arbitrary subprocess text is not written to diagnostics.
+An I/O failure after a bound action starts is recorded as unconfirmed, not as
+a refusal before effects; a failed inventory command retains its exit status.
+The warning-as-error build, outcome-preservation and action-exception controls,
+mutation-manifest binding test, targeted HLint and documentation check passed.
+These controls do not establish actual container settlement or cleanup.
+These checks do not
+make Docker's path-based bind atomic, exclude all mount aliases or other writers,
+or establish worker settlement; those remain necessary before qualification.
+The warning-as-error build passed. Controlled checks passed for a stable pair,
+replacement after a callback with its result retained, symlink refusal before
+the callback, and the bind-argument/lexical controls; targeted HLint and the
+documentation check passed. No Docker invocation qualified these checks.
+The warning-as-error build and the mount-argument/overlap control passed, as
+did both campaign-root controls and the mutation-manifest binding test. The
+targeted HLint and documentation checks passed. No container was run for this
+change, so these results do not prove the effective runtime mounts.
+These boundaries require correction and independent validation before a
+qualifying campaign; no mutation kill is claimed from this registration.
+The mutant build and selection now stop on failed or unconfirmed outcomes
+before starting the next test step, and container labels include the campaign
+identity. Before each Docker request the executor now writes and reads back an
+exclusive launch intent under the held campaign directory, binding the label,
+stage, command digest, timeout, image, explicit socket, and source/output
+device and inode identities. A missing or conflicting intent refuses the
+request. The intent also names an exclusive Docker `--cidfile`; the runner
+refuses a pre-existing or unobservable file and reads a returned 64-hex ID
+through the held directory without following links. Docker documents the
+[cidfile creation and existing-file refusal](https://docs.docker.com/reference/cli/docker/container/run/#capture-container-id---cidfile).
+The command also uses `--pull=never` so a missing image is not silently pulled.
+2026-11-22 campaign binding follow-up: snapshot creation now uses the held
+campaign descriptor, and each container request checks that its workspace
+parent is the same held campaign before launch and after the action. A changed
+binding preserves a returned action result as unconfirmed; a replacement seen
+before launch is refused. These checks do not make Docker pathname mounts
+atomic or exclude aliases and concurrent writers. The actual worker-retirement,
+cleanup, isolation and real mutation evidence remain open. Later patch and
+binary reads also remain pathname-based; they must be bound before mutation
+execution can be admitted. The warning-as-error executable and unit build,
+four focused campaign and replacement controls, HLint, documentation check
+and `git diff --check` passed. No Docker container was launched for this slice.
+
+2026-11-22 campaign recovery slice: a newly created mutation campaign now
+holds its original directory chain while writing and syncing an exclusive
+source-manifest and root-inode creation record before snapshot or container
+work. `test status` reads the record as unauthenticated local evidence and
+reports missing, unsafe or mismatched records without inferring worker absence.
+This does not establish daemon identity, worker retirement, safe deletion or
+qualifying mutation evidence; those requirements remain open. Holding the original
+root alone does not make subsequent pathname mounts atomic or prove that later
+work is bound to that inode. The warning-as-error executable and unit build passed;
+three focused campaign controls passed, including the public status fixture,
+exclusive-record refusal and tamper detection. Targeted HLint, `git diff
+--check` and `prodbox dev docs check` passed. No container was launched for
+this slice.
+
+The runner now writes and reads back an exclusive private receipt of an observed
+ID, bound to the exact launch intent and held directory identities. The receipt
+observer can read that ID even if the CID file later disappears; neither file proves
+container ownership, daemon authentication, resource absence or worker
+retirement. Integration of the receipt into a supported recovery operation
+remains open. `test status RUN_ID` now provides a read-only view of the exact
+retained mutation campaign, validates recognized launch and receipt bindings,
+reports unrecognized records, and explicitly leaves Docker state, worker
+retirement and cleanup unobserved. It does not resume or delete a worker.
+Status reads the retained command digest, timeout, image and socket from the
+bound launch record, and reports whether they match the current implementation;
+a difference alone is not recoded as a corrupt receipt or authenticated as a
+particular historical revision.
+The warning-as-error build, public status fixture with a self-consistent older
+binding and a tampered record, 349 parser-coverage tests, generated CLI goldens,
+targeted HLint and documentation check passed. The fixture uses local synthetic
+records and does not establish Docker state or recovery completion.
+The current warning-as-error build passed; a private fixture exercised the
+public status command and rejected tampered and symlinked campaign records,
+an invalid run ID exited 2, all 349 parser-coverage tests and the generated
+CLI goldens passed. The documentation generator initially rejected the new
+leaf until its Phase 1 command-disposition row was added; regeneration and the
+subsequent documentation check passed. This is local record evidence only.
+The current warning-as-error build and four focused controls
+passed, including changed-command refusal, hard-linked receipt refusal, and
+reading the retained receipt after CID-file removal; the manifest-binding test,
+targeted HLint and documentation check passed. No container was launched.
+The earlier warning-as-error build and
+four focused controls passed, including malformed, symlinked and pre-existing
+ID files; the pre-existing file was retained and no action ran. Targeted HLint
+and the documentation check passed. No Docker container was launched for these
+controls. An empty label inventory is explicitly recorded as unconfirmed
+retirement and does not admit the next step. The intent does not authenticate
+the daemon, identify a returned container, or prove a request settled; those
+recovery and managed-worker obligations remain open. The warning-as-error
+build and controlled launch-intent/empty-inventory tests passed, along with the
+manifest-binding test, targeted HLint and documentation check. No container
+launch or mutation result was used as evidence. Campaign-root
+creation now uses no-follow directory descriptors, exclusive `mkdirat`, and
+held-versus-named identity checks; a failed preparation reports the possible
+retained path. The warning-as-error build and both campaign-root controls
+passed, including the substituted `.build` symlink case; the mutation-manifest
+binding test, targeted HLint and documentation check also passed. This does not
+by itself prove worker or mount isolation.
+The warning-as-error build passed; a controlled campaign-root test verified
+exclusive creation, preservation of an existing root, and refusal of an
+unsafe parent without changing its permissions. The 44 preparation tests and
+the reviewed-manifest binding test also passed, as did targeted HLint, the
+documentation check and `git diff --check`. No container or mutant was run.
+
+- [ ] **P01-T08** — Provide supported test preparation for the pinned kind executable and node OCI archive, including bounded acquisition, digest/read-back verification and exact scoped import; the public harness must prepare its own declared prerequisites without hand-created Docker images. Preserve offline retained-artifact use, isolate all scopes and refuse unknown or changed sources before effects.
 
 ## Real acceptance and independent observation
 
@@ -9351,13 +11534,14 @@ After implementing the active slice, run the built operator against explicit own
 
 The linked catalog defines the exact real workflow and observer for each case:
 
-- [x] **A01-01** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Evidence (2026-11-19): `test run phase-01` case 1, claimed and independent observations agree for scope, readiness, cleanup absence and host-data retention; `EvidenceChecksSatisfied`; Docker inventories identical before and after.
-- [x] **A01-02** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Evidence (2026-11-19): `test run phase-01` case 2, a random marker written by a real Pod survives node removal and recreation on the same root and generation, with distinct node IDs and the first operation archived under `history/`; `EvidenceChecksSatisfied`.
-- [x] **A01-03** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Evidence (2026-11-19): `test run phase-01` case 3, thirteen observations, each refusal made by the public binary for its own reason with an outer unmodified observer: foreign same-name Docker network (id, creation time, labels, attachments identical), ambient kubeconfig decoy (zero connections, file identical), symlinked root and foreign root (contents identical), wrong generation (record identical), unavailable node image (image list identical), cross-environment (nothing created), root nested inside another scope's retained root (outer root identical; a defect found and repaired), sibling on the same host ports (refused for the ports) and sibling with the same kind name (refused for the name), each with no resource bearing the adverse names and the first cluster still Ready where it was running. Limitations: port and name checks are point-in-time, not reservations; no registry of admitted scopes exists.
-- [x] **A01-04** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Evidence (2026-11-19): `test run phase-01` case 4 applies the pinned management policy (`Prodbox.Control.ManagementPolicy`, digest pinned by a unit test) in a disposable namespace under the pinned kindnet CNI; real sockets show the management-labelled client connects, an unlabelled client is refused, and removing the policies restores the connection (the adverse control: enforcement off changes the result); the earlier manual negative control (CNI stopped and its policy table deleted gave "not proven") is recorded above; namespace removed. Limitations: the policy is not installed persistently and the real Vault/MinIO/Broker workloads and any gate that refuses secret handling when enforcement is unproven belong to Phase 2, which cannot be exercised here without those workloads.
-- [x] **A01-05** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Evidence (2026-11-19): `test run phase-01` case 5: reconcile admitted when sufficient (reached Ready), refused before any work under a one-CPU affinity (`milli_cpu 1000 2000`, root and Docker unchanged), kernel slice peaks within the plan-set limits, a Pod completes under its memory limit and an over-limit Pod is OOMKilled. Limitation: no `ResourceQuota` object was exercised.
-- [x] **A01-06** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Evidence (2026-11-19): `test run phase-01` case 6 drives `validateStoredScenarioReport` against the real stored case-1 report; the untampered pair is accepted and fabricated, missing, stale, wrong-scope and missing-report variants are each rejected. Limitation: validation runs in the runner process, not a separate one.
-- [x] **A01-07** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Evidence (2026-11-19): `test run phase-01-mutation` in a no-network container: M01 and M02 Killed by their designated assertions, a compiled-but-invisible change Survived, a non-compiling source Invalid, a 1 ns timeout Inconclusive; isolation probed and cleanup observed; re-run after the M01 re-pin.
+- [ ] **A01-01** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Historical evidence (2026-11-19): case 1 recorded scope, readiness, cleanup absence and host-data retention, with Docker inventories identical before and after. The current implementation still needs the full two-environment case and revised public completion behavior validated.
+- [ ] **A01-02** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Historical evidence (2026-11-19): a Pod-written marker survived removal and recreation on the same root and generation, with distinct node IDs and archived history. The full case requires current-build evidence including the distinct wrong-mount and changed-generation controls.
+- [ ] **A01-03** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Historical evidence (2026-11-19): `test run phase-01` case 3 recorded thirteen adverse observations, including foreign same-name network, ambient kubeconfig, symlinked/foreign/nested roots, wrong generation, unavailable image, cross-environment and sibling port/name conflicts. Port and name checks are point-in-time, not reservations. The revised fixture ownership, listener settlement and retained-scope observations require a new real run.
+- [ ] **A01-04** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Historical evidence (2026-11-19): real sockets under the pinned management policy showed labelled access, unlabelled denial and restored access when the policy was removed; the disposable namespace was removed. The revised controller-settlement gate and current build require a new run. Persistent workload enforcement belongs to Phase 2.
+- [ ] **A01-05** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Historical evidence (2026-11-19): case 5 recorded admission, a one-CPU refusal, kernel slice peaks, Pod memory limits and a `ResourceQuota` adverse control as described at the quota note above and in the reference evidence. The revised runner and current declared envelope require validation against the current build.
+- [ ] **A01-06** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Historical evidence (2026-11-19): case 6 accepted an untampered stored case-1 report and rejected fabricated, missing, stale, wrong-scope and missing-report variants. The revised scenario bindings and current build require a new run; validation was in the runner process.
+- [ ] **A01-07** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Historical evidence (2026-11-19): the isolated mutation runner recorded M01 and M02 kills and the survivor, invalid-build and timeout calibrations. The expanded M01 catalog and current source require a new isolated run.
+- [ ] **A01-08** — execute and record the cataloged automatic-artifact preparation case, independent observation, adverse controls and exact cleanup result.
 
 A result is incomplete if its independent read-back, scope/source binding, worker settlement, or required cleanup is unavailable. Fixture-only provider behavior, source scans, manifest rendering, process exit and old receipts cannot close a real-system claim. Actual input prerequisites are declared above; no acceptance result depends on an unimplemented larger phase.
 
@@ -9366,6 +11550,1000 @@ A result is incomplete if its independent read-back, scope/source binding, worke
 Run M00, M01, M02 for this phase’s implemented source and applicable delivered adapters, plus affected earlier critical cases. A passing unmodified baseline is required. The actual mutated implementation must compile and trigger its designated unchanged assertion; compilation errors are Invalid, unrelated failures/timeouts are Inconclusive, and a surviving non-equivalent critical fault blocks closure. Record reviewed equivalence exclusions rather than silent skips.
 
 Dangerous mutants execute offline in an isolated non-secret snapshot. They receive no production roots, real AWS credentials, elevated fixture input, current kubeconfig, unrestricted runtime socket or publication capability. Unmodified outer isolation/cleanup verifies any reviewed disposable local fixture. Real AWS/public-edge evidence uses separately identified unmodified code.
+
+Image admission correction (2026-11-23): prerequisite preparation now
+requires a completed, unchanged image attempt, a recorded successful Docker
+load response and a stable same-session image read-back before the separate
+image observation can admit network creation. A previously present image no
+longer masks an unconfirmed or failed load. The focused fixture suite passed
+63 tests, including refusal of an unconfirmed transport, an error response,
+an incomplete result record and skipped read-back; the executable build and
+HLint passed. Binary SHA-256:
+`410cf66a2fb0b19b7abb5879be85ca4aa6e4977aff09a7c7ac3548d0ddd23ed3`.
+These fixtures do not establish daemon-side worker settlement or complete the
+real kind acceptance and cleanup obligations. The static controller guard
+still refuses recovery, and the public controller still reports incomplete.
+
+Controller protocol origin (2026-11-23): the new family preparation boundary
+creates a schema-3 `family-v1` intent exclusively while holding the initial
+operation lease, before image submission. The normal intent observer accepts
+that exact document, while the family-specific observer rejects older intents.
+Legacy submission requires the older intent; family launch and family
+retirement provenance require the new intent. Neither choice can be added to
+an existing intent. The earlier reader compared the complete intent document
+against its own schema ([KindIntent.hs](../src/Prodbox/Control/KindIntent.hs)
+around line 190), so an older reader cannot interpret the new document as its
+legacy intent. This choice follows the write-before-effect and no-inferred-
+absence rule ([standards](development_plan_standards.md) line 88); it is not
+proof that a family was sent or retired. The new image preparation entrypoint
+is staged but is not selected by the public command. The static controller
+guard and the family-send prohibition remain in place pending public
+completion, recovery composition and real validation.
+
+The executable build, 65 focused preparation tests, HLint, documentation
+check and `git diff --check` passed. The focused cases cover exclusive intent
+creation, rejection of a legacy intent as family provenance, and rejection
+of a legacy submission for a family intent. Binary SHA-256:
+`148e7102ee32175d09c38a00d56ac3069d4f2bbeb3678814bb9c5832e09f8189`.
+The standalone qualification fixture was updated for the new intent but its
+first compile through the ordinary package interface failed because it imports
+hidden modules. A subsequent isolated source build and run passed the
+dispatcher input, missing-root, unmanaged-parent and post-callback-change
+fixture; it sent no controller job. Fixture SHA-256:
+`c9a35cbcc812bc3fa9008b89523a232b203c180cd7d3377175ad82cecf8a4ea4`.
+No live controller or real kind acceptance was attempted, and Phase 1 remains
+open.
+
+Family deletion admission (2026-11-23): `control delete` now routes a
+positively identified family intent to its existing family-retirement owner;
+legacy intents still encounter the static controller guard. The family path
+rechecks the protocol and exact submission under the lease, holds physical
+retirement across resource removal and retires the published inputs first.
+The new controlled refusal test confirmed that missing family submission
+provenance stops before resource removal and preserves the intent. The build,
+66 focused preparation tests, HLint, documentation check and `git diff
+--check` passed. Binary SHA-256:
+`941c5a6dfa8253a20a9de45c3d35c6b4bc792953f171490aba1b40f868f96f69`.
+No public reconcile creates this family intent yet; successful real family
+submission, removal and independent postconditions remain unproven. The
+initial build caught a layout error; the corrected rebuild passed.
+
+Family worker admission (2026-11-23): the family worker now verifies the
+family intent and exact retained launch request under the operation lease
+before starting work and at each node create, start and configuration-write
+admission, as well as before and after kubeconfig installation and receipt
+recording. Missing, different, changed or unobservable requests and an
+unstable lease refuse admission. The dispatcher summary preserves that
+refusal as work not started. The executable build, 66 focused tests,
+standalone synthetic dispatcher fixture, HLint, documentation check and
+`git diff --check` passed. Binary SHA-256:
+`03913678648dc40cb6fafaa39b8213833e4e585b171cade7a2bb32c85b929ad2`;
+fixture source SHA-256:
+`9ae27d98e6b36a56b166ceee29f5a16c417e2bcad966b3654fa18f475e8bff83`.
+These controlled observations neither send a family job nor prove its
+retirement; public activation, interruption-safe archive, and real acceptance
+and cleanup remain open.
+
+Family completion boundary (2026-11-23): a new completion observer borrows
+the exact family retirement owner and reacquires the operation lease. It
+requires the retained family request and its matching request digest in a
+fully successful worker, parent, input and post-action summary before
+entering a caller-supplied observation. The supplied recheck retains the
+retirement, protocol, request and result across the caller's effect
+boundaries; a change after the callback preserves its result as unconfirmed.
+This is not itself Kubernetes readiness or a public completion command.
+
+The synthetic dispatcher fixture refused a missing result without entering
+the callback, accepted an exact synthetic result under the retirement owner,
+and preserved the callback value after the result was changed. Its first
+compile exposed a missing test import; the corrected isolated source build and
+run passed. The executable build, 66 focused tests, HLint, documentation
+check and `git diff --check` passed. Binary SHA-256:
+`b7307c4e0750d442951c6d0e4ebc99f7812d6ba55a1038ffd66cb234af8468f3`;
+fixture source SHA-256:
+`b969b08f8f0563a1ccf7a837c3600f71c579314a9277d422dc5febcfd445a4d9`.
+No job was sent in that fixture. The public command, real readiness and
+network observations, interruption-safe archive and real acceptance remain
+open.
+
+Family readiness composition (2026-11-23): the completion owner now has an
+observer that reads the bound worker receipt and matching running node,
+observes Kubernetes readiness, runs the real network enforcement probe under
+the same retirement and lease recheck, and repeats the node and readiness
+observations. Completion requires the probe's independent cleanup receipt as
+well as the expected network observations. Controlled callback fixtures
+exercised success, missing node, unconfirmed probe cleanup and ownership
+change; these do not constitute real Kubernetes or network acceptance. The
+public reconcile path does not yet invoke this composition.
+
+The executable build, 66 focused tests, standalone synthetic dispatcher
+fixture, HLint, documentation check and `git diff --check` passed. Binary
+SHA-256:
+`c69d6eb113981034a3c3234f5a9f2d238b15f9235d496d8ec6b9a22909501921`;
+fixture source SHA-256:
+`649de47dc5a29f89d0b8b9e0ce35088f2ebc64c7497e593d6d9c79d135be0a5a`.
+Family send, public activation, interruption-safe archive and real cleanup
+and acceptance remain open.
+
+Public family completion route (2026-11-23): `control reconcile` now routes
+an existing family intent through the bound retirement and readiness
+composition. It reports completion only when the family result, retirement
+closing checks, bound node, readiness and network probe including cleanup
+all pass. A public-binary fixture with a family intent but no launch record
+refused before probing and preserved the intent. The fixture's first run
+used a different socket in its selected configuration and failed its
+assertion; after using the same projection as the intent, the targeted and
+complete 66-test focused suite passed. The executable build, HLint,
+documentation check and `git diff --check` passed. Binary SHA-256:
+`0663ef14326f8c238226d5f2603ef669b7bc79e06700407283c9d687d146fac6`.
+
+Fresh reconcile still selects the legacy controller and cannot create a
+family operation. The policy probe has a single fixed recorded attempt per
+operation; repeating or interrupting it can leave reconciliation incomplete,
+so bounded probe recovery and repeatability are required before phase
+closure. No successful public family reconciliation or real kind acceptance
+was run. Family send, recreation and real cleanup remain open.
+
+Probe worker settlement correction (2026-11-23): review of the new public
+family completion route found that the earlier readiness composition could
+start the policy probe while holding proof only for the retired kind
+controller. The probe's `captureSubprocessWithInputBounded` settles only its
+direct child, so that proof does not cover interrupted probe descendants or
+their requests. The public family completion observer now refuses to start
+the probe and cannot report successful completion until a managed probe worker
+and its recovery are delivered. This supersedes the earlier claim that the
+public completion route can run the real network probe. No live run was made
+through the unsafe route.
+
+Probe status now derives an explicit scope-bound journal observation for no
+records, unknown UID, missing or recorded removal, and conflicting or
+unobservable records. An orphan removal record is a conflict. These are local
+record observations only; they do not establish namespace state or worker
+settlement and do not authorize another probe. The executable build, all 66
+focused tests, HLint, documentation check and `git diff --check` passed.
+Binary SHA-256:
+`0f5c8fcf222fa501721b7afaeda48fa7f9f5be3753cdd5c227b873e4e4b533ae`.
+The managed probe, interrupted cleanup, repeatability, family activation and
+real Phase 1 acceptance remain open.
+
+Family-bound probe command adapter (2026-11-23): the network probe now has a
+staged adapter that accepts only the matching kind operation family and uses
+its owned, bounded command runner for `kubectl`, including stdin and the
+original work deadline. The same retained-lease admission remains in front of
+each command and journal write. A completed child command is not family
+retirement; this adapter is not yet invoked by the controller and does not
+authorize the guarded public probe. The controller's result recording,
+interrupted namespace recovery, family retirement and real qualification
+remain necessary.
+
+The executable build, 66 focused tests, existing family/key binding fixture,
+HLint, documentation check and `git diff --check` passed. The binding
+fixture checks matching, foreign and invalid keys; it did not run a managed
+probe. Binary SHA-256:
+`1190c97806291ec43a6eb8d195eb0ecd82fb6cf6e3f9c68a8cf8c2b824e1d382`;
+fixture source SHA-256:
+`940e67463f5fbd1d1c214f20009fd7291bd3e1dffbf70d05dcf0d9f735dcb180`.
+
+Managed probe controller composition (2026-11-23): after the node receipt,
+the staged family worker now invokes the family-bound policy probe under its
+retained operation and parent checks. Its result distinguishes a complete
+probe, including confirmed cleanup, from an incomplete probe. Family
+completion now requires the new probe-complete disposition; an earlier
+receipt-only result cannot satisfy it. The public post-retirement probe guard
+remains in place, and family submission remains disabled pending exact
+interrupted namespace recovery and real qualification.
+
+The synthetic dispatcher fixture checked the completed and failed-cleanup
+result mappings and the retirement-bound completion record; it did not run a
+managed probe. The executable build, 66 focused tests, fixture, HLint,
+documentation check and `git diff --check` passed. Binary SHA-256:
+`8d24beb409448cce07f5dddd1c5e247486b1d4bb0e1b635167283979e80b7414`;
+fixture source SHA-256:
+`2b3fca565e663a9af52df1ad6f49d7d6d5339533d41d5facd6b4e5a33617375e`.
+Real node, policy and cleanup evidence remains open.
+
+Recorded probe completion (2026-11-23): family completion now requires both
+the exact request-bound probe-complete summary and a matching intent, creation
+UID and removal journal under the held operation lease and family retirement
+owner. It rechecks the same UID and records across the readiness observation.
+The public path uses that recorded probe evidence and fresh node/readiness
+observations; it does not start an unmanaged post-retirement probe. This
+supersedes the prior unconditional post-retirement probe refusal, but does not
+make family submission or interrupted probe cleanup available.
+
+The synthetic retirement fixture refused completion with a missing result or
+missing cleanup journal, accepted its exact synthetic journal and result, and
+preserved an observation after a changed result. No controller job or real
+probe was run. The executable build, 66 focused tests, fixture, HLint,
+documentation check and `git diff --check` passed. Binary SHA-256:
+`448e900ac772a3dcd2bcf25b28607514e2104c0a1d0270c315077827fe065644`;
+fixture source SHA-256:
+`3f5adea744965a8ddffc9d110533ca4f58f424634c91dabc5636d7cee8713e70`.
+Family activation, interrupted cleanup, recreation and real acceptance remain
+open.
+
+Node CA identity prerequisite (2026-11-23): the existing Kubernetes reader
+explicitly leaves the selected CA unbound to the owned cluster
+([KindKubernetesRead.hs](../src/Prodbox/Control/KindKubernetesRead.hs), lines
+3 and 84–87), while readiness reports certificate and cluster identity as
+unverified ([KubernetesReadiness.hs](../src/Prodbox/Control/KubernetesReadiness.hs),
+lines 113–116). In accordance with the same-Authority and fail-closed
+requirements, public family reconciliation now remains incomplete even if
+its other observations succeed, until this identity is independently bound.
+
+An exact Docker container CA-archive comparison is available as a building
+block. It accepts one bounded regular `ca.crt` entry and compares bytes in
+memory; wrong path, extra entry, different bytes and oversized content were
+refused or distinguished in the focused fixture. This point read does not
+bind the Docker daemon, running node, selected kubeconfig or TLS peer and is
+not yet used for recovery. The earlier 67-test focused run passed against the
+CA adapter; after adding the public refusal, the rebuilt executable and the
+targeted public refusal test passed. HLint, documentation check and `git diff
+--check` passed. Final binary SHA-256:
+`56bb60f586e13c6be72d4be3f8592ad3de620dbab9e1afd77eee8e981f93f9db`.
+No real CA read-back, family submission, interrupted cleanup or kind
+acceptance was run.
+
+Node CA binding observation (2026-11-23): under the recovered operation
+lease, a new observation brackets the selected container's CA archive with
+matching running-node observations, checks the recorded daemon against the
+held Docker peer, and compares the complete selected kubeconfig before and
+after. CA and credential bytes remain in memory. This is a point observation,
+not proof that a TLS peer is the node: the readiness requests must still use
+the same pinned kubeconfig and authenticate their TLS connection. It is not
+yet used to authorize recovery or lift the public incomplete disposition.
+
+The executable and integration suite built, and the targeted controlled
+Docker-socket fixture passed a CA archive read on the exact requested path.
+The fixture is not a real Docker or TLS qualification of the full binding
+observation. HLint, documentation check and `git diff --check` passed. Binary
+SHA-256:
+`2229966da4a2c865e0b9c6506809482558986b62fa77b552a9f822938f2be6c4`;
+integration binary SHA-256:
+`f6e3654584bbc8e2fbbedd906b1a467d3a669afd946b91a37d63404394b17898`.
+Pinned TLS composition, interrupted probe cleanup, public completion and
+real kind acceptance remain open.
+
+Pinned readiness composition (2026-11-23): family readiness now holds one
+sealed kubeconfig snapshot and the validated projection from which it was
+created. It compares that projection's CA with the selected running node
+under the daemon and operation checks, before and after readiness, and invokes
+`kubectl` with the same held snapshot. The result remains a point observation;
+the public incomplete guard remains until the complete Docker/TLS composition
+and its adverse controls are qualified against the real target.
+
+The executable build, 67 focused tests, HLint, documentation check and `git
+diff --check` passed. A disposable, non-secret snapshot fixture used the real
+`kubectl config current-context` command and confirmed that both the bound
+projection and sealed snapshot remained unchanged when the retained file was
+replaced. It did not contact a Kubernetes API or validate TLS. Binary SHA-256:
+`4f962b6ae093bc66d0eab239fdc3f90dad28d7d6f816e1897681f4a2fb8cf8fa`;
+fixture source SHA-256:
+`8d314f6e0c33c5d718689d5585fc9c60f60a514baf796bb0ce650523492cc395`.
+Interrupted probe cleanup, family activation, recreation and real acceptance
+remain open.
+
+Readiness closing check (2026-11-23): after the final readiness request, the
+family composition now repeats the bound node and CA observation before
+returning. The synthetic dispatcher fixture refused completion when that
+closing observation changed. The rebuilt executable, fixture, HLint,
+documentation check and `git diff --check` passed. The preceding 67-test
+focused suite exercised the snapshot composition before this closing-check
+change; it was not rerun for this final change. Final binary SHA-256:
+`258b1896090f7f9464ae39f544d30eb566526bf633dacfb2531daebff19f4ed3`;
+dispatcher fixture source SHA-256:
+`0bce2bdabf29af530d20cb594578e8bfdbb97551afcf7dbf23aa9f3939193bb6`.
+The public completion guard, real TLS and kind qualification, interrupted
+cleanup and family activation remain open.
+
+Loopback TLS control (2026-11-23): the disposable
+[TLS fixture](../test/qualification/KindKubeconfigTlsEndpoint.hs) generated
+its own non-secret certificates, started an OpenSSL server on loopback, and
+used the real `kubectl` with the sealed kubeconfig snapshot. The matching CA
+was accepted; a different CA failed with the expected unknown-authority error;
+restoring the matching CA succeeded. The fixture owns and removes its temporary
+files and server. Its first invocation exposed two installed `network`
+package versions; using the project environment without adding a second
+`network` package resolved the ambiguity. This qualifies the client TLS
+control only, not the Docker node-to-CA binding or a Kubernetes cluster.
+
+The executable build, fixture, HLint, documentation check and `git diff
+--check` passed. Binary SHA-256:
+`258b1896090f7f9464ae39f544d30eb566526bf633dacfb2531daebff19f4ed3`;
+fixture source SHA-256:
+`085fff9da8e73ca14b154db1b029d564ccc6b6db407588755b70e7dc5ac0ad85`.
+Public completion remains guarded; full node/daemon/TLS binding, interrupted
+probe recovery, family activation and real kind acceptance remain open.
+
+Controlled node CA binding (2026-11-23): the connected Docker fixture now
+serves a synthetic running node and CA archive. With the recorded node intent,
+create/start receipts and selected kubeconfig, the actual CA-binding observer
+accepted the matching CA and refused a different selected CA. The fixture also
+retained the existing node protocol checks. The first integration build found
+a fixture bytestring type error; the corrected test passed. A subsequent
+warning-only variable rename was rebuilt and the same test passed again.
+
+The integration build, targeted scenario, HLint, documentation check and
+`git diff --check` passed. Binary SHA-256:
+`258b1896090f7f9464ae39f544d30eb566526bf633dacfb2531daebff19f4ed3`;
+integration binary SHA-256:
+`e4fa74206ef8c4560d8ede92eea286896d2fbebc10f035c3e7ecb38b91eca45d`.
+This controlled socket does not qualify a real daemon, cluster, TLS chain or
+interruption recovery. The public completion guard and Phase 1 remain open.
+
+Interrupted probe cleanup protocol (2026-11-23): a staged cleanup protocol
+now restricts the namespace to the operation-derived name, requires the
+recorded UID to match a fresh observation, writes an exclusive UID-bound
+removal-attempt record before delete, submits a UID precondition, and records
+removal only after a positive-control-bracketed empty inventory. The journal
+distinguishes a removal attempt from a completed receipt. A lost delete
+reply, unavailable inventory, mismatched UID or changed admission remains
+unconfirmed; an existing attempt is not retried by this protocol.
+
+Controlled tests covered those refusals, the exact delete body, ordering and
+the recorded-attempt state. The executable build, 68 focused tests, HLint,
+documentation check and `git diff --check` passed. Binary SHA-256:
+`e34437cf81384ff97c67b31d3e328708cab659ada5f1077038b8c3d29d2c282b`.
+This protocol is not connected to a public command: the caller still needs an
+authenticated API, the original family retirement, a managed cleanup worker
+and that worker's settlement. No real namespace cleanup or kind acceptance
+was run.
+
+Cleanup worker boundary (2026-11-23): a staged recovery worker now requires a
+distinct recovery execution key, the original family's retained retirement,
+its operation lease and receipt, and a kubeconfig snapshot repeatedly bound to
+the recorded node CA. The pre-delete attempt records both namespace UID and
+recovery ID. Family deletion refuses to remove the node while the probe journal
+lacks a removal receipt, including an empty journal; a positively evidenced
+never-started path remains to be designed. The managed initial probe also
+checks the node CA against its exact snapshot around probe actions.
+
+The 68 focused tests passed for the worker-boundary and journal changes; they
+do not establish real worker submission, API authentication or retirement.
+The initial run exposed a missing test-helper import, which was corrected.
+Before any cleanup worker can be submitted, its recovery identity and launch
+coordinates must be durably published before send, and its own retirement
+must be recovered after a possible send. The public family send remains blocked;
+no real cleanup or kind acceptance was performed. The subsequent node-CA
+probe connection builds, and the 68 focused tests, HLint, documentation
+check and `git diff --check` passed again. Those tests do not exercise its
+managed composition or real API path, which still require qualification.
+Binary SHA-256:
+`3ce7632e7fe1c8dbb174dcf131ba16866dcec4c6f3b5e3cf95127ab5c600be7d`.
+
+Recovery launch locator (2026-11-23): a scope-bound exclusive record now
+retains the cleanup family's separate recovery ID, exact namespace UID,
+manager domain, executable digest and execution window before a future send.
+The writer requires the family intent and matching probe intent and creation
+record, with no removal attempt or receipt. The staged cleanup worker checks
+the retained request, execution key and window and rechecks the locator around
+effects. The locator alone is not evidence of submission or retirement.
+
+The executable build, 69 focused tests and HLint passed. The tests exercise
+canonical request decoding, scope and UID refusals, exclusive recording and a
+corrupted locator; they do not exercise a real manager, worker or Kubernetes
+API. Binary SHA-256:
+`de5f1fa360f2135ba3bad1bf81c5c3ef81d646a7cda3182138d3c100fbc2fbaa`.
+The sender, its exact publication and possible-send recovery, worker retirement,
+and real kind acceptance remain open. Repeated CA and locator admission checks
+also require a real bounded-time qualification before activation.
+
+Cleanup family preparation and dispatch (2026-11-23): the cleanup request can
+now prepare the bounded family with its distinct execution key and original
+window. Pinned input decoding checks that key, the held executable digest and
+the independently observed manager. The internal recovery composition joins
+that input and managed parent to the staged cleanup worker and rechecks input
+stability while holding the original family retirement owner. A returned
+callback does not establish retirement of the cleanup family.
+
+The executable build, 69 focused tests, HLint and two controlled qualification
+fixtures passed. The preparation fixture checked the distinct key, foreign
+scope and capacity refusal; the held-input fixture checked a matching request,
+foreign key and manager refusals, and refusal of an unmanaged process before
+the callback. The initial fixture command failed because the installed package
+hides internal modules; the passing run used a temporary package database
+exposing those already-built modules, without changing the repository package.
+Fixture SHA-256 values: preparation
+`6187e3277794fbb0c3261536beb15026d3fea7b9cf1a08fb1112f519de45a103`;
+held input `54fe746c5b97c5a28907dc410112030923fb390a295568c38707cc6671f4de22`.
+Binary SHA-256:
+`4772a5f8b329c7ba08b82166c3b98e98c42a95c9b9880295acdf186ee00c569b`.
+No unit or cluster was started by these fixtures. The internal composition is
+not connected to a sender or public route; publication, possible-send recovery,
+cleanup-family settlement, and real acceptance remain open.
+
+Staged cleanup publication (2026-11-23): the cleanup sender now borrows the
+original family's retirement owner and operation lease, records the matching
+cleanup locator, and uses the existing publication owner and bounded manager
+submission boundary. Admission rechecks the original retirement, locator and
+unresolved exact probe UID. The cleanup dispatcher waits for lease handoff
+while its input and process parent remain stable. The sender preserves a
+possible-send outcome; it does not establish cleanup-family settlement.
+
+The held-input fixture refused a cleanup launch when original-family
+submission/retirement was unobservable and verified that no cleanup locator
+was written. It also rechecked the existing guarded original launch. This is a
+negative control only: the positive retirement-to-publication path, cleanup
+worker dispatch, lost replies, post-send recovery and input retirement have not
+been exercised. Deletion now refuses node removal whenever a cleanup locator
+exists or is unobservable, even with a removal receipt, until independent
+cleanup-family settlement is implemented. A crash after writing the locator
+but before publication also needs an evidenced never-sent recovery path.
+The kind family send guard remains active; no unit or cluster was started.
+The executable build, 69 focused tests, held-input fixture and HLint passed.
+Binary SHA-256:
+`0f7d1aa5210c791a2ddafd77973c7d5075f7fcabc17aa592cb540a1169f08659`;
+held-input fixture SHA-256:
+`239e368054550435e66f16137a86b19021895264c2ec56deac0af61e2e19da75`.
+
+Cleanup-family retirement (2026-11-23): a separate borrowed retirement owner
+now matches the recovery locator to the cleanup family's submission key,
+window, manager and provider record. It rechecks provenance and physical
+retirement and retires only that family's exact published inputs. The family
+delete path now requires matching namespace UID and recovery-attempt ID, then
+holds and rechecks both retirement owners around resource effects. A missing
+locator is accepted only for an original probe with no recovery attempt.
+
+The controlled held-input fixture refused missing locator or submission, a
+live sender and a changed locator; it exercised exact input retirement with
+synthetic registration and verified an escaped retirement owner was closed.
+The first fixture compile exposed ambiguous test callback types; those were
+corrected before the passing run. This fixture starts no unit and cannot prove
+actual submission, worker processing or physical retirement after real work.
+The connected delete path, interrupted cleanup, never-sent recovery, real
+kind acceptance and required mutations remain open. The executable build,
+69 focused tests, HLint, documentation check and `git diff --check` passed;
+the focused tests include mismatched UID and recovery-ID controls but do not
+exercise the connected delete path. Binary SHA-256:
+`a1a7866023fe5a3a1b60e2e54b9506324347b84e1865a588d89e307338a57d88`;
+held-input fixture SHA-256:
+`55cfb762172ba3902ba61199436b6fbbbbcf1492106fb0b7f88ef55853bc76e1`.
+
+Cleanup controller entry (2026-11-23): the existing internal family command
+now routes a distinct recovery key to the cleanup dispatcher. A successful
+worker return requires complete parent and original-family closing outcomes;
+it still does not prove retirement of the cleanup family. Pinned request
+decoding independently checks the key, manager, executable and window.
+
+The executable build, 69 focused tests, held-input fixture, HLint,
+documentation check and `git diff --check` passed. The fixture tested
+node/recovery key selection, complete versus unconfirmed outcome projection,
+and the actual binary's refusal of a recovery request bound to a different
+executable. It started no unit or cluster. The send guard remains in place;
+no real cleanup, submission recovery, deletion or kind acceptance is claimed.
+Binary SHA-256:
+`0ab0e08b6a6b6fc830adee3e09f363b1cc35a045231fa2b54822303edf8c3d30`;
+fixture SHA-256:
+`2a6562230c8a8361e581b193056d7db4eb80ba6a9dadc88084fab2f4b94e56bc`.
+
+Never-sent cleanup publication (2026-11-23): a recovery composition now
+borrows the original family's retirement and operation lease before recovering
+the cleanup publication's durable never-sent proof and retiring its exact
+inputs. Missing publication is an error, not evidence of no send. The
+cleanup locator remains retained; the outcome does not authorize a replacement
+worker. Original-family completion also refuses a cleanup locator, preventing a
+potentially separate worker from being ignored.
+
+The controlled held-input fixture refused a missing publication, retired and
+resumed a synthetic never-sent publication, and refused original completion
+while the cleanup locator existed. It reset that synthetic locator only to
+exercise its separate original-only positive control. No unit or cluster was
+started. The executable build, 69 focused tests, fixture, HLint, documentation
+check and `git diff --check` passed. The path is not yet
+connected to a public recovery command, and crash-before-publication disposition,
+replacement worker identity, actual submission and interruption recovery remain
+open. Binary SHA-256:
+`7508d2691a3914894c0d3f5f20eaeac6d68078f453b43631b05ba73a804d8a9b`;
+fixture SHA-256:
+`b2c94a345d776a4a9e83ad0707e049c875aa4603c83edbaee1b2ed01c095e345`.
+
+Never-sent recovery entry (2026-11-23): incomplete family `control reconcile`
+now invokes the bounded never-sent cleanup publication recovery and preserves
+its outcome in the incomplete response. Family delete also tries that recovery
+for a recorded cleanup launch with no removal attempt, then stops with the
+namespace cleanup unconfirmed; it does not remove the node or discard the
+locator. Neither path infers no send from a missing publication.
+
+The controlled fixture exercised the actual reconcile binary against synthetic
+retained records and checked its incomplete never-sent result. It also invoked
+the delete composition against those records and checked that it stopped
+incomplete. No unit or cluster was started. The executable build, 69 focused
+tests, fixture, HLint, documentation check and `git diff --check` passed.
+Crash-before-publication disposition, replacement worker identity,
+actual submission, real delete and kind acceptance remain open. Binary SHA-256:
+`2f3f4c40fb4022669294850d5f4d4d5cd2131e877ece6850f2dba5717ab04da7`;
+fixture SHA-256:
+`c6e2d68f8ebf0d0e3b929a6a341e87577a6d2e583202a1fb7ba64292e1c3d4ba`.
+
+Cleanup publication barrier (2026-11-23): new cleanup locators declare a
+versioned protocol requiring an exclusive, request-bound publication-attempt
+record before publication. With the original family retirement and operation
+lease held, recovery distinguishes an observably absent marker from an
+attempted publication. Once the marker exists, missing publication remains
+unconfirmed and only the publisher's own never-sent proof can retire inputs.
+An orphan or unobservable marker also prevents original completion and node
+removal. Earlier staged locator records lack this declaration and are refused;
+they are not retroactively treated as pre-publication evidence.
+
+The controlled fixture exercised the pre-marker state, a marker followed by
+missing publication, and retirement of a synthetic never-sent publication.
+It started no unit or cluster. The executable build, 69 focused tests, fixture,
+HLint, documentation check and `git diff --check` passed.
+This does not yet authorize replacement attempts or qualify real interruption,
+submission, deletion or kind acceptance. Binary SHA-256:
+`a663910a21ef01ef88ec3ae1843fa204398d3a2d30f1d86355fc516142cb66c5`;
+fixture SHA-256:
+`0130db5db510b43820b0e8258001c5a66e8dd031d795b27304eb921990dff25e`.
+
+Connected delete control (2026-11-23): the held-input fixture now constructs
+separate synthetic original and cleanup submission records and exercises the
+connected delete composition. It refused a foreign cleanup-attempt ID, a
+missing cleanup submission and a live cleanup sender. After both synthetic
+families were observed retired, it retired the cleanup inputs and advanced
+through the fixture's never-planned node and volume cases, then stopped at the
+missing network identity. The actual `control delete --yes` binary repeated
+that incomplete result through its admission path. The fixture resets isolated
+synthetic records between controls; no worker, node or network was started or
+removed.
+
+The fixture and HLint passed. This establishes the controlled composition,
+not actual worker execution, provider retirement, independent namespace
+absence or real delete acceptance. Binary SHA-256:
+`a663910a21ef01ef88ec3ae1843fa204398d3a2d30f1d86355fc516142cb66c5`;
+fixture SHA-256:
+`a63cbe9ad1dd161b617b05418a12c7f933d8cbefcbe369018f27e2b6137cc537`.
+
+Cleanup publication status (2026-11-23): `control status` now distinguishes
+no local cleanup records, a locator without an attempt, a matching publication
+attempt and conflicting or unobservable records. It explicitly leaves send,
+worker settlement and namespace state unestablished. Classification controls
+include foreign requests and orphan markers. The controlled fixture checked
+the actual status binary against a synthetic recorded attempt; no unit or
+cluster was started. The executable build, 69 focused tests, fixture, HLint,
+documentation check and `git diff --check` passed. Binary
+SHA-256:
+`4672339493b07f4bb4b292864b0848a4cdb134c43d419607e8c622232f26b5b8`;
+fixture SHA-256:
+`16d44dd88a88040ed42fa14d264993f7e0828a541ec6353d8e252d2f027343cf`.
+Replacement attempts and real interruption and lifecycle acceptance remain
+open.
+
+Orphan marker control (2026-11-23): the controlled held-input fixture now
+removes a synthetic cleanup locator while retaining its publication-attempt
+record. Both family completion and the connected delete composition refused
+to proceed. It then reset the isolated synthetic marker to exercise the
+separate original-only control. The fixture and HLint passed; no worker,
+node or network was started or removed. This is not real interruption or
+kind acceptance. Binary SHA-256:
+`4672339493b07f4bb4b292864b0848a4cdb134c43d419607e8c622232f26b5b8`;
+fixture SHA-256:
+`403de65e091cdd94a529e7b1568b8125a9a0d677083c1666626f8622e1867996`.
+
+Original-family never-sent inputs (2026-11-23): incomplete family reconcile
+and delete can now recover the original publisher's durable never-sent proof
+and retire its exact inputs under the retained operation lease. The family
+request and absence of legacy submission are rechecked; missing metadata is
+not treated as no send. Both public paths remain incomplete and retain the
+operation and dependent resources. The proof does not establish node or
+resource absence and does not yet permit a new family attempt.
+
+The controlled fixture checked missing-request refusal, repeat retirement of
+the guarded never-sent launch, refusal while a publication was held, and the
+actual `control delete --yes` incomplete report. No unit or cluster was
+started. The executable build, 69 focused tests, fixture and HLint passed.
+Real submission, successor identity, resource cleanup and kind acceptance
+remain open. Binary SHA-256:
+`72b17d6d861db1a574b96f26c6b16c9f91efa2558ae1d2369902ecd575b06b34`;
+fixture SHA-256:
+`4ec04d49df112ab134e8adfc8b1044fcb42a2ca256395abdcaaac8138dd0c027`.
+
+Original-family publication barrier (2026-11-23): new family launch locators
+declare a request-bound publication protocol, and an exclusive attempt record
+is written before publication. Under the operation lease, recovery distinguishes
+the absence of that record from a missing publication after an attempt. The
+worker and retirement observer require the matching record. Earlier staged
+family locators without the declaration are refused rather than treated as
+proof of a pre-publication state; legacy controller recovery is separate.
+
+The executable build, 69 focused tests, controlled fixture, HLint,
+documentation check and `git diff --check` passed. The fixture covered
+pre-publication, missing attempted publication, held publisher and the
+guarded never-sent path. It started no unit or cluster. This does not authorize
+a successor or establish node and resource absence; real submission, cleanup
+and kind acceptance remain open. Binary SHA-256:
+`e6748084e8ae61dd8aad88661b42252a442bf20fcba2c5808020bf24fa8f3db0`;
+fixture SHA-256:
+`92d8eae38d60639de62d7ec1f0997d0766e58e3493d8fb984a6d750ca64d658d`.
+
+Pre-publication family resume (2026-11-23): the staged launcher can resume an
+exact retained request only while its operation lease is held, the original
+manager and work window remain valid, and the publication-attempt record is
+absent. A different retained request and a repeat after the marker are refused.
+The controlled fixture exercised those cases up to the existing guarded send;
+no unit or cluster was started. This resume is not yet connected to public
+reconcile and does not cover an expired window or a possible send. The build,
+69 focused tests, fixture, HLint, documentation check and `git diff --check`
+passed. Binary SHA-256 remains
+`e6748084e8ae61dd8aad88661b42252a442bf20fcba2c5808020bf24fa8f3db0`;
+fixture SHA-256:
+`ceadb5abfeb5a5370e5a0cff65836ed10091df784dd9dbd856e8c2fcfc13a5a9`.
+
+Never-sent family cleanup owner (2026-11-23): family delete can now borrow the
+original publisher's durable never-sent proof across recorded prerequisite
+cleanup. It requires an empty probe journal and no cleanup publication records,
+retires exact publication inputs, and rechecks the borrowed proof and operation
+lease at effect boundaries. The primary resource results and a failed closing
+observation remain separate. This does not establish independent resource
+absence or authorize a successor family.
+
+The controlled fixture checked a live publisher refusal, lease rechecks, a
+closed escaped owner, an uncertain-probe refusal, and the public delete path
+through synthetic never-planned node and volume cases to an incomplete network
+result. It started no unit or cluster and removed no real resources. The build,
+69 focused tests, fixture and HLint passed. Real prerequisite cleanup, worker
+submission and kind acceptance remain open. Binary SHA-256:
+`bc6752787b4c263115c6d9b74208f586c25dd51d0ca21da72ddf2ef97555760d`;
+fixture SHA-256:
+`592ff3bddfe3575ba7c5269ad77e28c3fde669f24ab3778157896d6d58ed590d`.
+
+Pre-publication cancellation (2026-11-23): family delete now records a
+request-bound exclusive cancellation before using pre-publication evidence for
+prerequisite cleanup. Publication and cancellation records exclude each other
+under the operation lease; the launcher, worker and submitted-family observer
+refuse contradictory state. Delete rechecks cancellation and the empty probe
+state, and retains incomplete resource and closing outcomes separately.
+
+The controlled fixture exercised the actual public delete against synthetic
+pre-publication records, observed the incomplete network result, and confirmed
+that a later launch and publication marker were refused. It also refused
+cancellation after an attempted publication. No unit or cluster was started,
+and no real resource was removed. The executable build, 69 focused tests,
+fixture, HLint, documentation check and `git diff --check` passed. Real
+prerequisite cleanup, family submission, interruption and kind
+acceptance remain open. Binary SHA-256:
+`6f81d006b105cb07105b1eeba2ef3d3fbd3c4f948d49246e73ad445d9587e1f1`;
+fixture SHA-256:
+`830d03017d2d3d4cb5f6d9d5077a628474b66c5087c093a98cdc3fef893eb95d`.
+
+Original-family cancellation status (2026-11-23): `control status` now
+classifies a matching pre-publication cancellation separately from a launch
+without an attempt and a recorded publication attempt. Orphaned, conflicting
+or unobservable records remain unconfirmed; status does not infer send,
+retirement or resource absence. The controlled fixture checks conflicting
+records and the actual status binary after synthetic cancellation. No unit or
+cluster was started. The executable build, 69 focused tests, fixture, HLint,
+documentation check and `git diff --check` passed. Binary SHA-256:
+`eea0060afc88a8085e6ea67ed688781b3cb0ae11557cbd5cc607e177b451499e`;
+fixture SHA-256:
+`b8508bef5362aacdd880981b9afbaeb172267b1b4d853487834543f391c8145e`.
+Real cleanup, family submission and kind acceptance remain open.
+
+Settled cleanup delete failure (2026-11-23): when the managed delete command
+returns a nonzero exit with subprocess settlement confirmed, recovery records
+that exit against the exact namespace UID and recovery ID before independently
+checking namespace absence. A positive-control-bracketed empty inventory can
+then produce a removal receipt without erasing the primary failure. Transport
+or subprocess-settlement failures remain unconfirmed. The journal distinguishes
+the failure with and without a removal receipt; deletion still requires the
+matching cleanup family retirement and input retirement.
+
+The controlled protocol tests cover ordering, failed failure-record writes,
+unavailable inventory and a settled nonzero exit with independent absence.
+The controlled delete fixture uses synthetic records to exercise the
+failure-plus-receipt branch. These checks do not establish a real Kubernetes
+outcome or recover an unobservable subprocess. The executable build, fixture,
+69 focused tests, HLint, documentation check and `git diff --check` passed;
+no real resource was removed. Binary SHA-256:
+`96a152ea537503c15373dc0361662cd236e275a0b6640c66b9fb62c9e928997d`;
+fixture SHA-256:
+`3c2819843e70b856afc31bd20d9fab5654388770b15d682e70ab4eac715ed532`.
+
+Unconfirmed-attempt readback protocol (2026-11-23): a staged read-only
+protocol brackets an empty namespace inventory with a stable positive control
+and records the original recovery ID and a distinct verifier ID without
+issuing another delete. The journal keeps the original attempt unconfirmed and
+reports the separate readback; deletion does not accept that record as a
+settled verifier. The protocol requires its caller to hold both prior family
+retirement owners, the operation lease and an authenticated API snapshot.
+
+Controlled tests cover invalid identity, unavailable inventory, record refusal,
+changed identity and a read-only successful observation. The executable build,
+70 focused tests, fixture, HLint, documentation check and `git diff --check`
+passed. The verifier's durable launch, managed execution,
+independent retirement, public activation and real Kubernetes behavior remain
+open; this record alone is not cleanup or kind acceptance. Binary SHA-256:
+`b5bfaf127f47d5cd9444142235ded5363f75293a34e1944d7b347752bea9a6c8`.
+
+Unconfirmed-attempt verifier locator (2026-11-23): a canonical verifier
+request now binds a distinct verifier identity and its own manager, executable
+and window to the original cleanup ID and namespace UID. Exclusive verifier
+launch and publication-attempt records require the matching prior request and
+uncertain attempt. The readback record requires those verifier records; the
+journal treats orphaned or conflicting records as unconfirmed. These records
+are provenance only and do not establish prior or verifier retirement.
+
+The controlled tests exercise identity binding, record order, pending and
+recorded readback, and orphan refusal. The executable build, 71 focused tests,
+controlled fixture, HLint, documentation check and `git diff --check` passed.
+Managed verifier launch, both predecessor retirement
+owners, verifier retirement, public activation and real Kubernetes acceptance
+remain open. No unit or cluster was started. Binary SHA-256:
+`bf560c393155704f77168fc40ecd6b73f7457a210a4a7200568b23daaebb9b68`.
+
+Verifier managed boundary (2026-11-23): verifier preparation now binds the
+distinct execution key, scope and original verifier window to the bounded
+family envelope. Pinned input decoding checks the key, manager, executable
+and request kind. A staged read-only worker boundary borrows both predecessor
+retirement owners and the operation lease, binds the API snapshot to the
+recorded node CA, and rechecks its verifier records around reads. Its return
+does not establish retirement of the verifier family.
+
+The controlled preparation and held-input fixtures test key, scope, capacity,
+manager, request-kind and unmanaged-parent refusals. The executable build,
+71 focused tests, both fixtures and HLint passed. The actual two-owner
+worker composition, verifier publication and settlement, public activation,
+and real Kubernetes behavior remain unqualified. No unit or cluster was
+started. Binary SHA-256:
+`48c3398bbb14d5d39d8afbd6c0d777a0ef1571684185abe7789c85eac628c757`;
+preparation fixture SHA-256:
+`12a6a731b07f75b095da2b61017ab3b1441e1b8d3f4e210c93c55a00c085034a`;
+held-input fixture SHA-256:
+`e5d98fa973206c0e5aa1e7294fd63be6b0d3fc53e18a1c73a2589defcf5b5572`.
+
+Verifier staged publication and dispatch (2026-11-23): the publisher now
+holds and rechecks both predecessor retirement owners while recording the
+verifier locator and publication attempt and submitting the bound request.
+The internal family dispatcher distinguishes cleanup and verifier requests
+from canonical pinned bytes, then reacquires both owners for verifier work.
+A returned verifier callback does not establish verifier-family retirement.
+The family submission guard remains in place: interruption recovery for its
+publication, verifier retirement, public activation and real kind acceptance
+remain open.
+
+The executable build, HLint and isolated preparation and held-input fixtures
+passed. The held-input fixture also checked selection of both request kinds,
+public refusal of a foreign executable, and refusal to launch a verifier while
+the cleanup sender remained live. These are controlled observations, not a
+real managed verifier or Kubernetes acceptance. Binary SHA-256:
+`fa94e1b50fda786c5f995375f513aa937d3e5d48e85a15fc024c9b5808f1b2a2`;
+held-input fixture SHA-256:
+`0412ba0237522231dab8fbbeccd8edb7dba0eb08bf6e0b05b2db4f36d603780a`.
+
+Verifier retirement boundary (2026-11-23): a separate owner now matches the
+verifier locator, publication marker and submission identity before borrowing
+physical retirement, and can retire the exact published inputs under that
+owner. The isolated held-input fixture confirms a missing verifier locator is
+refused. It does not yet exercise a registered verifier through this boundary,
+and delete does not consume it; interruption recovery, integrated settlement,
+real managed execution and Phase 1 acceptance remain open. The rebuilt
+executable and HLint passed, as did the updated held-input fixture. Binary
+SHA-256: `a0c198993f716ce17891c566a318c5a3a19ebd9a0e66ac5a935ada360a9ec54e`;
+held-input fixture SHA-256:
+`cfef5e3be4c35043681baaed1799b204d41035b013bfba7685a65917dd50d0df`.
+
+The expanded synthetic registration fixture then passed: a live verifier
+sender was refused, and after that sender closed the exact verifier owner
+verified retirement and retired its published inputs. Its first run failed
+with `ControllerPublicationExists` because the fixture reused another
+synthetic recovery key; the rerun used a distinct key. This does not prove a
+real verifier launch or integrated delete. Updated fixture SHA-256:
+`808d195d269ea2d77fa6b9fa80f6d751946c62a9978a53d0df514e42e8b67dce`.
+
+Delete settlement after verifier readback (2026-11-23): delete now borrows
+the original, cleanup and verifier retirement owners, retires the latter two
+published inputs, and rechecks all three owners and the exact readback journal
+before each removal. The controlled fixture refused both an unregistered
+verifier and a live verifier sender, then advanced after synthetic settlement;
+its independent network observation remained incomplete. The executable build,
+HLint and fixture passed. Binary SHA-256:
+`a022e4d0aa99a0075a990e852b0583be5a38fb9726585cab1a2a348e44ab5a21`;
+fixture SHA-256:
+`8c5726cf2edc8f716d32fa71d0bbb0d40d84cd450a5249427fc49a3b7e5ed342`.
+This is not real managed execution, interrupted-publication recovery or Phase
+1 acceptance; the send guard remains in place.
+
+Verifier never-sent observation (2026-11-23): while holding both predecessor
+retirement owners, the recovery boundary distinguishes a retained verifier
+locator before publication from an attempted publication whose durable send
+latch can be inspected for exact input retirement. The former passed in the
+controlled fixture; the attempted-publication branch and a safe replacement
+protocol remain unproven. Neither outcome independently authorizes another
+verifier. Build, HLint and the held-input fixture passed. Binary SHA-256:
+`9d232c4f07c65a0d1901f7b804906b2e756ddc9dd226d7274bdcb91169087389`;
+fixture SHA-256:
+`23c31b77a63ea0cf74b20f333e86eef15bce284ca2aac196e39e93bedb23ae48`.
+The expanded fixture also passed the missing-publication refusal after the
+attempt marker; it did not infer never-sent from a missing publication.
+Fixture SHA-256:
+`ded732985e436eeb02d4dab459de39f723d71c94f6463395a7e2d5565835e320`.
+Public `control reconcile` now reports this bounded verifier recovery
+disposition when its retained journal is pending; it still reports the
+operation incomplete. The controlled fixture exercised that public command
+for the pre-publication state. Build, HLint and fixture passed. Binary SHA-256:
+`c357ee7c84db9041c0f6a9db910400fe31590ac42f74ddcc587f1ebf2d46efd8`;
+fixture SHA-256:
+`b8e5d8530d38983e32207319ea467ce1b83e82d04c175ec62998ef366db45a87`.
+An additional isolated journal with a distinct verifier key exercised the
+durably never-sent publication and exact input retirement successfully. This
+fixture changes only its own synthetic records and is not a replacement or
+real manager send. Fixture SHA-256:
+`3edd27313744379a31d7d4967843f668b95f32db18020b930abfd01d878f4fd4`.
+The same controlled retirement was then repeated successfully to check
+resumption. Updated fixture SHA-256:
+`2c7096c9120a29047c143465923126d457776808d7dce105afae7b01a3f9dbee`.
+The fixture also verified that verifier never-sent recovery refuses while the
+cleanup sender remains live. Updated fixture SHA-256:
+`dbab02fe09950396f48fc713dd04db6e3c1c5e9030c5646f7c3bde286b063387`.
+
+Verifier pre-publication resume (2026-11-23): the staged verifier launcher
+can now resume the exact retained request while its original execution window
+is valid, both predecessor retirement owners are held and the publication
+marker is absent. A changed request or an existing publication attempt is
+refused. The controlled fixture exercised all three cases; the send remained
+guarded and its never-sent inputs were retired. The executable build, HLint
+and fixture passed. This staged launcher is not called by the public reconcile
+path, so it does not resolve an expired request, authorize a replacement or
+qualify real execution. Binary SHA-256:
+`c357ee7c84db9041c0f6a9db910400fe31590ac42f74ddcc587f1ebf2d46efd8`;
+fixture SHA-256:
+`1c1b39c4dd46cbe1cabe44c98800dc8b928af7210e3ac3ba94043d688cb151b9`.
+The cleanup launcher now likewise resumes only its exact retained request
+before publication while the original family remains retired. The controlled
+fixture passed changed-request, resume and post-attempt refusal checks for
+both launchers. Build and HLint passed; the staged launchers remain outside
+the public reconcile path and the family-send guard remains in place. Binary
+SHA-256: `c357ee7c84db9041c0f6a9db910400fe31590ac42f74ddcc587f1ebf2d46efd8`;
+fixture SHA-256:
+`5fbe874a8be021674b9084bf1a2559ad95e46903bf05b642f81fd91107fe9157`.
+
+Rejected unlaunched-family cancellation (2026-11-23): a trial allowed public
+test-identity delete to create and cancel a missing launch locator. The build,
+HLint and controlled fixture passed, but review found that cancellation only
+fenced the launcher: a prerequisite creator could still run between its own
+lease acquisitions. The trial was removed. This controlled pass does not
+establish worker settlement or authorize cleanup. The prerequisite creator
+must be fenced and settled before an unlaunched family can be cleaned up.
+Trial binary SHA-256:
+`dfb9e4fde778e6fc2a530a2cc48d7084ebe19e227c2f7c4b04dcfca0f487f987`;
+fixture SHA-256:
+`08b82df84e344f063fd038e12093c68e3b7ce59f583834b90d1443c008fa42f2`.
+After removal, a public-command regression fixture passed: delete refused the
+missing locator and did not manufacture one. The build and `git diff --check`
+passed. Binary SHA-256:
+`71573c20731578c5c2bf46bb789ffe808fc461fac736ef333bcc25214b2121a6`;
+fixture SHA-256:
+`70a45880e8ef9167bc49122380ae8c11d121bb236119ba767e7f975de92e58ca`.
+
+Managed prerequisite composition (2026-11-23): the staged kind family worker
+now prepares the image, network, volume and node intent before starting kind.
+The recovered image path requires the family protocol and borrowed admission;
+network and volume creation recheck that admission with the operation lease
+and Docker peer around their attempts and effects. Lost admission refuses
+before image intent, network or volume attempt, and the controlled Docker
+fixture observed no create request. The guarded network fixture also passed
+its successful and lost-reply cases. The executable and integration suite
+built; 71 focused preparation tests, the pinned-input fixture, HLint and
+`git diff --check` passed. These controlled checks do not prove real managed
+execution, interruption settlement, partial-resource cleanup or the public
+cutover. The family-send guard remains in place and Phase 1 remains open.
+Binary SHA-256:
+`ac3c4ee58e15460484222c84393ac0a47d3dc55d8c0b046bc92f7121fad7b41c`;
+integration binary SHA-256:
+`360791addefdc2cc979658b494f92bd325cedd999baf0e8c4f4102c6088004af`;
+integration fixture SHA-256:
+`739b459a6bdc53f4cd88f2381bbf0ea40ae33df0c23b39c9a4fe3aea96671f71`;
+pinned-input fixture SHA-256:
+`4892d8c27583e749e20faa3dd94c10c254475176e50a45fbfc77e60834d6eb69`.
+The expanded OCI fixture also passed a recovered family image attempt using
+a staged archive, connected fake daemon, recorded load response and read-back.
+This is controlled adapter evidence, not a managed systemd family or real
+daemon proof. Updated integration binary SHA-256:
+`0d786d3ab0ba66bfc08ece9c7f711f440a56745d75f875ae77194ef40a082885`;
+integration fixture SHA-256:
+`3f95e6b65208d8230a5731ca094a10743499c9f00dda0bcefd0134d4eb4d6c29`.
+
+Owner-first family protocol (2026-11-23): the initial intent now distinguishes
+`family-v2`, whose prerequisite effects belong to its submitted family, from
+the older `family-v1` protocol, which did not establish that ownership. Both
+remain readable as family records; the managed worker retains the older path
+for v1 and rechecks the exact protocol throughout v2 work. This decision
+follows the write-before-effect and no-inferred-absence requirements in
+[plan standards](development_plan_standards.md#resource-and-credential-lifecycle)
+and preserves the older intent's meaning. The staged preparation creates a v2
+intent before any image, network, volume or node intent.
+
+For v2 only, delete can fence a missing launch locator by recording a matching
+locator and cancellation under the operation lease. Older v1 missing-locator
+state remains refused. After a physically settled v2 family, an empty probe
+journal can admit recorded prerequisite cleanup while the exact protocol and
+retirement owner remain stable; this is not a claim of resource absence.
+Controlled tests refused a live sender, verified the cancellation fences a
+later launch, rejected a changed protocol and stopped at unconfirmed network
+read-back. No real family or partial-resource cleanup was exercised. The
+build, HLint, 73 focused tests and the controlled qualification fixture
+passed. One intermediate unit run failed to compile because it imported a
+hidden module; that control was moved to the qualification fixture and the
+unit suite passed afterward. Binary SHA-256:
+`e406c64f78534407d66522fd57eed75e39d9bfe7bce6def4eba5f35e6ec9dcfc`;
+unit source SHA-256:
+`c2b2f89b2d22653c23b3527df183bb9c62353aabf4a9945001a924f2eb4c5e84`;
+qualification fixture SHA-256:
+`ac327223097e81a584d03038c2162585e87a9b2e78472bfb29e9ac2f91f319fe`.
+The v2 preparation remains staged; public launch and the family-send guard,
+interrupted execution recovery, real acceptance and source mutations remain
+open.
+
+Fresh public family routing (2026-11-23): `control reconcile` now prepares an
+owner-first operation and invokes its family launcher, rather than creating
+image, network and volume prerequisites in the CLI process. A bootstrap that
+cannot be rendered and decoded as the controller's complete projection is
+refused before the operation intent. A controlled public-command test against
+a disposable fake Docker endpoint passed: it observed the v2 intent, the
+guarded never-sent disposition and no Docker create or delete request. The
+first test fixture omitted the required kind-tool declaration and exposed the
+preflight gap; its initial run stopped at configuration refusal. A subsequent
+fixture compile found a `Text` type mismatch, corrected before the passing
+run. The executable and integration suite built, HLint and 73 focused tests
+passed, and the controlled controller-input fixture passed. Family submission,
+the kind node, worker settlement and real acceptance remain unqualified.
+Binary SHA-256:
+`5023c7aaf0aa228e535840103bc2dcd141617978e87866536fa6022a7fdc465c`;
+integration fixture SHA-256:
+`580fa2ee180318810296564cd0d403eed6fcefbe5be7d723b9cfde32b0501c08`;
+controller-input fixture SHA-256:
+`ac327223097e81a584d03038c2162585e87a9b2e78472bfb29e9ac2f91f319fe`.
+
+Controlled-run residue observation (2026-11-23): at 15:54:11 UTC a read-only
+count found 361 `prodbox-kind-family-inputs-*` directories directly under the
+current user's runtime directory, compared with 358 in a preceding count.
+The count does not establish ownership or classify any individual directory.
+Controlled fixtures use this namespace and retain publication metadata after
+never-sent payload retirement; the public-route fixture did not preserve its
+generated operation ID after its temporary scope was removed. No unclassified
+directory was removed. Exact fixture-publication accounting and a safe scoped
+retirement/cleanup path remain open; these controlled runs do not qualify the
+phase's cleanup requirement.
+
+Controlled public-route fixture teardown (2026-11-23): the fixture now claims
+its empty private root and snapshots existing kind-publication names before
+running the public command. After the command reports a never-sent retirement,
+teardown requires the same test scope and owner-first operation, matching
+launch and publication records, a durable never-sent proof, terminal input
+retirement, exactly the expected regular metadata files and an unchanged
+captured tree. It refuses another operation, another fixture root and an
+unexpected entry. A failed test retains its fixture root and reports its path.
+The controlled public-command case passed and its exact publication tree was
+removed; the read-only runtime-directory count was 361 both before and after.
+That count is not ownership proof for the earlier entries, which remain
+unclassified and untouched. Build, HLint, `git diff --check` and 73 focused
+tests passed. Binary SHA-256:
+`e61ed88af483de1d083048b63ca10614f8b366672e34bc1a8541bacff09c05c4`;
+integration binary SHA-256:
+`cd02269fe474914f14bd6936d63b3544267395b04a71b3fd0bc6a7e3e882bb62`;
+integration fixture SHA-256:
+`54a7d7d96a6b8ff0345365541584c7b63c78c38fc7cb1bd5cb1ce7d056c09f13`;
+fixture teardown source SHA-256:
+`ffabda1834742ec93f39b6595bf86c64de0f28088b0b55d1761318896b4b9d61`.
+The fixture claim was then tightened to hold and recheck the runtime
+directory while taking its pre-command inventory. The captured publication
+tree is now also rechecked while the never-sent owner is held before teardown.
+The public-route fixture, including foreign-root and unexpected-entry
+refusals, passed again; the runtime-directory count remained 361 before and
+after. Build, HLint and `git diff --check` passed. Binary SHA-256:
+`68ed93967e4c6b4e0f541a0eab6fca6228ef8df64d8cd6ea418b3a687be9dfdd`;
+integration binary SHA-256:
+`a3f71891be692ca21884767b8dc466015d18c67d2b8623e84f2e4d28c9ba0d42`;
+fixture teardown source SHA-256:
+`0ef500e0cf314d94bf4c512c165fbdc9a42dddbb6648c1fc44ae54db7343b063`.
+The teardown now stops before retirement recovery if its exact fixture-tree
+snapshot is unavailable. The controlled public-route fixture passed again,
+including its adverse controls, and the runtime count remained 361 before and
+after. Build, HLint and `git diff --check` passed. Binary SHA-256:
+`a3377234cc80a2d15c0b4237255a812b23add1f17af3df526b270bae6523f67e`;
+integration binary SHA-256:
+`0f48ce3ad553c97b1065978b8f60c1be2d4d12084ce88efc39e4f7e5759a6b56`;
+fixture teardown source SHA-256:
+`e0679ab470b02351ce0793d73e021a49606a106dd97525f8351c713efa63b7dc`.
 
 ## Resource scope and cleanup
 
@@ -9386,13 +12564,13 @@ Update implemented correspondence and generated references as the active slice c
 
 ## Completion record
 
-- [x] All implementation tasks and owned acceptance cases passed.
-- [x] Source/binary/image/config identity, independent observations, budgets and evidence availability are recorded without secret values.
-- [x] Required source mutations are killed by intended assertions or carry reviewed equivalence evidence; no invalid/inconclusive substitute is counted.
-- [x] Exact resource/credential/worker cleanup and retained-state obligations are terminal for the declared scope.
-- [x] Owned legacy removals and documentation/generated-reference updates are complete.
-- [x] Canonical gate and cumulative relevant regressions pass; no hand action is used as qualifying evidence.
+- [ ] All implementation tasks and owned acceptance cases passed.
+- [ ] Source/binary/image/config identity, independent observations, budgets and evidence availability are recorded without secret values for the current implementation.
+- [ ] Required source mutations are killed by intended assertions or carry reviewed equivalence evidence; no invalid/inconclusive substitute is counted.
+- [ ] Exact resource/credential/worker cleanup and retained-state obligations are terminal for the declared scope.
+- [ ] Owned legacy removals and documentation/generated-reference updates are complete.
+- [ ] Canonical gate and cumulative relevant regressions pass for the current implementation; no hand action is used as qualifying evidence.
 
-Real kind/control/context behavior and the evidence/mutation runner pass all owned cases. Cloud admission is impossible; storage retention and actual management isolation/capacity are proven before secret workers are introduced.
+Closure requires real kind/control/context behavior and all owned evidence and mutation cases. Cloud admission is impossible; storage retention and actual management isolation/capacity must be proven before secret workers are introduced.
 
 Only then change **State** to Complete and update the single README queue with evidence links. If a counterexample appears, preserve it, expand the owned acceptance/mutation case and repair this phase; do not manufacture a future-phase prerequisite or a new decimal queue.

@@ -15,11 +15,14 @@ module Prodbox.Subprocess.HostOperationFamily
   , withCurrentHostControllerProgram
   , withPinnedHostControllerProgram
   , verifyHostControllerProgram
+  , verifyHostControllerProgramInputs
+  , hashHostControllerProgramExecutable
   , HostControllerInputFingerprint
   , parseHostControllerInputFingerprint
   , hostControllerInputFingerprintText
   , hostControllerProgramInputFingerprint
   , hostControllerProgramExecutablePath
+  , hostControllerProgramConfigurationPath
   , HostControllerInputBytes
   , readHostControllerProgramInputs
   , hostControllerConfigurationBytes
@@ -44,6 +47,7 @@ module Prodbox.Subprocess.HostOperationFamily
   , observeHostOperationIdleChildBefore
   , submitHostOperationFamily
   , submitPublishedHostOperationFamily
+  , submitPublishedHostOperationFamilyBoundToDomain
   , submitPublishedHostOperationFamilyWithStdin
   , HostSubmissionCausalClosure
   , observeHostSubmissionCausalClosure
@@ -110,6 +114,7 @@ data HostOperationError
   | HostOperationInvalidWindow
   | HostOperationProgramMismatch
   | HostOperationProgramUnavailable
+  | HostOperationAdmissionChanged
   | HostOperationInputsRefused !HostControllerInputError
   | HostOperationAlreadyAttempted
   | HostOperationFieldNotAbsent !HostOperationInventory
@@ -149,6 +154,9 @@ data HostControllerProgram
 hostControllerProgramExecutablePath :: HostControllerProgram -> FilePath
 hostControllerProgramExecutablePath (HostControllerProgram _ inputs) = Inputs.hostControllerExecutablePath inputs
 
+hostControllerProgramConfigurationPath :: HostControllerProgram -> FilePath
+hostControllerProgramConfigurationPath (HostControllerProgram _ inputs) = Inputs.hostControllerConfigurationPath inputs
+
 withCurrentHostControllerProgram
   :: Identity.HostControllerKind
   -> Word64
@@ -184,6 +192,16 @@ readHostControllerProgramInputs
   :: HostControllerProgram -> IO (Either HostOperationError HostControllerInputBytes)
 readHostControllerProgramInputs (HostControllerProgram _ inputs) =
   either (Left . HostOperationInputsRefused) Right <$> Inputs.readHostControllerInputs inputs
+
+-- These read-only checks hold the same program descriptors; they do not
+-- establish a matching operation declaration or admit a systemd submission.
+verifyHostControllerProgramInputs :: HostControllerProgram -> IO (Either HostOperationError ())
+verifyHostControllerProgramInputs (HostControllerProgram _ inputs) =
+  either (Left . HostOperationInputsRefused) Right <$> Inputs.verifyHostControllerInputs inputs
+
+hashHostControllerProgramExecutable :: HostControllerProgram -> IO (Either HostOperationError String)
+hashHostControllerProgramExecutable (HostControllerProgram _ inputs) =
+  either (Left . HostOperationInputsRefused) Right <$> Inputs.hashHostControllerExecutable inputs
 
 verifyHostControllerProgram
   :: HostOperationIntent -> HostControllerProgram -> IO (Either HostOperationError ())
@@ -238,7 +256,9 @@ hostOperationFieldUnitName = fieldUnitName
 fieldUnitName :: HostOperationField -> HostOperationRole -> String
 fieldUnitName (HostOperationField kind key) role = case role of
   OperationController -> prefix <> "controller-" <> text <> ".service"
-  OperationSlice -> Identity.hostControllerKindSliceName kind
+  OperationSlice -> case kind of
+    Identity.KindProbeSuccessorController -> "prodboxkindsuccessor" <> text <> ".slice"
+    _ -> Identity.hostControllerKindSliceName kind
   OperationTimer -> prefix <> text <> "-expiry.timer"
   OperationExpiry -> prefix <> text <> "-expiry.service"
   OperationCommand -> commandPrefix <> text <> ".scope"
@@ -250,6 +270,9 @@ fieldUnitName (HostOperationField kind key) role = case role of
     Identity.RpcBirthController -> ("prodbox-owned-", "prodbox-transport-")
     Identity.OrdinaryCascadeController -> ("prodbox-cascade-owned-", "prodbox-cascade-transport-")
     Identity.MutationController -> ("prodbox-mutation-owned-", "prodbox-mutation-transport-")
+    Identity.KindController -> ("prodbox-kind-family-owned-", "prodbox-kind-family-transport-")
+    Identity.KindProbeVerifierController -> ("prodbox-kind-verify-owned-", "prodbox-kind-verify-transport-")
+    Identity.KindProbeSuccessorController -> ("prodbox-kind-successor-owned-", "prodbox-kind-successor-transport-")
 
 hostOperationRuntimeDirectory :: HostOperationIntent -> String
 hostOperationRuntimeDirectory = hostOperationFieldRuntimeDirectory . intentField
@@ -300,6 +323,9 @@ hostOperationDescription (HostOperationIntent kind plan (HostOperationHelperBoun
     Identity.RpcBirthController -> "prodbox rpc birth operation "
     Identity.OrdinaryCascadeController -> "prodbox ordinary cascade operation "
     Identity.MutationController -> "prodbox mutation operation "
+    Identity.KindController -> "prodbox kind operation "
+    Identity.KindProbeVerifierController -> "prodbox kind verifier "
+    Identity.KindProbeSuccessorController -> "prodbox kind successor "
   clocks =
     [ Identity.hostExecutionOuterEnd
     , Identity.hostExecutionWorkEnd
@@ -460,6 +486,8 @@ verifyHostOperationCoreDeclaration original intent program controller = runExcep
   let timer = invocationPathText timerAlias
       expiry = Identity.hostExecutionHardEnd window `div` 1000
   declared OperationTimer timer "active"
+  stopsWhenUnneeded <- property timer "Unit" "StopWhenUnneeded" readVariantBoolean
+  check OperationTimer stopsWhenUnneeded
   target <- property timer "Timer" "Unit" readVariantString
   check OperationTimer (target == name OperationExpiry)
   property timer "Timer" "TimersMonotonic" (readVariantOriginalBootTimer expiry)
@@ -629,7 +657,7 @@ observeHostOperationIdleChildBefore requested original intent process = runExcep
 
 submitHostOperationFamily
   :: BusConnection -> HostOperationIntent -> HostControllerProgram -> IO (Either HostOperationError ())
-submitHostOperationFamily = submitHostOperationFamilyWithPublication Nothing Nothing
+submitHostOperationFamily = submitHostOperationFamilyWithPublication Nothing Nothing Nothing
 
 submitPublishedHostOperationFamily
   :: Publication.HostPublicationSubmission
@@ -637,7 +665,16 @@ submitPublishedHostOperationFamily
   -> HostOperationIntent
   -> HostControllerProgram
   -> IO (Either HostOperationError ())
-submitPublishedHostOperationFamily permit = submitHostOperationFamilyWithPublication (Just permit) Nothing
+submitPublishedHostOperationFamily permit = submitHostOperationFamilyWithPublication (Just permit) Nothing Nothing
+
+-- The expected domain is checked at the same native submission boundary as
+-- provider qualification and the closing manager read.
+submitPublishedHostOperationFamilyBoundToDomain
+  :: Publication.HostPublicationSubmission -> Identity.HostManagerDomain -> IO Bool
+  -> BusConnection -> HostOperationIntent -> HostControllerProgram
+  -> IO (Either HostOperationError ())
+submitPublishedHostOperationFamilyBoundToDomain permit domain stable =
+  submitHostOperationFamilyWithPublication (Just permit) Nothing (Just (domain, stable))
 
 -- Descriptor delivery remains inside the published ordinary-family owner.
 -- A manager reply alone grants neither running placement nor admission.
@@ -649,21 +686,29 @@ submitPublishedHostOperationFamilyWithStdin
   -> HostControllerProgram
   -> IO (Either HostOperationError ())
 submitPublishedHostOperationFamilyWithStdin permit input =
-  submitHostOperationFamilyWithPublication (Just permit) (Just input)
+  submitHostOperationFamilyWithPublication (Just permit) (Just input) Nothing
 
 submitHostOperationFamilyWithPublication
   :: Maybe Publication.HostPublicationSubmission
   -> Maybe Stdin.HostControllerStdin
+  -> Maybe (Identity.HostManagerDomain, IO Bool)
   -> BusConnection
   -> HostOperationIntent
   -> HostControllerProgram
   -> IO (Either HostOperationError ())
-submitHostOperationFamilyWithPublication publication input original intent@(HostOperationIntent _ _ _ _ window attempted) program = do
+submitHostOperationFamilyWithPublication publication input expectedDomain original intent@(HostOperationIntent _ _ _ _ window attempted) program = do
   admitted <- Attempt.claimOneShotAttempt attempted
   now <- getMonotonicTimeNSec
   if not admitted
     then pure (Left HostOperationAlreadyAttempted)
     else runExceptT $ do
+      -- Kind submission requires both the held publication and the recorded
+      -- manager/admission binding; the unbound generic entrypoints cannot
+      -- send a kind controller.
+      when (hostOperationKind intent `elem` [Identity.KindController, Identity.KindProbeVerifierController, Identity.KindProbeSuccessorController]) $
+        case (publication, expectedDomain) of
+          (Just _, Just _) -> pure ()
+          _ -> throwE HostOperationProgramUnavailable
       let HostControllerProgram _ originalInputs = program
       case publication of
         Just permit ->
@@ -699,6 +744,9 @@ submitHostOperationFamilyWithPublication publication input original intent@(Host
       unless (hostOperationAbsent inventory) (throwE (HostOperationFieldNotAbsent inventory))
       ExceptT (verifyHostControllerProgram intent program)
       domain <- withExceptT HostOperationManagerRefused (observeManagerDomain connection)
+      case expectedDomain of
+        Just (expected, _) -> unless (domain == expected) (throwE HostSubmissionProviderMismatch)
+        Nothing -> when (hostOperationKind intent `elem` [Identity.KindController, Identity.KindProbeVerifierController, Identity.KindProbeSuccessorController]) (throwE HostSubmissionProviderMismatch)
       sender <- withExceptT HostOperationManagerRefused (observeBusSender connection)
       qualified <- lift $ Provider.withQualifiedProvider connection $ \provider -> runExceptT $ do
         unless (Provider.qualifiedProviderDomain provider == domain) (throwE HostSubmissionProviderMismatch)
@@ -724,6 +772,7 @@ submitHostOperationFamilyWithPublication publication input original intent@(Host
         ExceptT (verifyHostControllerProgram intent program)
         sending <- lift getMonotonicTimeNSec
         when (sending >= Identity.hostExecutionWorkEnd window) (throwE HostOperationExpired)
+        checkAdmission expectedDomain
         case publication of
           Nothing -> pure ()
           Just permit ->
@@ -736,6 +785,7 @@ submitHostOperationFamilyWithPublication publication input original intent@(Host
                   (Identity.hostExecutionWorkEnd window)
                   (Inputs.hostControllerConfigurationPath inputs)
                   (Inputs.hostControllerRequestPath inputs)
+        checkAdmission expectedDomain
         _ <-
           withExceptT HostOperationManagerRefused $
             callManager
@@ -752,6 +802,10 @@ submitHostOperationFamilyWithPublication publication input original intent@(Host
       either (throwE . HostOperationProviderRefused) (either throwE pure) qualified
  where
   connection = systemdBusWithin (Identity.hostExecutionWorkEnd window) original
+  checkAdmission Nothing = pure ()
+  checkAdmission (Just (_, stable)) = do
+    unchanged <- lift stable
+    unless unchanged (throwE HostOperationAdmissionChanged)
 
 -- The old sender can never submit another frame on this bus instance. Under
 -- the exact recorded native contract, a later pinned manager read establishes
@@ -863,6 +917,7 @@ buildFamily now intent@(HostOperationIntent _ plan (HostOperationHelperBounds he
       number "CPUQuotaPerSecUSec" (Host.hostExecutionSliceCpuUsecPerSec plan)
       property "StopWhenUnneeded" "b" (appendBoolean message True)
     auxiliary OperationTimer $ do
+      property "StopWhenUnneeded" "b" (appendBoolean message True)
       strings "Requires" [name OperationSlice]
       strings "After" [name OperationSlice]
       property "TimersMonotonic" "a(st)" $ withContainer message 'a' "(st)" $ withContainer message 'r' "st" $ do

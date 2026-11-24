@@ -423,6 +423,71 @@ not yet checked: the catalog row also asks for the Broker and registry being dow
 source/age retained on read-only facts, a comparison against a stale projection,
 and the M04-family mutation on the read path.
 
+Twentieth note (2026-11-22), Authority discovery fail-closed correction.
+`currentAdmission` previously treated every failed Kubernetes Service lookup as
+absence and could answer from the local journal, including during a control
+cluster outage. It now distinguishes an observed absent Service from a failed
+lookup and refuses if the retained Authority journal directory exists while the
+Service is absent. This follows A03-02's requirement that a stale projection
+cannot authorize mutation or clean completion (acceptance_cases.md, A03-02).
+Unit cases cover an invalid kubeconfig and retained journal without a kubeconfig;
+the build and real scenario validation remain pending. This does not complete
+A03-02 or establish that all lost-history cases are detected.
+
+Twenty-first note (2026-11-22), restart must preserve write-ahead evidence.
+The previous initializer rewrote `admission.json` from the committed aggregate
+on every restart. A crash between the mirror write and compare-and-swap could
+therefore erase an unresolved intent. Initialization now compares an existing
+mirror with the committed aggregate and refuses a mismatch or unreadable mirror;
+it also refuses a mirror without genesis. A unit case records an interrupted
+intent and checks that restart leaves it intact and refuses. Its build and test
+are pending, as is rerunning M04 against the updated source binding. This does
+not settle concurrent writers: competing mirror writes can still race before
+their compare-and-swap, and serialization plus crash-safe recovery and real
+concurrency acceptance remain required before the journal can qualify P03-T01
+or P03-T02.
+
+Twenty-second note (2026-11-22), concurrent mirror writes. A retained directory
+guard is now acquired atomically before a mirror write and removed only after a
+successful aggregate commit. Another writer is refused, and reads while the
+guard exists are unobservable; a failed or interrupted commit retains the guard
+on restart. Unit cases exercise an overlapping writer and an ambiguous failed
+commit. The build and these tests are pending. This guard has no supported
+reconciliation/removal operation yet, and neither crash durability nor atomic
+admission across a subsequent command has been established. Real crash and
+concurrency acceptance, recovery, and the updated mutation run remain open.
+
+Twenty-third note (2026-11-22), journal write ordering. Mirror and genesis
+writes now sync the temporary file before rename and sync the containing
+directory afterward; creation and removal of the write guard also sync that
+directory. Failure to sync refuses the write. This is an implementation step,
+not proof of power-loss durability: filesystem behavior, interrupted-write
+recovery and real failure-domain tests remain unverified. The Authority journal
+module compiled as part of the ongoing full build; tests and the complete build
+remain pending.
+
+Twenty-fourth note (2026-11-22), guard observation. Guard checks now use a
+non-following filesystem observation: a dangling symlink or any other existing
+entry counts as a guard, and an observation error does not count as absence.
+A unit case covers the dangling-symlink control. The ongoing build compiled the
+previous revision of this module, so an incremental rebuild is required after it
+finishes. Automatic guard clearing remains unsafe without independent settlement
+of the original compare-and-swap; an equality read alone cannot prove that an
+earlier request is no longer in flight.
+
+Twenty-fifth note (2026-11-22), host-side Authority discovery. The host now
+observes the kubeconfig and retained-journal paths without following links and
+refuses observation errors; a dangling retained path cannot be recoded as a
+fresh deployment. A unit case covers that control. Build and behavioral proof
+are pending, and this does not address loss of all retained identity evidence.
+
+Validation update (2026-11-22): the current executable and unit suite built.
+The `admission history` selection passed all 20 unit cases, including the
+guard, interrupted write and host discovery controls; the Phase 3 reviewed
+mutation-binding alignment test also passed. These are not real concurrent or
+crash acceptance, and the mutation execution remains open. Phase 2 has since
+been reopened for backup content integrity and must be revalidated first.
+
 - [ ] **P03-T01** — Implement the actual durable Authority journal, public non-secret metadata projection, local backup/restore and validated operation identity. Host bootstrap metadata locates the Authority but is not a competing cloud-state writer.
 - [ ] **P03-T02** — Implement shared observe/plan/execute/read-back and operation recovery across CLI/test/maintenance. Keep resource truth, checkpoint usability, credential state and audit evidence distinct; register intent before any future cloud effect can be authorized.
 - [ ] **P03-T03** — Activate public delete/status/plan/operations resume for delivered scopes. A never-admitted delete does not call AWS or initialize Vault. An unresolved journal or stale projection cannot license NoChange or mutation.

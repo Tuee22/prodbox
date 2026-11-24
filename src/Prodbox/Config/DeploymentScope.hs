@@ -32,6 +32,7 @@ module Prodbox.Config.DeploymentScope
   , validRootGeneration
   , scopeEnvironment
   , scopeIdentifier
+  , scopeProjectAnchor
   , scopeRoot
   , scopeKindName
   , scopeKubeconfig
@@ -193,6 +194,10 @@ data DeploymentScope = DeploymentScope
   , scopeApiPort :: !Int
   }
   deriving (Eq, Show)
+
+-- Roots are constructed as <project>/<environment-directory>/<identifier>.
+scopeProjectAnchor :: DeploymentScope -> FilePath
+scopeProjectAnchor = takeDirectory . takeDirectory . scopeRoot
 
 -- | Construct a candidate only; callers must inspect the actual filesystem,
 -- ownership marker, listeners, and cluster before mutation. The identifier

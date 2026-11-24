@@ -29,9 +29,14 @@ import Prodbox.Test.Qualification.Evidence
 
 data ReviewedMutation
   = M01OverlappingRoots
+  | M01ArtifactBytes
+  | M01UnconfirmedNode
+  | M01UnknownRecreate
+  | M01FailedRemoval
   | M02MissingReport
   | M03ProductionUnlock
   | M03VaultIncarnation
+  | M03BackupContent
   | M04UnknownAsFresh
   | M04MissingAsFresh
   | M05PendingNoChange
@@ -51,9 +56,14 @@ data PreparedMutation = PreparedMutation !PublicEvidenceDigest !ByteString.ByteS
 
 reviewedSourcePath :: ReviewedMutation -> FilePath
 reviewedSourcePath M01OverlappingRoots = "src/Prodbox/Config/DeploymentScope.hs"
+reviewedSourcePath M01ArtifactBytes = "src/Prodbox/Control/NodeRegistryArchive.hs"
+reviewedSourcePath M01UnconfirmedNode = "src/Prodbox/Control/Delete.hs"
+reviewedSourcePath M01UnknownRecreate = "src/Prodbox/Control/Recreate.hs"
+reviewedSourcePath M01FailedRemoval = "src/Prodbox/Control/Delete.hs"
 reviewedSourcePath M02MissingReport = "src/Prodbox/Test/ScenarioEvidence.hs"
 reviewedSourcePath M03ProductionUnlock = "src/Prodbox/Control/Unlock.hs"
 reviewedSourcePath M03VaultIncarnation = "src/Prodbox/Control/Unlock.hs"
+reviewedSourcePath M03BackupContent = "src/Prodbox/Control/Backup.hs"
 reviewedSourcePath M04UnknownAsFresh = "src/Prodbox/Lifecycle/AdmissionHistory.hs"
 reviewedSourcePath M04MissingAsFresh = "src/Prodbox/Lifecycle/AdmissionHistory.hs"
 reviewedSourcePath M05PendingNoChange = "src/Prodbox/Lifecycle/AdmissionHistory.hs"
@@ -62,12 +72,22 @@ reviewedSourcePath M04MirrorGenesisAsFresh = "src/Prodbox/ControlPlane/Admission
 reviewedTestPath :: ReviewedMutation -> Text
 reviewedTestPath M01OverlappingRoots =
   "prodbox-unit.deployment scope coordinates.rejects overlapping roots for the mutation catalog"
+reviewedTestPath M01ArtifactBytes =
+  "prodbox-unit.node registry manifest.writes a digest-bound archive and refuses changed source bytes"
+reviewedTestPath M01UnconfirmedNode =
+  "prodbox-unit.test node artifact preparation.never infers that a node was unstarted from a missing or invalid result alone"
+reviewedTestPath M01UnknownRecreate =
+  "prodbox-unit.test node artifact preparation.does not treat an invalid or unreadable recreation intent as absent"
+reviewedTestPath M01FailedRemoval =
+  "prodbox-unit.test node artifact preparation.accepts only successful removal replies with recorded receipts"
 reviewedTestPath M02MissingReport =
   "prodbox-unit.scenario evidence comparison.rejects an unbound report for the mutation catalog"
 reviewedTestPath M03ProductionUnlock =
   "prodbox-unit.bootstrap unlock policy.never selects the test self-unseal policy for production for the mutation catalog"
 reviewedTestPath M03VaultIncarnation =
   "prodbox-unit.bootstrap unlock policy.initializes only an uninitialized Vault with no unlock object or pending record for the mutation catalog"
+reviewedTestPath M03BackupContent =
+  "prodbox-unit.backup content integrity.detects a same-size content change for the mutation catalog"
 reviewedTestPath M04UnknownAsFresh =
   "prodbox-unit.admission history.never recodes an unobservable journal as never admitted for the mutation catalog"
 reviewedTestPath M04MissingAsFresh =
@@ -79,9 +99,14 @@ reviewedTestPath M04MirrorGenesisAsFresh =
 
 reviewedAssertion :: ReviewedMutation -> Text
 reviewedAssertion M01OverlappingRoots = "context.rejects_root_alias"
+reviewedAssertion M01ArtifactBytes = "artifact.rejects_changed_bytes"
+reviewedAssertion M01UnconfirmedNode = "delete.rejects_unconfirmed_node"
+reviewedAssertion M01UnknownRecreate = "recreate.rejects_unknown_intent"
+reviewedAssertion M01FailedRemoval = "delete.rejects_failed_removal"
 reviewedAssertion M02MissingReport = "evidence.rejects_unbound_result"
 reviewedAssertion M03ProductionUnlock = "bootstrap.production_rejects_test_unlock"
 reviewedAssertion M03VaultIncarnation = "bootstrap.preserves_vault_incarnation"
+reviewedAssertion M03BackupContent = "backup.rejects_same_size_corruption"
 reviewedAssertion M04UnknownAsFresh = "lifecycle.unknown_requires_recovery"
 reviewedAssertion M04MissingAsFresh = "lifecycle.missing_history_is_not_fresh"
 reviewedAssertion M05PendingNoChange = "lifecycle.pending_intent_blocks_noop"
@@ -89,13 +114,18 @@ reviewedAssertion M04MirrorGenesisAsFresh = "lifecycle.uninitialized_mirror_is_n
 
 reviewedSourceDigest :: ReviewedMutation -> Text
 reviewedSourceDigest M01OverlappingRoots = "119f96fc9f9afef3ad91feb98eba09e69c43da5b33a489f8c4521dd7af99992d"
+reviewedSourceDigest M01ArtifactBytes = "7284e324f79d558274f7afb567f9f2443920371cc9156128d689bf93de74f4e2"
+reviewedSourceDigest M01UnconfirmedNode = "ca80d272c5c5c7cd99150a2aaddc2f12ef9d02a503ad4b08d0c59e29852300f7"
+reviewedSourceDigest M01UnknownRecreate = "8f4ab55c4a38d413a3bdf15f65f17739822c83a90106d04a858ed87bc3c03334"
+reviewedSourceDigest M01FailedRemoval = "ca80d272c5c5c7cd99150a2aaddc2f12ef9d02a503ad4b08d0c59e29852300f7"
 reviewedSourceDigest M02MissingReport = "e838f617e90537a56bc7ee9af2e113bb9a5bc939dfe95c4c663dece5645b22f1"
 reviewedSourceDigest M03ProductionUnlock = "29374f1c8e05b8c25bc7a6155c07cdbd76685f4772efb19380bf8f5e72df5f07"
 reviewedSourceDigest M03VaultIncarnation = "29374f1c8e05b8c25bc7a6155c07cdbd76685f4772efb19380bf8f5e72df5f07"
+reviewedSourceDigest M03BackupContent = "ea7a7eba1baad1eac748deb9d56cd1517bdafd0026c8f2226b7730d0cc02fa2d"
 reviewedSourceDigest M04UnknownAsFresh = "03844695f0097ed3338ca2a28f99ef9a3b5dde528d1f0b1a1325e0cc12f202da"
 reviewedSourceDigest M04MissingAsFresh = "03844695f0097ed3338ca2a28f99ef9a3b5dde528d1f0b1a1325e0cc12f202da"
 reviewedSourceDigest M05PendingNoChange = "03844695f0097ed3338ca2a28f99ef9a3b5dde528d1f0b1a1325e0cc12f202da"
-reviewedSourceDigest M04MirrorGenesisAsFresh = "cb15a8c10fc6de27285f597760830385515331f54eb355fc547a75f3e43e63d6"
+reviewedSourceDigest M04MirrorGenesisAsFresh = "42b4d462f6b40fd3ebbce2066ed8ef4f414039c68c6bcb6fae9abdc19caa9255"
 
 -- The hash identifies the domain, target, pinned source and exact old/new
 -- bytes. It is not a unified-diff digest and does not authorize a write.
@@ -139,6 +169,8 @@ oldSite M03ProductionUnlock =
   "  Test -> TestSelfUnseal\n  _ -> ProtectedProduction\n"
 oldSite M03VaultIncarnation =
   "  state == VaultUninitialized && not objectPresent && not pendingPresent\n"
+oldSite M03BackupContent =
+  "                    else let nextState = HMAC.update state chunk in nextState `seq` consume nextState\n"
 oldSite M04UnknownAsFresh =
   "  JournalUnobservable reason -> RecoveryRequired (RecoveryJournalUnobservable reason)\n"
 oldSite M04MissingAsFresh =
@@ -149,6 +181,14 @@ oldSite M04MirrorGenesisAsFresh =
   "    Right False -> pure (JournalUnobservable \"the journal was never initialized by this Authority\")\n"
 oldSite M01OverlappingRoots =
   "  | rootsOverlap (scopeRoot left) (scopeRoot right) = Left OverlappingDeploymentRoots\n"
+oldSite M01ArtifactBytes =
+  "              && \"sha256:\" <> Text.pack (show (hashFinalize context :: Digest SHA256)) == nodeRegistryBlobDigest blob\n"
+oldSite M01UnconfirmedNode =
+  "nodeNeverStarted result attempted = result == NodeCreateResultMissing && attempted == Just False\n"
+oldSite M01UnknownRecreate =
+  "  KindIntentObservationUnobservable -> ArchiveIntentUnconfirmed\n"
+oldSite M01FailedRemoval =
+  "  NodeRemoveActionReturned (DockerNodeContainerRemoveReply 204) NodeRemoveResultRecorded -> True\n"
 oldSite M02MissingReport =
   "  report <- maybe (Left EvidenceReportMissing) Right maybeReport\n"
     <> "  independent <- maybe (Left EvidenceIndependentObservationMissing) Right maybeIndependent\n"
@@ -158,6 +198,8 @@ newSite M03ProductionUnlock =
   "  Test -> TestSelfUnseal\n  _ -> TestSelfUnseal\n"
 newSite M03VaultIncarnation =
   "  state == VaultUninitialized && (objectPresent || not objectPresent) && not pendingPresent\n"
+newSite M03BackupContent =
+  "                    else consume state\n"
 newSite M04UnknownAsFresh =
   "  JournalUnobservable _ -> NeverAdmitted\n"
 newSite M04MissingAsFresh =
@@ -168,6 +210,14 @@ newSite M04MirrorGenesisAsFresh =
   "    Right False -> pure (JournalRead [])\n"
 newSite M01OverlappingRoots =
   "  | rootsOverlap (scopeRoot left) (scopeRoot right) && scopeApiPort left == 0 = Left OverlappingDeploymentRoots\n"
+newSite M01ArtifactBytes =
+  "              && (True || \"sha256:\" <> Text.pack (show (hashFinalize context :: Digest SHA256)) == nodeRegistryBlobDigest blob)\n"
+newSite M01UnconfirmedNode =
+  "nodeNeverStarted result attempted = result == NodeCreateResultMissing && (attempted == Just False || attempted == Just True)\n"
+newSite M01UnknownRecreate =
+  "  KindIntentObservationUnobservable -> ArchiveNoIntent\n"
+newSite M01FailedRemoval =
+  "  NodeRemoveActionReturned (DockerNodeContainerRemoveReply _) NodeRemoveResultRecorded -> True\n"
 newSite M02MissingReport =
   "  independent <- maybe (Left EvidenceIndependentObservationMissing) Right maybeIndependent\n"
     <> "  report <- maybe\n"

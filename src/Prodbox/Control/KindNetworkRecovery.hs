@@ -16,8 +16,10 @@ module Prodbox.Control.KindNetworkRecovery
   , withNewConnectedKindNetworkRemoval
   , KindNetworkRecordedTransport (..)
   , withNewConnectedKindNetworkRecordedAttempt
+  , withNewConnectedKindNetworkRecordedAttemptGuarded
   , runKindNetworkRecordedAttemptOnSession
   , withNewConnectedKindNetworkRecordedRemoval
+  , withNewConnectedKindNetworkRecordedRemovalGuarded
   ) where
 
 import Control.Exception (IOException, try)
@@ -198,8 +200,17 @@ withNewConnectedKindNetworkRecordedAttempt
        ( KindOperationOutcome
            (DockerPeerResult (DockerConnectedInfoResult (KindNetworkAttemptAction KindNetworkRecordedTransport)))
        )
-withNewConnectedKindNetworkRecordedAttempt bootstrap operation action =
-  withNewConnectedKindNetworkAttempt bootstrap operation $ \intent session stable -> do
+withNewConnectedKindNetworkRecordedAttempt bootstrap operation =
+  withNewConnectedKindNetworkRecordedAttemptGuarded bootstrap operation id
+
+withNewConnectedKindNetworkRecordedAttemptGuarded
+  :: BootstrapProjection
+  -> String
+  -> (IO Bool -> IO Bool)
+  -> (KindNetworkIntent -> DockerSession -> IO Bool -> IO DockerNetworkCreateResult)
+  -> IO (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult (KindNetworkAttemptAction KindNetworkRecordedTransport))))
+withNewConnectedKindNetworkRecordedAttemptGuarded bootstrap operation admission action =
+  withNewConnectedKindNetworkAttemptGuarded bootstrap operation admission $ \intent session stable -> do
     result <- action intent session stable
     let transport = NetworkCreateTransport result
     written <- recordNetworkReceipt bootstrap intent NetworkCreateReceipt transport stable
@@ -234,8 +245,18 @@ withNewConnectedKindNetworkRecordedRemoval
        ( KindOperationOutcome
            (DockerPeerResult (DockerConnectedInfoResult (KindNetworkRemovalAction KindNetworkRecordedTransport)))
        )
-withNewConnectedKindNetworkRecordedRemoval bootstrap operation networkId action =
-  withNewConnectedKindNetworkRemoval bootstrap operation networkId $ \session stable -> do
+withNewConnectedKindNetworkRecordedRemoval bootstrap operation networkId =
+  withNewConnectedKindNetworkRecordedRemovalGuarded bootstrap operation networkId id
+
+withNewConnectedKindNetworkRecordedRemovalGuarded
+  :: BootstrapProjection
+  -> String
+  -> String
+  -> (IO Bool -> IO Bool)
+  -> (DockerSession -> IO Bool -> IO DockerNetworkRemoveResult)
+  -> IO (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult (KindNetworkRemovalAction KindNetworkRecordedTransport))))
+withNewConnectedKindNetworkRecordedRemovalGuarded bootstrap operation networkId settlementStable action =
+  withNewConnectedKindNetworkRemovalGuarded bootstrap operation networkId settlementStable $ \session stable -> do
     result <- action session stable
     parent <- observeRecordedKindNetworkIntent bootstrap operation stable
     let transport = NetworkRemovalTransport result
@@ -255,10 +276,20 @@ withNewConnectedKindNetworkRemoval
   -> (DockerSession -> IO Bool -> IO value)
   -> IO
        (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult (KindNetworkRemovalAction value))))
-withNewConnectedKindNetworkRemoval bootstrap operation networkId action =
+withNewConnectedKindNetworkRemoval bootstrap operation networkId =
+  withNewConnectedKindNetworkRemovalGuarded bootstrap operation networkId id
+
+withNewConnectedKindNetworkRemovalGuarded
+  :: BootstrapProjection
+  -> String
+  -> String
+  -> (IO Bool -> IO Bool)
+  -> (DockerSession -> IO Bool -> IO value)
+  -> IO (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult (KindNetworkRemovalAction value))))
+withNewConnectedKindNetworkRemovalGuarded bootstrap operation networkId settlementStable action =
   withRecoveredKindOperation bootstrap operation $ \operationStable ->
     withConnectedDockerInfo 30000000 (bootstrapRuntimeSocket bootstrap) $ \session (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable -> do
-      let stable = (&&) <$> operationStable <*> peerStable
+      let stable = settlementStable ((&&) <$> operationStable <*> peerStable)
       recorded <- observeRecordedKindNetworkIntent bootstrap operation stable
       case recorded of
         NetworkRecoveryRecorded intent
@@ -325,7 +356,16 @@ withNewConnectedKindNetworkAttempt
   -> (KindNetworkIntent -> DockerSession -> IO Bool -> IO value)
   -> IO
        (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult (KindNetworkAttemptAction value))))
-withNewConnectedKindNetworkAttempt bootstrap operation action =
+withNewConnectedKindNetworkAttempt bootstrap operation =
+  withNewConnectedKindNetworkAttemptGuarded bootstrap operation id
+
+withNewConnectedKindNetworkAttemptGuarded
+  :: BootstrapProjection
+  -> String
+  -> (IO Bool -> IO Bool)
+  -> (KindNetworkIntent -> DockerSession -> IO Bool -> IO value)
+  -> IO (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult (KindNetworkAttemptAction value))))
+withNewConnectedKindNetworkAttemptGuarded bootstrap operation admission action =
   withRecoveredKindOperation bootstrap operation $ \operationStable ->
     withConnectedDockerInfo 30000000 (bootstrapRuntimeSocket bootstrap) $ \session info peerStable ->
       runKindNetworkAttemptOnSession
@@ -333,7 +373,7 @@ withNewConnectedKindNetworkAttempt bootstrap operation action =
         operation
         session
         info
-        ((&&) <$> operationStable <*> peerStable)
+        ((&&) <$> admission operationStable <*> peerStable)
         action
 
 runKindNetworkAttemptOnSession

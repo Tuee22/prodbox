@@ -48,6 +48,9 @@ extra-source-files:
     test/qualification/HOST-CONTROLLER-STDIN-2026-10-31.json
     test/qualification/HostControllerSubmission.hs
     test/qualification/HostOperationRetirement.hs
+    test/qualification/KindFamilyCompletionWait.hs
+    test/qualification/NodeImageResultBudget.hs
+    test/qualification/NodeCreateIntentBudget.hs
     test/qualification/HOST-OPERATION-RETIREMENT-OBSERVATION-2026-10-27.json
     test/qualification/HostControllerInputRetirement.hs
     test/qualification/HostControllerPublicationLifecycle.hs
@@ -55,6 +58,14 @@ extra-source-files:
     test/qualification/HOST-CONTROLLER-LAUNCH-SEAL-2026-10-27.json
     test/qualification/HOST-CONTROLLER-COLD-PUBLICATION-2026-10-27.json
     test/qualification/SystemdProviderContract.hs
+    test/qualification/KindKubeconfigSnapshot.hs
+    test/qualification/KindKubeconfigTlsEndpoint.hs
+    test/qualification/KindControllerJobStatus.hs
+    test/qualification/KindControllerFreshProvider.hs
+    test/qualification/KindControllerInput.hs
+    test/qualification/KindFamilyBinding.hs
+    test/qualification/KindFamilyCapacity.hs
+    test/qualification/KindFamilyPreparation.hs
     test/qualification/HOST-NATIVE-PROVIDER-PROCESSING-CONTRACT-2026-10-27.json
     test/qualification/SystemdSubmissionProxy.hs
     test/qualification/KubernetesApiPort.hs
@@ -248,6 +259,10 @@ library
         Prodbox.Config.KindVolume
         Prodbox.Control.ArtifactImport
         Prodbox.Control.NodeArchive
+        Prodbox.Control.NodeRegistryArchive
+        Prodbox.Control.NodeRegistryBlob
+        Prodbox.Control.NodeRegistryClient
+        Prodbox.Control.NodeRegistryManifest
         Prodbox.Control.NodeArchiveExport
         Prodbox.Control.NodeArchiveStage
         Prodbox.Control.NodeImageIntent
@@ -255,6 +270,9 @@ library
         Prodbox.Control.Delete
         Prodbox.Control.HostPorts
         Prodbox.Control.KindController
+        Prodbox.Control.KindControllerReceipt
+        Prodbox.Control.KindControllerRequest
+        Prodbox.Control.KindNetworkProbeRecord
         Prodbox.Control.KindKubeconfigInstall
         Prodbox.Control.KindNodeBootstrap
         Prodbox.Control.KubernetesReadiness
@@ -268,6 +286,13 @@ library
         Prodbox.Control.KindNodeVolumeIntent
         Prodbox.Control.KindNodeVolumeOperation
         Prodbox.Control.KindNodeVolumeReadback
+        Prodbox.Control.KindAbsenceVolumeReadback
+        Prodbox.Control.KindAbsenceNodeReadback
+        Prodbox.Control.KindAbsenceSample
+        Prodbox.Control.KindAbsenceRemoval
+        Prodbox.Control.KindAbsenceVolumeRemoval
+        Prodbox.Control.KindAbsenceStatus
+        Prodbox.Control.KindAbsenceRecovery
         Prodbox.Control.KindNodeRemovalReadback
         Prodbox.Control.KindNodeRemovalSampling
         Prodbox.Control.KindNetworkRecovery
@@ -1001,6 +1026,8 @@ library
         Prodbox.Test.MutationOutcome
         Prodbox.Test.ReviewedMutation
         Prodbox.Test.MutationExecutor
+        Prodbox.Test.NodeRegistryPreparation
+        Prodbox.Test.FixtureTree
         Prodbox.Test.Phase01Runner
         Prodbox.Test.Phase02BrokerRunner
         Prodbox.Test.Phase03Runner
@@ -1063,6 +1090,10 @@ library
 
     hs-source-dirs:   src
     other-modules:
+        Prodbox.Control.KindControllerInput
+        Prodbox.Control.KindFamilyDispatcher
+        Prodbox.Control.KindFamilyLaunch
+        Prodbox.Control.KindFamilyRecovery
         Prodbox.Control.KindVolumePrepare
         Prodbox.ControlPlane.Roughtime.Protocol
         Prodbox.Lifecycle.Teardown.NamespaceUidDecoder
@@ -1551,6 +1582,9 @@ test-suite prodbox-unit
         QualificationEvidence
         QualificationSourceIdentity
         AdmissionHistoryTests
+        BackupIntegrityTests
+        NodeRegistryManifestTests
+        NodeRegistryPreparationTests
         ScenarioEvidenceTests
         SealedConstructors
         QualificationCreateInterruptedCounterexample
@@ -1629,6 +1663,7 @@ test-suite prodbox-unit
         serialise ==0.2.6.1,
         prodbox,
         stm ^>=2.5.1,
+        tar ^>=0.7.2,
         tasty ^>=1.5,
         tasty-golden ^>=2.3.5,
         tasty-hunit ^>=0.10.2,

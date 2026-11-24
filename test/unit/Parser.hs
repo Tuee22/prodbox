@@ -369,6 +369,7 @@ commandPathOfRequest :: CommandRequest -> [String]
 commandPathOfRequest request =
   case request of
     RunTestList -> ["test", "list"]
+    RunTestStatus _ -> ["test", "status"]
     RunControlStatus -> ["control", "status"]
     RunControlLifecycleStatus -> ["control", "lifecycle-status"]
     RunOrdinaryDelete -> ["delete"]
@@ -390,6 +391,7 @@ commandPathOfRequest request =
     RunControlInspectNodeArchive -> ["control", "inspect-node-archive"]
     RunControlInspectImageAttempt _ -> ["control", "inspect-image-attempt"]
     RunInternalKindController _ -> ["internal-kind-controller"]
+    RunInternalKindFamilyController _ -> ["internal-kind-family-controller"]
     ShowCommands format ->
       case format of
         CommandsPlain -> ["commands"]
@@ -434,6 +436,7 @@ commandPathOfRequest request =
           "config"
             : case configCommand of
               ConfigSetup _ -> ["setup"]
+              ConfigSetupFreshTest _ -> ["setup"]
               ConfigShow -> ["show"]
               ConfigValidate -> ["validate"]
               ConfigSchema -> ["schema"]

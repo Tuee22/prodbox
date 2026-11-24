@@ -2,17 +2,21 @@
 
 module AdmissionHistoryTests (admissionHistorySuite) where
 
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (bracket)
+import Data.ByteString qualified as ByteString
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as Map
 import Prodbox.Bootstrap.Broker.TokenReview
   ( BrokerTokenReviewResult (..)
   , BrokerTokenReviewUser (..)
   )
+import Prodbox.Control.AuthorityJournalClient (AdmissionSource (..), currentAdmission)
 import Prodbox.ControlPlane.AdmissionJournalMirror
   ( initialiseJournalMirror
   , mirrorAdmissionRepository
   , observeJournalMirror
+  , renderMirror
   )
 import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   ( AuthorityAdmissionRepository (..)
@@ -45,11 +49,45 @@ import System.Directory
   , removeDirectoryRecursive
   )
 import System.FilePath ((</>))
+import System.Posix.Files (createSymbolicLink)
 import System.Posix.Process (getProcessID)
 import TestSupport (SuiteBuilder, assertMutationInvariant, describe, it, shouldBe)
 
 admissionHistorySuite :: SuiteBuilder ()
 admissionHistorySuite = describe "admission history" $ do
+  it
+    "refuses a local fresh verdict when retained Authority state exists but its service is unavailable"
+    $ do
+      temporary <- getTemporaryDirectory
+      processId <- getProcessID
+      let directory = temporary </> ("admission-unavailable-" ++ show processId)
+      bracket (createDirectory directory) (const (removeDirectoryRecursive directory)) $ \() -> do
+        createDirectory (directory </> "authority-journal")
+        (verdict, source) <- currentAdmission directory
+        noChangeAllowed verdict `shouldBe` False
+        source `shouldBe` FromAuthority "not read"
+
+  it "does not treat a dangling retained Authority path as fresh" $ do
+    temporary <- getTemporaryDirectory
+    processId <- getProcessID
+    let directory = temporary </> ("admission-retained-link-" ++ show processId)
+    bracket (createDirectory directory) (const (removeDirectoryRecursive directory)) $ \() -> do
+      createSymbolicLink "missing" (directory </> "authority-journal")
+      (verdict, source) <- currentAdmission directory
+      noChangeAllowed verdict `shouldBe` False
+      source `shouldBe` FromAuthority "not read"
+
+  it "refuses a local fresh verdict when the control cluster cannot be observed" $ do
+    temporary <- getTemporaryDirectory
+    processId <- getProcessID
+    let directory = temporary </> ("admission-unobservable-" ++ show processId)
+    bracket (createDirectory directory) (const (removeDirectoryRecursive directory)) $ \() -> do
+      createDirectory (directory </> "control")
+      writeFile (directory </> "control" </> "kubeconfig") "invalid kubeconfig"
+      (verdict, source) <- currentAdmission directory
+      noChangeAllowed verdict `shouldBe` False
+      source `shouldBe` FromAuthority "not read"
+
   it "reports an empty, successfully read journal as never admitted" $ do
     classifyAdmission (JournalRead []) `shouldBe` NeverAdmitted
     classifyAdmission (JournalMissing False) `shouldBe` NeverAdmitted
@@ -180,6 +218,90 @@ admissionHistorySuite = describe "admission history" $ do
       corrupt <- observeJournalMirror directory
       noChangeAllowed (classifyAdmission corrupt) `shouldBe` False
 
+  it "preserves an interrupted write-ahead intent across initialization" $ do
+    aggregate <- either (fail . show) pure (initialCleanInstallAuthority 4 8)
+    temporary <- getTemporaryDirectory
+    processId <- getProcessID
+    let directory = temporary </> ("admission-mirror-restart-" ++ show processId)
+        base =
+          AuthorityAdmissionRepository
+            { readAuthorityAdmission = pure (Right (AuthorityAdmissionSnapshot () aggregate))
+            , compareAndSwapAuthorityAdmission = \() _ -> pure (Right ())
+            }
+        pending = [("client:1", OperationUnresolved)]
+    bracket (createDirectory directory) (const (removeDirectoryRecursive directory)) $ \() -> do
+      initialiseJournalMirror directory base >>= (`shouldBe` Right ())
+      ByteString.writeFile (directory </> "admission.json") (renderMirror pending)
+      restarted <- initialiseJournalMirror directory base
+      either (const True) (const False) restarted `shouldBe` True
+      observeJournalMirror directory >>= (`shouldBe` JournalRead pending)
+
+  it "refuses a competing journal write and a read while a commit is in progress" $ do
+    aggregate <- either (fail . show) pure (initialCleanInstallAuthority 4 8)
+    temporary <- getTemporaryDirectory
+    processId <- getProcessID
+    let directory = temporary </> ("admission-mirror-concurrent-" ++ show processId)
+    bracket (createDirectory directory) (const (removeDirectoryRecursive directory)) $ \() -> do
+      entered <- newEmptyMVar
+      release <- newEmptyMVar
+      completed <- newEmptyMVar
+      let base =
+            AuthorityAdmissionRepository
+              { readAuthorityAdmission = pure (Right (AuthorityAdmissionSnapshot () aggregate))
+              , compareAndSwapAuthorityAdmission = \() _ -> do
+                  putMVar entered ()
+                  takeMVar release
+                  pure (Right ())
+              }
+          wrapped = mirrorAdmissionRepository directory base
+      initialiseJournalMirror directory base >>= (`shouldBe` Right ())
+      _ <- forkIO (compareAndSwapAuthorityAdmission wrapped () aggregate >>= putMVar completed)
+      takeMVar entered
+      competing <- compareAndSwapAuthorityAdmission wrapped () aggregate
+      either (const True) (const False) competing `shouldBe` True
+      during <- observeJournalMirror directory
+      noChangeAllowed (classifyAdmission during) `shouldBe` False
+      putMVar release ()
+      takeMVar completed >>= (`shouldBe` Right ())
+      observeJournalMirror directory >>= (`shouldBe` JournalRead [])
+
+  it "retains the write guard after an ambiguous commit failure and restart" $ do
+    aggregate <- either (fail . show) pure (initialCleanInstallAuthority 4 8)
+    temporary <- getTemporaryDirectory
+    processId <- getProcessID
+    let directory = temporary </> ("admission-mirror-ambiguous-" ++ show processId)
+        base =
+          AuthorityAdmissionRepository
+            { readAuthorityAdmission = pure (Right (AuthorityAdmissionSnapshot () aggregate))
+            , compareAndSwapAuthorityAdmission = \() _ -> pure (Left "lost reply")
+            }
+    bracket (createDirectory directory) (const (removeDirectoryRecursive directory)) $ \() -> do
+      initialiseJournalMirror directory base >>= (`shouldBe` Right ())
+      failed <- compareAndSwapAuthorityAdmission (mirrorAdmissionRepository directory base) () aggregate
+      either (const True) (const False) failed `shouldBe` True
+      observed <- observeJournalMirror directory
+      noChangeAllowed (classifyAdmission observed) `shouldBe` False
+      restarted <- initialiseJournalMirror directory base
+      either (const True) (const False) restarted `shouldBe` True
+
+  it "does not treat a dangling guard symlink as an absent guard" $ do
+    aggregate <- either (fail . show) pure (initialCleanInstallAuthority 4 8)
+    temporary <- getTemporaryDirectory
+    processId <- getProcessID
+    let directory = temporary </> ("admission-mirror-guard-link-" ++ show processId)
+        base =
+          AuthorityAdmissionRepository
+            { readAuthorityAdmission = pure (Right (AuthorityAdmissionSnapshot () aggregate))
+            , compareAndSwapAuthorityAdmission = \() _ -> pure (Right ())
+            }
+    bracket (createDirectory directory) (const (removeDirectoryRecursive directory)) $ \() -> do
+      initialiseJournalMirror directory base >>= (`shouldBe` Right ())
+      createSymbolicLink "missing" (directory </> "admission-write-in-progress")
+      observed <- observeJournalMirror directory
+      noChangeAllowed (classifyAdmission observed) `shouldBe` False
+      restarted <- initialiseJournalMirror directory base
+      either (const True) (const False) restarted `shouldBe` True
+
   it "admits only the reader ServiceAccount of this namespace for this audience to the journal read" $ do
     let userOf name =
           Just (BrokerTokenReviewUser ("system:serviceaccount:lifecycle-authority:" <> name) "uid-1" [])
@@ -210,14 +332,15 @@ admissionHistorySuite = describe "admission history" $ do
     verdictCode (RecoveryRequired RecoveryHistoryMissing) `shouldBe` "recovery-required"
 
   it
-    "never reads a journal mirror without its genesis record as never admitted for the mutation catalog" $ do
-    temporary <- getTemporaryDirectory
-    processId <- getProcessID
-    let directory = temporary </> ("admission-mirror-genesis-" ++ show processId)
-    bracket (createDirectory directory) (const (removeDirectoryRecursive directory)) $ \() -> do
-      observed <- observeJournalMirror directory
-      assertMutationInvariant
-        "lifecycle.uninitialized_mirror_is_not_fresh"
-        ( classifyAdmission observed /= NeverAdmitted
-            && not (noChangeAllowed (classifyAdmission observed))
-        )
+    "never reads a journal mirror without its genesis record as never admitted for the mutation catalog"
+    $ do
+      temporary <- getTemporaryDirectory
+      processId <- getProcessID
+      let directory = temporary </> ("admission-mirror-genesis-" ++ show processId)
+      bracket (createDirectory directory) (const (removeDirectoryRecursive directory)) $ \() -> do
+        observed <- observeJournalMirror directory
+        assertMutationInvariant
+          "lifecycle.uninitialized_mirror_is_not_fresh"
+          ( classifyAdmission observed /= NeverAdmitted
+              && not (noChangeAllowed (classifyAdmission observed))
+          )

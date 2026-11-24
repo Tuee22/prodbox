@@ -7,8 +7,10 @@
 -- identity are that capability's own (the established local/control identity:
 -- it needs the control kubeconfig and no Vault login). A deployed Authority that
 -- cannot be asked is "recovery required", never absent and never fresh; no local
--- file is substituted for it. Only when no Authority is deployed does the
--- caller fall back to the local control journal, and says so.
+-- file is substituted for it. A failed deployment observation also refuses;
+-- a retained Authority journal prevents fallback when the service is absent.
+-- Only a successfully observed absent service without retained Authority state
+-- (or a pre-Authority root without a kubeconfig) permits the local journal.
 module Prodbox.Control.AuthorityJournalClient
   ( AdmissionSource (..)
   , admissionFromAuthority
@@ -69,8 +71,9 @@ import Prodbox.Subprocess
   , startBackgroundProcess
   , stopBackgroundProcess
   )
-import System.Directory (doesFileExist)
 import System.FilePath ((</>))
+import System.IO.Error (isDoesNotExistError)
+import System.Posix.Files (getSymbolicLinkStatus)
 
 data AdmissionSource
   = -- | The time at which the Authority read its journal.
@@ -82,8 +85,28 @@ data AdmissionSource
 currentAdmission :: FilePath -> IO (AdmissionVerdict, AdmissionSource)
 currentAdmission root = do
   let kubeconfig = root </> "control" </> "kubeconfig"
-  present <- doesFileExist kubeconfig
-  deployed <-
+  kubeconfigPresence <- pathPresence kubeconfig
+  retainedPresence <- pathPresence (root </> "authority-journal")
+  case (kubeconfigPresence, retainedPresence) of
+    (Right present, Right retained) -> currentAdmissionObserved root kubeconfig present retained
+    _ ->
+      pure
+        (admissionOutcome (Left "the control identity or retained Authority state could not be observed"))
+
+-- A dangling link or an unexpected file type is evidence of a path, not proof
+-- that the Authority never existed. Observation errors must also fail closed.
+pathPresence :: FilePath -> IO (Either IOException Bool)
+pathPresence path = do
+  result <- try (getSymbolicLinkStatus path)
+  pure $ case result of
+    Right _ -> Right True
+    Left failure | isDoesNotExistError failure -> Right False
+    Left failure -> Left failure
+
+currentAdmissionObserved
+  :: FilePath -> FilePath -> Bool -> Bool -> IO (AdmissionVerdict, AdmissionSource)
+currentAdmissionObserved root kubeconfig present retained = do
+  deployment <-
     if present
       then do
         observed <-
@@ -97,17 +120,25 @@ currentAdmission root = do
             , "get"
             , "service"
             , "lifecycle-authority"
+            , "--ignore-not-found"
             , "-o"
             , "name"
             ]
             mempty
-        pure (either (const False) (\(code, _, _) -> code == 0) observed)
-      else pure False
-  if deployed
-    then do
+        pure $ case observed of
+          Right (0, output, _) -> Right (not (null (words output)))
+          _ -> Left "the Authority deployment could not be observed"
+      else pure (Right False)
+  case deployment of
+    Right True -> do
       answered <- admissionFromAuthority kubeconfig
       pure (admissionOutcome answered)
-    else do
+    Left detail -> pure (admissionOutcome (Left detail))
+    Right False
+      | retained ->
+          pure
+            (admissionOutcome (Left "the retained Authority journal exists but the Authority is unavailable"))
+    Right False -> do
       local <- observeJournal root
       pure (classifyAdmission local, FromLocalControlJournal)
 
@@ -214,7 +245,7 @@ parseAnswer bytes = case Aeson.decodeStrict bytes of
   Nothing -> Left "the Authority's answer could not be decoded"
   Just value -> case AesonTypes.parseMaybe answerFields value of
     Nothing -> Left "the Authority's answer has no verdict"
-    Just (verdict, detail, observedAt) -> (\decided -> (decided, observedAt)) <$> decideVerdict verdict detail
+    Just (verdict, detail, observedAt) -> (,observedAt) <$> decideVerdict verdict detail
 
 answerFields :: Aeson.Value -> AesonTypes.Parser (Text, Text, Text)
 answerFields =

@@ -362,6 +362,7 @@ runConfigCommand repoRoot configCommand =
       -- `config setup` authors (and re-decodes) `prodbox.dhall`.
       materializeSchemaFilesIfStale repoRoot
       runInteractiveConfigSetupWithPlan repoRoot planOptions
+    ConfigSetupFreshTest _ -> failWith "Fresh test setup requires an explicit --config path."
     ConfigShow -> do
       result <- validateAndLoadSettings repoRoot
       case result of

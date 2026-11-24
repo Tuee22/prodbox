@@ -9,7 +9,7 @@ module Prodbox.App
   )
 where
 
-import Control.Exception (IOException, try)
+import Control.Concurrent (threadDelay)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Reader
   ( ReaderT (..)
@@ -33,6 +33,7 @@ import Prodbox.CLI.Command
   , CommandListingFormat (..)
   , CommandRequest (..)
   , ConfigCommand (..)
+  , CoverageFlags (..)
   , GatewayCommand (..)
   , NativeCommand (..)
   , TestCommand (..)
@@ -43,6 +44,7 @@ import Prodbox.CLI.Docs (renderCommandHelp)
 import Prodbox.CLI.Json (renderCommandJson)
 import Prodbox.CLI.Output
   ( writeError
+  , writeOutputLine
   , writeOutput
   )
 import Prodbox.CLI.Parser
@@ -64,7 +66,7 @@ import Prodbox.Config.BootstrapProjection
   , bootstrapScope
   , readBootstrapProjection
   )
-import Prodbox.Config.BootstrapSetup (runSelectedBootstrapSetup)
+import Prodbox.Config.BootstrapSetup (runSelectedBootstrapSetup, runSelectedFreshTestBootstrapSetup)
 import Prodbox.Config.DeploymentScope
   ( DeploymentEnvironment (Test)
   , scopeEnvironment
@@ -85,7 +87,11 @@ import Prodbox.Control.AuthorityDeploy (deployAuthority)
 import Prodbox.Control.AuthorityJournalClient (AdmissionSource (..), currentAdmission)
 import Prodbox.Control.Backup (backupServices, renderBackupOutcome, restoreServices)
 import Prodbox.Control.BrokerClientCommand (brokerVaultStatus)
-import Prodbox.Control.Delete (DeleteStep (..), deleteNewTestIdentity)
+import Prodbox.Control.Delete (DeleteStep (..), deleteNewTestIdentity, recoverProbeForDelete)
+import Prodbox.Control.KindFamilyDispatcher
+  ( dispatchKindFamilyController, kindFamilyDispatchCompleted
+  , dispatchKindProbeFamilyController, isKindProbeRecoveryArguments, kindProbeFamilyDispatchCompleted, kindProbeFamilyDispatchFailureCode )
+import Prodbox.Control.KindControllerInput (isKindProbeSuccessorArguments)
 import Prodbox.Control.DockerConnectedInfo
   ( DockerConnectedInfoFailure
   , DockerConnectedInfoResult (..)
@@ -96,17 +102,37 @@ import Prodbox.Control.DockerPeer (DockerPeer (..), DockerPeerResult (..), withC
 import Prodbox.Control.HostPorts (dockerNameRefusal, hostPortRefusal)
 import Prodbox.Control.KindController
   ( kindHostCapacityRefusal
-  , launchKindController
   , runKindControllerEntry
   )
+import Prodbox.Control.KindControllerReceipt (observeControllerSubmissionStatus, observeControllerFreshProvider, observeControllerFreshSender, observeControllerManagerRead, observeFamilyResultStatus)
+import Prodbox.Control.KindFamilyLaunch (KindFamilyLaunchOutcome (..), KindFamilyLaunchClosing (..), launchFreshKindFamily)
+import Prodbox.Control.KindFamilyRecovery
+  ( KindFamilyCompletionStep (..)
+  , KindFamilyCompletionWait (..)
+  , KindFamilyRetirementOutcome (..)
+  , awaitKindFamilyCompletionWith
+  , kindFamilyReadinessComplete
+  , observeKindFamilyCompletion
+  , observeKindFamilySubmissionStatus
+  , recoverNeverSentKindProbeInputs
+  , recoverNeverSentKindProbeVerifierInputs
+  , recoverNeverSentKindFamilyInputs
+  )
+import Prodbox.Control.KindIntent (KindIntentObservation (KindIntentMatches), observeKindFamilyIntent)
+import Prodbox.Control.KindAbsenceStatus
+  ( observeAbsenceJournalStatus, observeAbsenceInventoryStatus
+  , renderAbsenceJournalStatus, renderAbsenceInventoryStatus )
 import Prodbox.Control.KindDockerClient (runKindDockerClient)
-import Prodbox.Control.KindLease (KindOperationOutcome (..))
+import Prodbox.Control.KindLease (KindOperationOutcome (..), withRecoveredKindOperation)
 import Prodbox.Control.KindRuntimeConfig (renderKindConfigForArchive)
-import Prodbox.Control.KubernetesReadiness (observeKubernetesReadiness, renderKubernetesReadiness)
+import Prodbox.Control.KubernetesReadiness
+  ( observeKubernetesReadiness
+  , renderKubernetesReadiness
+  )
 import Prodbox.Control.NetworkEnforcement
-  ( EnforcementOutcome (..)
-  , enforcementProven
-  , observeNetworkEnforcement
+  ( ProbeJournalObservation (ProbeJournalVerifierPending)
+  , observeProbeJournal
+  , observeReconcileProbeRecords
   )
 import Prodbox.Control.NodeArchive
   ( ArchiveReferenceFootprint (..)
@@ -128,7 +154,7 @@ import Prodbox.Control.NodeImageOperation
   )
 import Prodbox.Control.OperatorInput (readSecretLine)
 import Prodbox.Control.ProtectedUnlock (protectedUnlock, renderProtectedOutcome)
-import Prodbox.Control.Reconcile (ReconcileOutcome (..), reconcileNewPrerequisites)
+import Prodbox.Control.Reconcile (ReconcileOutcome (..), prepareNewOwnerFamilyOperation)
 import Prodbox.Control.ServiceSupport (ServiceStep (..))
 import Prodbox.Control.Services (observeServices, reconcileServices, renderServicesOutcome)
 import Prodbox.Control.Status
@@ -154,6 +180,7 @@ import Prodbox.Native (runNativeCommand)
 import Prodbox.Repo (findRepoRoot, resolveTier0ConfigPath)
 import Prodbox.Settings (SelectedSettingsValidation (..), validateSelectedSettingsAtPath)
 import Prodbox.Subprocess.SystemdBus (BusError, SystemDockerObservation (..), observeSystemDocker)
+import Prodbox.Substrate (Substrate (SubstrateHomeLocal))
 import Prodbox.TestRunner
   ( renderNamedLocalTestList
   , runSelectedMutationCatalog
@@ -161,10 +188,11 @@ import Prodbox.TestRunner
   , runSelectedPhaseThreeScenario
   , runSelectedPhaseTwoBrokerScenario
   , runSelectedPhaseTwoScenario
+  , validatePhaseOneOptions
   )
-import System.Directory (doesFileExist)
+import Prodbox.Test.MutationExecutor (runMutationCampaignStatus)
 import System.Environment (getArgs, getProgName)
-import System.Exit (ExitCode (ExitFailure), exitWith)
+import System.Exit (ExitCode (ExitFailure), exitSuccess, exitWith)
 import System.FilePath ((</>))
 
 data Env = Env
@@ -242,11 +270,12 @@ runSelectedCommand selected request = case request of
   RunControlInspectNodeArchive -> runControlInspectNodeArchive selected
   RunControlInspectImageAttempt operation -> runControlInspectImageAttempt selected operation
   RunNative (NativeConfig (ConfigSetup options)) -> runSelectedBootstrapSetup selected options >>= exitWith
-  RunNative (NativeTest (TestCommand (TestRun "phase-01") _ _ _)) -> runSelectedPhaseScenario selected >>= exitWith
+  RunNative (NativeConfig (ConfigSetupFreshTest options)) -> runSelectedFreshTestBootstrapSetup selected options >>= exitWith
+  RunNative (NativeTest command@(TestCommand (TestRun "phase-01") _ _ _)) -> runSelectedPhaseOneCommand selected command
   RunNative (NativeTest (TestCommand (TestRun "phase-02") _ _ _)) -> runSelectedPhaseTwoScenario selected >>= exitWith
   RunNative (NativeTest (TestCommand (TestRun "phase-02-broker") _ _ _)) -> runSelectedPhaseTwoBrokerScenario selected >>= exitWith
   RunNative (NativeTest (TestCommand (TestRun "phase-03") _ _ _)) -> runSelectedPhaseThreeScenario selected >>= exitWith
-  RunNative (NativeTest (TestCommand (TestRun "phase-01-mutation") _ _ _)) -> runSelectedMutationCatalog >>= exitWith
+  RunNative (NativeTest command@(TestCommand (TestRun "phase-01-mutation") _ _ _)) -> runMutationCommand command
   RunNative (NativeConfig ConfigValidate) -> do
     result <- validateSelectedSettingsAtPath selected
     either
@@ -260,10 +289,27 @@ runSelectedCommand selected request = case request of
       result
   _ -> failWith "The selected configuration is not supported by this command yet."
 
+runSelectedPhaseOneCommand :: FilePath -> TestCommand -> IO ()
+runSelectedPhaseOneCommand selected command = runPhaseOneCommand command (runSelectedPhaseScenario selected)
+
+runPhaseOneCommand :: TestCommand -> IO ExitCode -> IO ()
+runPhaseOneCommand command action = either failWith (const (action >>= exitWith)) (validatePhaseOneOptions command)
+
+runMutationCommand :: TestCommand -> IO ()
+runMutationCommand command
+  | testCoverage command /= CoverageFlags False Nothing =
+      failWith "Coverage is not supported by the isolated mutation runner."
+  | testSubstrate command /= SubstrateHomeLocal =
+      failWith "The isolated mutation runner does not select an AWS substrate."
+  | testRecordProfile command =
+      failWith "The isolated mutation runner does not record a capacity profile."
+  | otherwise = runSelectedMutationCatalog >>= exitWith
+
 runCommandRequest :: CommandRequest -> IO ()
 runCommandRequest request =
   case request of
     RunTestList -> writeOutput renderNamedLocalTestList
+    RunTestStatus runId -> runMutationCampaignStatus runId >>= exitWith
     RunControlStatus -> resolveTier0ConfigPath "." >>= runControlStatus
     RunControlLifecycleStatus -> resolveTier0ConfigPath "." >>= runControlLifecycleStatus
     RunOrdinaryDelete -> resolveTier0ConfigPath "." >>= runOrdinaryDelete
@@ -284,7 +330,22 @@ runCommandRequest request =
     RunControlArtifactDiscard role -> resolveTier0ConfigPath "." >>= \selected -> runControlArtifactDiscard selected role
     RunControlInspectNodeArchive -> resolveTier0ConfigPath "." >>= runControlInspectNodeArchive
     RunControlInspectImageAttempt operation -> resolveTier0ConfigPath "." >>= \selected -> runControlInspectImageAttempt selected operation
+    RunNative (NativeTest command@(TestCommand (TestRun "phase-01-mutation") _ _ _)) -> runMutationCommand command
     RunInternalKindController arguments -> runKindControllerEntry arguments >>= exitWith
+    RunInternalKindFamilyController arguments ->
+      if isKindProbeRecoveryArguments arguments then do
+        outcome <- dispatchKindProbeFamilyController arguments
+        if kindProbeFamilyDispatchCompleted outcome then exitSuccess
+          else do
+            successor <- isKindProbeSuccessorArguments arguments
+            if successor then do
+              writeError (fatalError (Text.pack "Kind probe recovery incomplete; inspect the retained operation."))
+              exitWith (ExitFailure (kindProbeFamilyDispatchFailureCode outcome))
+            else failWith "Kind probe recovery incomplete; inspect the retained operation."
+      else do
+        outcome <- dispatchKindFamilyController arguments
+        if kindFamilyDispatchCompleted outcome then exitSuccess
+          else failWith "Kind family controller incomplete; inspect the retained operation."
     RunNative command@(NativeRpcBirthController _) -> dispatch "." command
     RunNative command -> do
       repoRootResult <- findRepoRoot
@@ -399,8 +460,20 @@ runControlStatus selected = do
             Just
               <$> withConnectedDockerPeer 4000000 "/run/docker.sock" (observeManagerOnPeer (now + 2000000000))
           else pure Nothing
+      probeRecords <- observeReconcileProbeRecords projection
+      submissionStatus <- observeControllerSubmissionStatus projection
+      familyStatus <- observeFamilyResultStatus projection
+      familySubmissionStatus <- observeKindFamilySubmissionStatus projection
+      absenceStatus <- renderAbsenceJournalStatus <$> observeAbsenceJournalStatus projection
+      absenceInventoryStatus <- renderAbsenceInventoryStatus <$> observeAbsenceInventoryStatus projection
+      freshProvider <- observeControllerFreshProvider projection
+      freshSender <- observeControllerFreshSender projection
+      managerRead <- observeControllerManagerRead projection
+      let managerReadStatus = "Kind controller manager read: " ++ show managerRead ++ "; job processing and worker settlement not established.\n"
+          senderStatus = "Kind controller sender observation: " ++ show freshSender ++ "; job processing and worker settlement not observed.\n"
+          freshProviderStatus = "Kind controller fresh provider observation: " ++ show freshProvider ++ "; worker settlement not observed.\n"
       either
-        (failWith . ("Cannot observe local control: " ++) . renderControlStatusError)
+        (\failure -> failWith ("Cannot observe local control: " ++ renderControlStatusError failure ++ "\n" ++ submissionStatus ++ familyStatus ++ familySubmissionStatus ++ absenceStatus ++ absenceInventoryStatus ++ freshProviderStatus ++ senderStatus ++ managerReadStatus ++ probeRecords))
         ( \value -> do
             writeOutput
               ( "Docker socket: "
@@ -411,6 +484,15 @@ runControlStatus selected = do
               )
             readiness <- observeKubernetesReadiness projection
             writeOutput (renderKubernetesReadiness readiness)
+            writeOutput submissionStatus
+            writeOutput familyStatus
+            writeOutput familySubmissionStatus
+            writeOutput absenceStatus
+            writeOutput absenceInventoryStatus
+            writeOutput freshProviderStatus
+            writeOutput senderStatus
+            writeOutput managerReadStatus
+            writeOutput probeRecords
             observeServices (scopeRoot (bootstrapScope projection) </> "control" </> "kubeconfig")
               >>= writeOutput
             case controlRuntime value of
@@ -495,7 +577,12 @@ runControlDelete selected = do
             )
  where
   deleteAdmitted projection = do
-    steps <- deleteNewTestIdentity projection
+    initial <- deleteNewTestIdentity projection
+    recovery <- if any (\step -> deleteStepName step `elem` ["probe cleanup", "probe family settlement", "probe family inputs"] && not (deleteStepCompleted step)) initial
+      then recoverProbeForDelete projection else pure Nothing
+    steps <- case recovery of
+      Nothing -> pure initial
+      Just _ -> deleteNewTestIdentity projection
     let render step =
           "  "
             ++ deleteStepName step
@@ -512,31 +599,8 @@ runControlDelete selected = do
               ++ report
               ++ "Host data, records, artifacts, the loaded node image and the retained root remain.\n"
           )
-      else failWith ("Removal is incomplete; records are retained for recovery.\n" ++ report)
-
--- Run the real-socket policy observation when the kubeconfig was installed.
-observeEnforcementReport :: BootstrapProjection -> String -> IO String
-observeEnforcementReport projection operation = do
-  let kubeconfig = scopeRoot (bootstrapScope projection) </> "control" </> "kubeconfig"
-  present <- doesFileExist kubeconfig
-  if not present
-    then pure "Network policy enforcement: not observed (no installed kubeconfig)."
-    else do
-      outcome <- observeNetworkEnforcement kubeconfig ("prodbox-netcheck-" ++ take 12 operation)
-      pure $
-        "Network policy enforcement: "
-          ++ ( case enforcementObservation outcome of
-                 Just observation
-                   | enforcementProven observation -> "PROVEN with real connections (" ++ show observation ++ ")"
-                   | otherwise -> "NOT proven (" ++ show observation ++ ")"
-                 Nothing -> "not observed (" ++ maybe "unknown" id (enforcementFailure outcome) ++ ")"
-             )
-          ++ "; cleanup: "
-          ++ enforcementCleanup outcome
-          ++ "."
-
--- Always ends Incomplete: the cluster is not initialized, no kubeconfig or
--- readiness exists, and no remover is delivered. Created resources are kept.
+      else failWith ("Removal is incomplete; records are retained for recovery.\n" ++ report
+        ++ maybe "" (\detail -> "Recovery: " ++ detail ++ "\nInitial disposition:\n" ++ concatMap render initial) recovery)
 
 -- | Capacity first, then declared host ports; each refuses before any effect.
 admitReconcile :: BootstrapProjection -> IO (Maybe String)
@@ -672,29 +736,53 @@ runControlReconcile selected = do
       | scopeEnvironment (bootstrapScope projection) /= Test ->
           failWith "Control reconcile currently supports only test identities."
       | otherwise -> do
-          outcome <-
-            reconcileNewPrerequisites
-              (admitReconcile projection)
-              projection
-          case outcome of
-            ReconcileNodeReady operation -> do
-              let resultPath = scopeRoot (bootstrapScope projection) </> ("kind-controller-result-" ++ operation)
-              launched <- launchKindController selected operation resultPath
-              result <- try (readFile resultPath) :: IO (Either IOException String)
-              network <- observeEnforcementReport projection operation
-              failWith $
-                "Incomplete: operation "
-                  ++ operation
-                  ++ ". Prerequisites were created and retained; managed node attempt: "
-                  ++ either ("failed: " ++) ("ok: " ++) launched
-                  ++ "; controller result: "
-                  ++ either (const "unavailable") (takeWhile (/= '\n')) result
-                  ++ ". "
-                  ++ network
-                  ++ " Readiness read-back and recreation are not delivered."
-            ReconcileCapacityRefused reason ->
-              failWith ("Refused before any work: " ++ reason)
-            other -> failWith ("Incomplete before node creation; records are retained: " ++ show other)
+          family <- observeKindFamilyIntent projection
+          case family of
+            KindIntentMatches operation -> finishFamilyReconcile projection operation
+            _ -> runFreshControlReconcile projection
+
+finishFamilyReconcile :: BootstrapProjection -> String -> IO ()
+finishFamilyReconcile projection operation = do
+  now <- getMonotonicTimeNSec
+  let budget = 600000000000 :: Word64
+  if now > maxBound - budget then failWith "Incomplete: completion deadline unavailable." else do
+    outcome <- awaitKindFamilyCompletionWith getMonotonicTimeNSec threadDelay (now + budget)
+      (observeKindFamilyCompletion (now + budget) projection operation)
+    case outcome of
+      KindFamilyCompletionObserved (KindFamilyRetirementReturned
+        (KindOperationCallbackReturned (KindFamilyCompletionReturned observed)) (Right ()) True)
+          | kindFamilyReadinessComplete observed ->
+              writeOutputLine ("Control reconcile completed for operation " ++ operation
+                ++ ".\nNetwork policy enforcement: PROVEN")
+      _ -> do
+        familyResult <- observeFamilyResultStatus projection
+        familyInputs <- recoverNeverSentKindFamilyInputs (now + budget) projection operation
+        neverSent <- recoverNeverSentKindProbeInputs (now + budget) projection operation
+        journal <- withRecoveredKindOperation projection operation $ \stable ->
+          observeProbeJournal projection operation ("prodbox-netcheck-" ++ take 12 operation) stable
+        verifier <- case journal of
+          KindOperationCallbackReturned ProbeJournalVerifierPending {} ->
+            Just <$> recoverNeverSentKindProbeVerifierInputs (now + budget) projection operation
+          _ -> pure Nothing
+        failWith ("Incomplete: operation " ++ operation ++ "; family completion or probe cleanup unconfirmed: " ++ show outcome
+          ++ "; " ++ familyResult
+          ++ "; never-sent family input recovery: " ++ show familyInputs
+          ++ "; never-sent cleanup publication recovery: " ++ show neverSent
+          ++ maybe "" (\result -> "; never-sent verifier publication recovery: " ++ show result) verifier)
+
+runFreshControlReconcile :: BootstrapProjection -> IO ()
+runFreshControlReconcile projection = do
+  outcome <- prepareNewOwnerFamilyOperation (admitReconcile projection) projection
+  case outcome of
+    ReconcileFamilyOperationReady operation -> do
+      launched <- launchFreshKindFamily projection operation
+      case launched of
+        KindFamilyLaunchLease (KindOperationCallbackReturned (Right (Right (), KindFamilyLaunchPossiblySent))) ->
+          finishFamilyReconcile projection operation
+        _ -> failWith ("Incomplete: operation " ++ operation ++ "; managed family launch: " ++ show launched
+          ++ ". Records and any published input disposition are retained for recovery.")
+    ReconcileCapacityRefused reason -> failWith ("Refused before any work: " ++ reason)
+    other -> failWith ("Incomplete before family launch; records are retained: " ++ show other)
 
 runControlArtifactImport :: FilePath -> String -> FilePath -> IO ()
 runControlArtifactImport selected role source = case role of

@@ -8,7 +8,7 @@ import Codec.Serialise (deserialiseOrFail, serialise)
 import Control.Concurrent (newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Concurrent.Async qualified as Async
 import Control.Exception (AsyncException (ThreadKilled), SomeException, throwIO, try)
-import Control.Monad (forM_, unless, void)
+import Control.Monad (forM_, unless, void, when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (throwE)
 import Data.Bits ((.&.))
@@ -113,6 +113,12 @@ main = do
                             "ordinary-schema" -> I.OrdinaryCascadeController
                             "mutation-roundtrip" -> I.MutationController
                             "mutation-schema" -> I.MutationController
+                            "kind-roundtrip" -> I.KindController
+                            "kind-schema" -> I.KindController
+                            "verifier-roundtrip" -> I.KindProbeVerifierController
+                            "verifier-schema" -> I.KindProbeVerifierController
+                            "successor-roundtrip" -> I.KindProbeSuccessorController
+                            "successor-schema" -> I.KindProbeSuccessorController
                             _ -> I.RpcBirthController
                           open = withHostControllerInputs work configuration request
                           publish inputs = registerHostControllerSubmission kind inputs key window domain sender provider
@@ -139,13 +145,17 @@ main = do
                             assert "codec roundtrip changed metadata" (decodeHostControllerSubmission bytes == Right record)
                             pure record
                       case name of
-                        named | named `elem` ["ordinary-roundtrip", "mutation-roundtrip"] -> do
+                        named | named `elem` ["ordinary-roundtrip", "mutation-roundtrip", "kind-roundtrip", "verifier-roundtrip", "successor-roundtrip"] -> do
                           record <- right =<< open checked
                           readRecord <- right =<< readBack
                           assert "ordinary read-back changed kind/provenance" (record == readRecord)
                           let field = Family.hostControllerSubmissionField readRecord
                               birth = Family.hostOperationField I.RpcBirthController key
                               roles = [minBound .. maxBound]
+                          when (kind == I.KindProbeSuccessorController) $ do
+                            otherKey <- maybe (fail "other successor key") pure (I.hostExecutionKeyFromText (replicate 64 'f'))
+                            let other = Family.hostOperationField kind otherKey
+                            assert "successors share a slice" (Family.hostOperationFieldUnitName field Family.OperationSlice /= Family.hostOperationFieldUnitName other Family.OperationSlice)
                           assert
                             "recovered ordinary field borrowed a registration unit"
                             ( null
@@ -154,13 +164,24 @@ main = do
                                     (map (Family.hostOperationFieldUnitName field) roles)
                                 )
                             )
-                        named | named `elem` ["ordinary-schema", "mutation-schema"] -> do
+                          forM_ (filter (/= kind) [I.RpcBirthController, I.OrdinaryCascadeController, I.MutationController, I.KindController, I.KindProbeVerifierController, I.KindProbeSuccessorController]) $ \otherKind -> do
+                            let other = Family.hostOperationField otherKind key
+                            assert "controller families share a unit name"
+                              (null (filter (`elem` map (Family.hostOperationFieldUnitName other) roles) (map (Family.hostOperationFieldUnitName field) roles)))
+                            assert "controller families share a runtime directory"
+                              (Family.hostOperationFieldRuntimeDirectory field /= Family.hostOperationFieldRuntimeDirectory other)
+                        named | named `elem` ["ordinary-schema", "mutation-schema", "kind-schema", "verifier-schema", "successor-schema"] -> do
                           record <- right =<< open checked
                           let encoded = encodeHostControllerSubmission record
                               prefix = "prodbox-host-controller-submission/kind/v1\NUL"
                           payload <- maybe (fail "ordinary kind prefix missing") pure (BS.stripPrefix prefix encoded)
                           (version, kindTag, original) <- right (deserialiseOrFail (Lazy.fromStrict payload))
-                          let expectedTag = if kind == I.OrdinaryCascadeController then 1 else 2
+                          let expectedTag
+                                | kind == I.OrdinaryCascadeController = 1
+                                | kind == I.MutationController = 2
+                                | kind == I.KindController = 3
+                                | kind == I.KindProbeVerifierController = 4
+                                | otherwise = 5
                           assert
                             "controller kind version/tag changed"
                             (version == (1 :: Word8) && kindTag == (expectedTag :: Word8))
@@ -173,7 +194,7 @@ main = do
                           forM_
                             [ prefix <> Lazy.toStrict (serialise (2 :: Word8, kindTag, original))
                             , prefix <> Lazy.toStrict (serialise (version, 0 :: Word8, original))
-                            , prefix <> Lazy.toStrict (serialise (version, 3 :: Word8, original))
+                            , prefix <> Lazy.toStrict (serialise (version, 6 :: Word8, original))
                             , prefix <> Lazy.toStrict (serialise (version, kindTag, encoded))
                             , encoded <> "\NUL"
                             ]
@@ -358,6 +379,12 @@ controls =
   , "ordinary-schema"
   , "mutation-roundtrip"
   , "mutation-schema"
+  , "kind-roundtrip"
+  , "kind-schema"
+  , "verifier-roundtrip"
+  , "verifier-schema"
+  , "successor-roundtrip"
+  , "successor-schema"
   , "independent-race"
   , "legacy-schema"
   , "foreign-provider"

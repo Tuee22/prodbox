@@ -19,7 +19,7 @@ module Prodbox.ControlPlane.AdmissionJournalMirror
   , parseMirror
   ) where
 
-import Control.Exception (IOException, try)
+import Control.Exception (IOException, bracket, try)
 import Data.Aeson ((.:), (.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Types qualified as AesonTypes
@@ -34,8 +34,12 @@ import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
 import Prodbox.Lifecycle.AdmissionHistory (JournalObservation (..), OperationState (..))
 import Prodbox.Lifecycle.AdmissionLedgerProjection (ledgerJournalObservation)
 import Prodbox.Lifecycle.Authority.Admission (authorityAggregateSubmissionLedger)
-import System.Directory (doesFileExist, renameFile)
-import System.FilePath ((</>))
+import System.Directory (createDirectory, doesFileExist, removeDirectory, renameFile)
+import System.FilePath (takeDirectory, (</>))
+import System.IO.Error (isDoesNotExistError)
+import System.Posix.Files (getSymbolicLinkStatus)
+import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, openFd)
+import System.Posix.Unistd (fileSynchronise)
 
 -- | The volume the Authority chart mounts for its journal.
 journalMountDirectory :: FilePath
@@ -44,6 +48,9 @@ journalMountDirectory = "/var/lib/prodbox/lifecycle-authority-journal"
 mirrorPath, genesisPath :: FilePath -> FilePath
 mirrorPath directory = directory </> "admission.json"
 genesisPath directory = directory </> "genesis.json"
+
+writeGuardPath :: FilePath -> FilePath
+writeGuardPath directory = directory </> "admission-write-in-progress"
 
 renderMirror :: [(Text, OperationState)] -> ByteString.ByteString
 renderMirror operations =
@@ -90,9 +97,25 @@ atomicWrite :: FilePath -> ByteString.ByteString -> IO (Either String ())
 atomicWrite path bytes = do
   let temporary = path ++ ".tmp"
   written <-
-    try (ByteString.writeFile temporary bytes >> renameFile temporary path)
+    try
+      ( ByteString.writeFile temporary bytes
+          >> syncPath temporary
+          >> renameFile temporary path
+          >> syncPath (takeDirectory path)
+      )
       :: IO (Either IOException ())
   pure (either (Left . ("journal mirror write failed: " ++) . take 120 . show) Right written)
+
+syncPath :: FilePath -> IO ()
+syncPath path = bracket (openFd path ReadOnly defaultFileFlags) closeFd fileSynchronise
+
+guardPresent :: FilePath -> IO (Either IOException Bool)
+guardPresent directory = do
+  result <- try (getSymbolicLinkStatus (writeGuardPath directory))
+  pure $ case result of
+    Right _ -> Right True
+    Left failure | isDoesNotExistError failure -> Right False
+    Left failure -> Left failure
 
 observedOperations :: JournalObservation -> [(Text, OperationState)]
 observedOperations observation = case observation of
@@ -108,22 +131,39 @@ mirrorAdmissionRepository
 mirrorAdmissionRepository directory repository =
   repository
     { compareAndSwapAuthorityAdmission = \expected aggregate -> do
-        let operations = observedOperations (ledgerJournalObservation (authorityAggregateSubmissionLedger aggregate))
-        mirrored <- atomicWrite (mirrorPath directory) (renderMirror operations)
-        case mirrored of
-          Left failure -> pure (Left (Text.pack failure))
-          Right () -> compareAndSwapAuthorityAdmission repository expected aggregate
+        acquired <-
+          try (createDirectory (writeGuardPath directory) >> syncPath directory) :: IO (Either IOException ())
+        case acquired of
+          Left _ -> pure (Left "journal-write-in-progress-or-unavailable")
+          Right () -> do
+            let operations = observedOperations (ledgerJournalObservation (authorityAggregateSubmissionLedger aggregate))
+            mirrored <- atomicWrite (mirrorPath directory) (renderMirror operations)
+            case mirrored of
+              Left failure -> pure (Left (Text.pack failure))
+              Right () -> do
+                committed <- compareAndSwapAuthorityAdmission repository expected aggregate
+                case committed of
+                  Left failure -> pure (Left failure)
+                  Right revision -> do
+                    removed <-
+                      try (removeDirectory (writeGuardPath directory) >> syncPath directory) :: IO (Either IOException ())
+                    pure $ case removed of
+                      Left _ -> Left "journal-write-guard-removal-failed"
+                      Right () -> Right revision
     }
 
--- | Write the genesis record once, and backfill the mirror from the committed
--- aggregate when one already exists, so the volume starts consistent with the
--- store.
+-- | Create a new mirror once. On restart, compare the retained mirror with the
+-- committed aggregate; never overwrite a divergent or unreadable mirror, which
+-- may contain the only evidence of an interrupted write.
 initialiseJournalMirror
   :: FilePath
   -> AuthorityAdmissionRepository IO revision
   -> IO (Either String ())
 initialiseJournalMirror directory repository = do
-  snapshot <- readAuthorityAdmission repository
+  writing <- guardPresent directory
+  snapshot <- case writing of
+    Right False -> readAuthorityAdmission repository
+    _ -> pure (Left "journal-write-in-progress-or-unobservable")
   case snapshot of
     Left failure -> pure (Left ("the committed admission could not be read: " ++ Text.unpack failure))
     Right observed -> do
@@ -132,28 +172,48 @@ initialiseJournalMirror directory repository = do
               ( ledgerJournalObservation
                   (authorityAggregateSubmissionLedger (authorityAdmissionSnapshotState observed))
               )
-      mirrored <- atomicWrite (mirrorPath directory) (renderMirror operations)
-      case mirrored of
-        Left failure -> pure (Left failure)
-        Right () -> do
-          present <- doesFileExist (genesisPath directory)
-          if present then pure (Right ()) else atomicWrite (genesisPath directory) "genesis\n"
+      present <- doesFileExist (genesisPath directory)
+      if present
+        then do
+          retained <- observeJournalMirror directory
+          pure $
+            if retained == JournalRead operations
+              then Right ()
+              else Left "the retained journal differs from the committed admission; recovery is required"
+        else do
+          orphaned <- doesFileExist (mirrorPath directory)
+          if orphaned
+            then pure (Left "a journal mirror exists without its genesis; recovery is required")
+            else do
+              mirrored <- atomicWrite (mirrorPath directory) (renderMirror operations)
+              case mirrored of
+                Left failure -> pure (Left failure)
+                Right () -> atomicWrite (genesisPath directory) "genesis\n"
 
 -- | Read the mirror as an admission observation. Without the genesis record the
 -- journal is unobservable (never initialized by this Authority), not empty.
 observeJournalMirror :: FilePath -> IO JournalObservation
 observeJournalMirror directory = do
+  writing <- guardPresent directory
   genesis <- try (doesFileExist (genesisPath directory)) :: IO (Either IOException Bool)
-  case genesis of
+  case writing of
+    Right False -> observeAfterGuard genesis
+    _ -> pure (JournalUnobservable "a journal write is in progress or requires recovery")
+ where
+  observeAfterGuard genesis = case genesis of
     Left failure -> pure (JournalUnobservable (Text.pack ("journal unreadable: " ++ take 80 (show failure))))
     Right False -> pure (JournalUnobservable "the journal was never initialized by this Authority")
     Right True -> do
       contents <-
         try (ByteString.readFile (mirrorPath directory)) :: IO (Either IOException ByteString.ByteString)
-      pure $ case contents of
-        Left _ -> JournalUnobservable "the journal mirror is missing although the journal was initialized"
-        Right bytes ->
-          maybe
-            (JournalUnobservable "the journal mirror could not be decoded")
-            JournalRead
-            (parseMirror bytes)
+      writingAfter <- guardPresent directory
+      pure $
+        case writingAfter of
+          Right False -> case contents of
+            Left _ -> JournalUnobservable "the journal mirror is missing although the journal was initialized"
+            Right bytes ->
+              maybe
+                (JournalUnobservable "the journal mirror could not be decoded")
+                JournalRead
+                (parseMirror bytes)
+          _ -> JournalUnobservable "a journal write is in progress or requires recovery"

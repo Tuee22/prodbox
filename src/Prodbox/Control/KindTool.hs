@@ -22,6 +22,9 @@ module Prodbox.Control.KindTool
   , ConfinedNodeImageObservation (..)
   , observeConfinedNodeImage
   , runArchiveBoundConfinedKindNodeOnHost
+  , runArchiveBoundConfinedKindNodeOnOperation
+  , kindFamilyBindingMatches
+  , confirmedKindWorkerNode
   , ConfinedKindInventoryConclusion (..)
   , ConfinedKindSnapshotsAttempt (..)
   , ConfinedKindSnapshotsObservation (..)
@@ -80,6 +83,8 @@ import Prodbox.Control.DockerConnectedInfo
   , DockerImageLoadResult (..)
   , DockerImageLoadStream (..)
   , DockerNetworkCreateResult (..)
+  , DockerNodeContainerCreateResult (..)
+  , DockerNodeContainerStartResult (..)
   , DockerSession
   , inspectDockerSessionImage
   , inspectDockerSessionKindNetwork
@@ -88,7 +93,7 @@ import Prodbox.Control.DockerConnectedInfo
   )
 import Prodbox.Control.DockerIdentity (DockerDaemonObservation (..))
 import Prodbox.Control.DockerPeer (DockerPeer (..), DockerPeerResult (..))
-import Prodbox.Control.ImageIdObservation (ImageIdObservation (..))
+import Prodbox.Control.ImageIdObservation (ImageIdObservation (..), validImageId)
 import Prodbox.Control.KindDockerEndpoint
   ( KindDockerBrokerExit (..)
   , KindDockerEndpointResult (..)
@@ -96,6 +101,9 @@ import Prodbox.Control.KindDockerEndpoint
   , runBoundKindDockerReadWorker
   )
 import Prodbox.Control.KindDockerReadGate (kindDockerInventoryObserved, newKindInventoryReadGate)
+import Prodbox.Control.KindDockerReadProtocol
+  ( KindDockerProtocolOutcome (KindDockerProtocolPeerClosed)
+  )
 import Prodbox.Control.KindDockerWorkerPrepare
   ( KindDockerClientLinkPreparation (..)
   , KindDockerClientLinkRemoval (..)
@@ -133,12 +141,16 @@ import Prodbox.Control.KindNetworkRecovery
 import Prodbox.Control.KindNodeCreateIntent
   ( KindNodeCreateIntent
   , KindNodeCreateRecoveryObservation (..)
+  , KindNodeCreateResultWrite (NodeCreateResultRecorded)
+  , KindNodeStartResultWrite (NodeStartResultRecorded)
   , kindNodeCreateDaemon
   , kindNodeCreateInput
   , observeRecordedKindNodeCreateIntent
   )
 import Prodbox.Control.KindNodeCreateOperation
-  ( KindNodeRunAction
+  ( KindNodeCreateAction (NodeCreateActionReturned)
+  , KindNodeRunAction (NodeRunStartObserved)
+  , KindNodeStartAction (NodeStartActionReturned)
   , newKindNodeBrokerWithConfig
   , observeKindNodeBrokerResult
   , runBoundKindNodeWorker
@@ -168,8 +180,17 @@ import Prodbox.Control.SealedTool
   , sealedToolRuntimePlan
   , withSealedTool
   )
+import Prodbox.Control.KindControllerRequest (kindControllerOperationKey)
 import Prodbox.Subprocess
   ( HostSubprocessError
+  , OperationSubprocesses
+  , OperationSubprocessError
+  , OperationProcessOutput
+  , operationProcessExitCode
+  , operationSubprocessWindow
+  , operationSubprocessExecutionKey
+  , operationSubprocessKind
+  , captureConfinedKindOperationCommandBefore
   , KindHostSubprocessPlacement
   , OwnedSubprocessError
   , OwnedSubprocessLimits
@@ -181,6 +202,7 @@ import Prodbox.Subprocess
   , withPreparedConfinedKindHostSubprocess
   , withPreparedKindHostSubprocess
   )
+import Prodbox.Subprocess.SystemdIdentity (HostControllerKind (KindController), HostExecutionKey, hostExecutionWorkEnd)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.IO.Error (IOErrorType, ioeGetErrorType)
@@ -241,6 +263,11 @@ data ConfinedKindNodeAttempt
       !(KindDockerWorkerExit (Either HostSubprocessError ProcessOutput))
       !(Maybe KindNodeRunAction)
       !KindDockerMarkerObservation
+  | ConfinedNodeFamilyObserved
+      !KindDockerBrokerExit
+      !(KindDockerWorkerExit (Either OperationSubprocessError OperationProcessOutput))
+      !(Maybe KindNodeRunAction)
+      !KindDockerMarkerObservation
   deriving (Show)
 
 data ConnectedConfinedKindNode
@@ -279,12 +306,76 @@ data ConfinedNodeNetworkObservation
   deriving (Eq, Show)
 
 data ArchiveBoundConfinedKindNode
-  = ConfinedNodeImageRecordRefused !NodeImageIntentObservation
+  = ConfinedNodeFamilyBindingMismatch
+  | ConfinedNodeImageRecordRefused !NodeImageIntentObservation
   | ConfinedNodeImageRecordMismatch
   | ConfinedNodeProposalUnavailable !KindNodeCreateRecoveryObservation
   | ConfinedNodeProposalMismatch
   | ConfinedNodeConnected !(DockerPeerResult (DockerConnectedInfoResult ConnectedConfinedKindNode))
   deriving (Show)
+
+-- | Identify a successfully returned worker and its recorded create/start
+-- requests only when every archive, peer, scope and snapshot binding remained
+-- stable. This is worker evidence, not readiness, provider ownership or a
+-- complete lifecycle result; those require independent observations.
+confirmedKindWorkerNode :: InspectedArchiveResult ArchiveBoundConfinedKindNode -> Maybe String
+confirmedKindWorkerNode observation = case observation of
+  InspectedArchiveCompleted
+    ( ConfinedNodeConnected
+        ( DockerPeerCompleted
+            ( DockerConnectedInfoCompleted
+                ( ConfinedNodeBindingObserved
+                    ( ConfinedKindSnapshotsAttempted
+                        ( ConfinedSnapshotsReady
+                            (KindOperationCallbackReturned (KindDockerEndpointObserved attempt))
+                          )
+                        True
+                      )
+                  )
+              )
+          )
+      ) -> confirmedAttempt attempt
+  _ -> Nothing
+ where
+  confirmedAttempt attempt = case attempt of
+    ConfinedNodeObserved
+      broker
+      (KindDockerWorkerReturned (Right output))
+      ( Just
+          ( NodeRunStartObserved
+              ( NodeCreateActionReturned
+                  (DockerNodeContainerCreateReply 201 (Just identifier))
+                  NodeCreateResultRecorded
+                )
+              (NodeStartActionReturned (DockerNodeContainerStartReply 204) NodeStartResultRecorded)
+            )
+        )
+      KindDockerMarkerClear
+        | processExitCode output == ExitSuccess
+            && validImageId ("sha256:" ++ identifier)
+            && brokerSettled broker ->
+            Just identifier
+    ConfinedNodeFamilyObserved
+      broker
+      (KindDockerWorkerReturned (Right output))
+      ( Just
+          ( NodeRunStartObserved
+              ( NodeCreateActionReturned
+                  (DockerNodeContainerCreateReply 201 (Just identifier))
+                  NodeCreateResultRecorded
+                )
+              (NodeStartActionReturned (DockerNodeContainerStartReply 204) NodeStartResultRecorded)
+            )
+        )
+      KindDockerMarkerClear
+        | operationProcessExitCode output == ExitSuccess
+            && validImageId ("sha256:" ++ identifier)
+            && brokerSettled broker -> Just identifier
+    _ -> Nothing
+  brokerSettled broker = case broker of
+    KindDockerBrokerCancelled -> True
+    KindDockerBrokerReturned (KindDockerEndpointObserved KindDockerProtocolPeerClosed) -> True
+    _ -> False
 
 -- A failed read is not a clear marker and must not discard worker results.
 observeKindDockerMarker :: Fd -> IO KindDockerMarkerObservation
@@ -768,7 +859,20 @@ runConfinedKindNodeOnHost
   -> (KindNodeCreateIntent -> DockerSession -> IO Bool -> IO Bool)
   -> (KindNodeCreateIntent -> String -> DockerSession -> IO Bool -> IO Bool)
   -> IO (KindOperationOutcome (KindDockerEndpointResult ConfinedKindNodeAttempt))
-runConfinedKindNodeOnHost placement budgets limits bootstrap operation readRoots nullDevice kind client session info peerStable admitCreate admitStart =
+runConfinedKindNodeOnHost placement budgets limits =
+  runConfinedKindNode (LegacyKindRunner placement limits) budgets
+
+data KindNodeRunner
+  = LegacyKindRunner !KindHostSubprocessPlacement !OwnedSubprocessLimits
+  | FamilyKindRunner !OperationSubprocesses
+
+runConfinedKindNode
+  :: KindNodeRunner -> KindWorkerSnapshots -> BootstrapProjection -> String
+  -> [Fd] -> Fd -> Fd -> Fd -> DockerSession -> DockerConnectedInfo -> IO Bool
+  -> (KindNodeCreateIntent -> DockerSession -> IO Bool -> IO Bool)
+  -> (KindNodeCreateIntent -> String -> DockerSession -> IO Bool -> IO Bool)
+  -> IO (KindOperationOutcome (KindDockerEndpointResult ConfinedKindNodeAttempt))
+runConfinedKindNode runner budgets bootstrap operation readRoots nullDevice kind client session info peerStable admitCreate admitStart =
   withRecoveredKindDockerWorkerRoots bootstrap operation $ \roots rootsStable -> do
     stable <- recentStable 400000000 ((&&) <$> rootsStable <*> peerStable)
     let worker = scopeRoot (bootstrapScope bootstrap) </> ("kind-worker-" ++ operation)
@@ -820,13 +924,22 @@ runConfinedKindNodeOnHost placement budgets limits bootstrap operation readRoots
                         if link /= KindDockerClientLinkPrepared
                           then pure (ConfinedNodeLink link)
                           else do
-                            (brokerResult, childResult) <-
-                              runBoundKindNodeWorker (workerBridge roots) stable owner $
-                                withPreparedConfinedKindHostSubprocess placement budgets sandbox kind client limits $ \run ->
-                                  run (LazyByteString.toStrict configuration) command
-                            nodeResult <- observeKindNodeBrokerResult owner
-                            marker <- observeKindDockerMarker (workerLock roots)
-                            pure (ConfinedNodeObserved brokerResult childResult nodeResult marker)
+                            let suppliedInput = LazyByteString.toStrict configuration
+                                observeResult make workerAction = do
+                                  (brokerResult, childResult) <- runBoundKindNodeWorker (workerBridge roots) stable owner workerAction
+                                  nodeResult <- observeKindNodeBrokerResult owner
+                                  marker <- observeKindDockerMarker (workerLock roots)
+                                  pure (make brokerResult childResult nodeResult marker)
+                            case runner of
+                              LegacyKindRunner placement limits ->
+                                observeResult ConfinedNodeObserved $
+                                  withPreparedConfinedKindHostSubprocess placement budgets sandbox kind client limits $ \run ->
+                                    run suppliedInput command
+                              FamilyKindRunner processes ->
+                                observeResult ConfinedNodeFamilyObserved $
+                                  captureConfinedKindOperationCommandBefore
+                                    (hostExecutionWorkEnd (operationSubprocessWindow processes))
+                                    processes budgets sandbox kind client suppliedInput command
         _ -> pure ConfinedNodeToolMismatch
       other -> pure (ConfinedNodeProposalRefused other)
 
@@ -891,12 +1004,20 @@ runVerifiedConfinedKindNodeOnHost
        ( ConfinedKindSnapshotsObservation
            (KindOperationOutcome (KindDockerEndpointResult ConfinedKindNodeAttempt))
        )
-runVerifiedConfinedKindNodeOnHost placement budgets limits bootstrap operation clientDigest clientMaximum readRoots nullDevice session info peerStable admitCreate admitStart =
+runVerifiedConfinedKindNodeOnHost placement budgets limits =
+  runVerifiedConfinedKindNode (LegacyKindRunner placement limits) budgets
+
+runVerifiedConfinedKindNode
+  :: KindNodeRunner -> KindWorkerSnapshots -> BootstrapProjection -> String -> String -> Integer
+  -> [Fd] -> Fd -> DockerSession -> DockerConnectedInfo -> IO Bool
+  -> (KindNodeCreateIntent -> DockerSession -> IO Bool -> IO Bool)
+  -> (KindNodeCreateIntent -> String -> DockerSession -> IO Bool -> IO Bool)
+  -> IO (ConfinedKindSnapshotsObservation (KindOperationOutcome (KindDockerEndpointResult ConfinedKindNodeAttempt)))
+runVerifiedConfinedKindNode runner budgets bootstrap operation clientDigest clientMaximum readRoots nullDevice session info peerStable admitCreate admitStart =
   withConfinedKindSnapshots budgets bootstrap clientDigest clientMaximum $ \kind client artifactStable ->
-    runConfinedKindNodeOnHost
-      placement
+    runConfinedKindNode
+      runner
       budgets
-      limits
       bootstrap
       operation
       readRoots
@@ -1021,7 +1142,33 @@ runArchiveBoundConfinedKindNodeOnHost
   -> (KindNodeCreateIntent -> DockerSession -> IO Bool -> IO Bool)
   -> (KindNodeCreateIntent -> String -> DockerSession -> IO Bool -> IO Bool)
   -> IO (InspectedArchiveResult ArchiveBoundConfinedKindNode)
-runArchiveBoundConfinedKindNodeOnHost limit placement budgets limits bootstrap operation clientDigest clientMaximum readRoots nullDevice admitCreate admitStart =
+runArchiveBoundConfinedKindNodeOnHost limit placement budgets limits =
+  runArchiveBoundConfinedKindNode limit (LegacyKindRunner placement limits) budgets
+
+-- | Family-owned counterpart; all artifact, daemon, broker and admission
+-- observations are the same as the legacy path, with a distinct result type.
+runArchiveBoundConfinedKindNodeOnOperation
+  :: Int -> OperationSubprocesses -> KindWorkerSnapshots -> BootstrapProjection
+  -> String -> String -> Integer -> [Fd] -> Fd
+  -> (KindNodeCreateIntent -> DockerSession -> IO Bool -> IO Bool)
+  -> (KindNodeCreateIntent -> String -> DockerSession -> IO Bool -> IO Bool)
+  -> IO (InspectedArchiveResult ArchiveBoundConfinedKindNode)
+runArchiveBoundConfinedKindNodeOnOperation limit processes budgets bootstrap operation clientDigest clientMaximum readRoots nullDevice admitCreate admitStart
+  | not (kindFamilyBindingMatches (operationSubprocessKind processes) (operationSubprocessExecutionKey processes) operation) =
+      withInspectedNodeArchive bootstrap $ \_ _ _ -> pure ConfinedNodeFamilyBindingMismatch
+  | otherwise = runArchiveBoundConfinedKindNode limit (FamilyKindRunner processes) budgets bootstrap operation clientDigest clientMaximum readRoots nullDevice admitCreate admitStart
+
+kindFamilyBindingMatches :: HostControllerKind -> HostExecutionKey -> String -> Bool
+kindFamilyBindingMatches family key operation =
+  family == KindController && kindControllerOperationKey operation == Just key
+
+runArchiveBoundConfinedKindNode
+  :: Int -> KindNodeRunner -> KindWorkerSnapshots -> BootstrapProjection
+  -> String -> String -> Integer -> [Fd] -> Fd
+  -> (KindNodeCreateIntent -> DockerSession -> IO Bool -> IO Bool)
+  -> (KindNodeCreateIntent -> String -> DockerSession -> IO Bool -> IO Bool)
+  -> IO (InspectedArchiveResult ArchiveBoundConfinedKindNode)
+runArchiveBoundConfinedKindNode limit runner budgets bootstrap operation clientDigest clientMaximum readRoots nullDevice admitCreate admitStart =
   withInspectedNodeArchive bootstrap $ \archive _ archiveStable -> do
     imageRecord <- observeRecordedNodeImageIdentity bootstrap operation
     case imageRecord of
@@ -1089,10 +1236,9 @@ runArchiveBoundConfinedKindNodeOnHost limit placement budgets limits bootstrap o
                   after <- stable
                   pure (before && current == ConfinedNodeNetworkReady && after)
         result <-
-          runVerifiedConfinedKindNodeOnHost
-            placement
+          runVerifiedConfinedKindNode
+            runner
             budgets
-            limits
             bootstrap
             operation
             clientDigest

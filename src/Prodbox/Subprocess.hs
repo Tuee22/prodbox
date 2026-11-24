@@ -75,6 +75,7 @@ module Prodbox.Subprocess
   , operationProcessStderr
   , captureOperationCommand
   , captureOperationCommandBefore
+  , captureConfinedKindOperationCommandBefore
   , captureMutationOperationCommandBefore
   , captureSealedMutationOperationCommandBefore
   , captureOperationCommandWithCeilingsBefore
@@ -1923,6 +1924,10 @@ data OperationSubprocessError
 
 data OperationProcessOutput = OperationProcessOutput !ExitCode !ByteString !ByteString
 
+-- Captured streams can contain sensitive data and are never rendered by Show.
+instance Show OperationProcessOutput where
+  show (OperationProcessOutput code _ _) = "OperationProcessOutput " ++ show code
+
 operationProcessExitCode :: OperationProcessOutput -> ExitCode
 operationProcessExitCode (OperationProcessOutput code _ _) = code
 
@@ -2086,6 +2091,44 @@ captureOperationNativeCommandBefore
   -> IO (Either OperationSubprocessError OperationProcessOutput)
 captureOperationNativeCommandBefore requested owned spec =
   captureOperationInvocationBefore OwnedClosedInput requested owned (NativeOperationInvocation spec)
+
+-- | Execute the sealed kind worker in the operation family's command slot.
+-- The caller still owns artifact provenance, broker settlement and admission;
+-- these checks only preserve the existing confined worker's execution policy.
+captureConfinedKindOperationCommandBefore
+  :: Word64
+  -> OperationSubprocesses
+  -> SealedTool.KindWorkerSnapshots
+  -> KindWorkerSandbox
+  -> Fd
+  -> Fd
+  -> ByteString
+  -> Subprocess
+  -> IO (Either OperationSubprocessError OperationProcessOutput)
+captureConfinedKindOperationCommandBefore requested owned budgets sandbox kind client input spec =
+  runInBoundThread $ do
+    ready <- kindWorkerSandboxReady sandbox kind client
+    let kindBudget = SealedTool.kindWorkerKindBudget budgets
+        valid = operationSubprocessKind owned == Identity.KindController
+          && operationSubprocessRuntimeMemory owned == SealedTool.sealedToolRuntimePlan kindBudget
+          && validConfinedKindSpec kind spec
+          && maybe False (ByteString.length input <=) (SealedTool.sealedToolInputMaximum kindBudget)
+    if not (ready && valid)
+      then pure (Left (OperationProcessRefused OwnedSubprocessInvalidLimits))
+      else do
+        let suppliedInput = OwnedPipeInput input
+        result <- runOperationProcess
+          Nothing
+          (OwnedChildConfinedKind sandbox kind client)
+          suppliedInput
+          owned
+          Operation.OperationCommandProcess
+          requested
+          (StringOperationInvocation spec)
+          $ \_ deadlines child _ out err _ ->
+            either (Left . OperationProcessRefused) Right
+              <$> superviseOperationCommandInput suppliedInput deadlines child out err
+        pure $ fmap (\(code, out, err) -> OperationProcessOutput code out err) result
 
 captureOperationCommandUsingInputBefore
   :: OwnedInput

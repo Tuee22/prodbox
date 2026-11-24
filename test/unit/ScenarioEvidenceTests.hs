@@ -9,12 +9,40 @@ import Data.Bits ((.&.))
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.Either (isRight)
+import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Text.IO qualified as TextIO
+import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Config.DeploymentScope (DeploymentEnvironment (Test), deploymentScope)
+import Prodbox.Subprocess (BoundedSubprocessLimits (..), ProcessOutput (..), Subprocess (..), captureSubprocessBounded)
+import Prodbox.Test.MutationExecutor
+  ( MutationBindingObservation (..)
+  , MutationContainerIdObservation (..)
+  , MutationContainerReceiptObservation (..)
+  , MutationContainerReceiptWrite (..)
+  , MutationInvocationDiagnostic (..)
+  , MutationLaunchIntentResult (..)
+  , MutationLaunchInvocation (..)
+  , changedInvocationDiagnostic
+  , inspectMutationCampaign
+  , mutationIsolationCommand
+  , mutationContainerArguments
+  , mutationInventoryDiagnostic
+  , observeMutationContainerId
+  , observeMutationContainerReceipt
+  , prepareCampaignRoot
+  , recordCampaignIdentity
+  , withPreparedCampaignRoot
+  , recordMutationContainerReceipt
+  , validMutationMounts
+  , withBoundMutationDirectories
+  , withCampaignMutationDirectories
+  , withRecordedMutationLaunch
+  )
 import Prodbox.Test.MutationOutcome
 import Prodbox.Test.MutationSnapshot
 import Prodbox.Test.MutationSnapshotObserve
@@ -45,6 +73,7 @@ import System.Directory
   , createDirectoryIfMissing
   , doesDirectoryExist
   , listDirectory
+  , makeAbsolute
   , removeFile
   , renameDirectory
   )
@@ -72,6 +101,315 @@ import TestSupport
 
 scenarioEvidenceSuite :: SuiteBuilder ()
 scenarioEvidenceSuite = describe "scenario evidence comparison" $ do
+  it "retains a mutation test outcome and cleanup failure without exposing subprocess text" $ do
+    let assertion = "delete.rejects_failed_removal"
+        transcript = "prodbox-mutation-test-v1:assertion-failed\n"
+        diagnostic = changedInvocationDiagnostic "mutant-test" (Just assertion) (Just (ExitFailure 1, "", transcript))
+        privateText = "sensitive-output-not-for-diagnostics"
+        buildDiagnostic = changedInvocationDiagnostic "mutant-build" Nothing (Just (ExitFailure 2, privateText, ""))
+        combined = [diagnostic, MutationInventoryFailed "mutant-test" (ExitFailure 7), buildDiagnostic]
+    diagnostic `shouldBe`
+      MutationInvocationChanged "mutant-test" (Just (ExitFailure 1))
+        (Just (TestAssertionFailures 1 [assertion])) 0 (ByteString.length transcript)
+    (privateText `ByteString8.isInfixOf` ByteString8.pack (show combined)) `shouldBe` False
+    changedInvocationDiagnostic "baseline-build" Nothing Nothing
+      `shouldBe` MutationInvocationChanged "baseline-build" Nothing Nothing 0 0
+  it "does not treat an empty container inventory as worker retirement" $ do
+    mutationInventoryDiagnostic "isolation" (Just (ExitSuccess, "", ""))
+      `shouldBe` MutationRetirementUnconfirmed "isolation"
+    mutationInventoryDiagnostic "isolation" (Just (ExitSuccess, "one\ntwo\n", ""))
+      `shouldBe` MutationInventoryNonempty "isolation" 2
+    mutationInventoryDiagnostic "isolation" (Just (ExitFailure 7, "", ""))
+      `shouldBe` MutationInventoryFailed "isolation" (ExitFailure 7)
+    mutationInventoryDiagnostic "isolation" Nothing
+      `shouldBe` MutationInventoryUnobservable "isolation"
+  it "mounts mutation source read-only and keeps writable state in its separate output" $ do
+    let source = "/private/campaign/source"
+        output = "/private/campaign/output"
+        cidFile = "/private/campaign/container.cid"
+        arguments = mutationContainerArguments "/operator" "1000:1000" source output cidFile "case" "true"
+    ((source ++ ":" ++ source ++ ":ro") `elem` arguments) `shouldBe` True
+    ((output ++ ":" ++ output) `elem` arguments) `shouldBe` True
+    (("HOME=" ++ output ++ "/.isolated-home") `elem` arguments) `shouldBe` True
+    (("CABAL_DIR=" ++ output ++ "/.isolated-cabal") `elem` arguments) `shouldBe` True
+    (["--network", "none"] `isInfixOf` arguments) `shouldBe` True
+    (["--cidfile", cidFile] `isInfixOf` arguments) `shouldBe` True
+    ("--pull=never" `elem` arguments) `shouldBe` True
+    any (isInfixOf "/operator/.cabal") arguments `shouldBe` False
+    validMutationMounts "/operator" source output `shouldBe` True
+    validMutationMounts "/operator" source source `shouldBe` False
+    validMutationMounts "/operator" source (source ++ "/child") `shouldBe` False
+    validMutationMounts "/operator" (source ++ ":escape") output `shouldBe` False
+    validMutationMounts "/operator" "/operator/.ghcup/bin" output `shouldBe` False
+    validMutationMounts "/operator" "/usr/private" output `shouldBe` False
+  it "holds the mutation roots and preserves the result when a root is replaced" $
+    withSystemTempDirectory "prodbox-mutation-bindings" $ \directory -> do
+      let source = directory </> "source"
+          output = directory </> "output"
+          saved = directory </> "source-old"
+      createDirectory source
+      createDirectory output
+      setFileMode source 0o700
+      setFileMode output 0o700
+      withBoundMutationDirectories source output (pure (17 :: Int))
+        `shouldReturn` MutationBindingsStable 17
+      withBoundMutationDirectories source output (ioError (userError "action failed") :: IO Int)
+        `shouldReturn` MutationBindingsUnconfirmed
+      observed <- withBoundMutationDirectories source output $ do
+        renameDirectory source saved
+        createDirectory source
+        setFileMode source 0o700
+        pure (23 :: Int)
+      observed `shouldBe` MutationBindingsChanged 23
+      doesDirectoryExist saved `shouldReturn` True
+  it "refuses a symlinked mutation output before the action runs" $
+    withSystemTempDirectory "prodbox-mutation-bindings" $ \directory -> do
+      let source = directory </> "source"
+          output = directory </> "output"
+      createDirectory source
+      setFileMode source 0o700
+      createSymbolicLink source output
+      called <- newIORef False
+      withBoundMutationDirectories source output (writeIORef called True)
+        `shouldReturn` MutationBindingsRefused
+      readIORef called `shouldReturn` False
+  it "records a bound mutation launch before the action and refuses a repeated intent" $
+    withSystemTempDirectory "prodbox-mutation-launch" $ \directory -> do
+      let source = directory </> "source"
+          output = directory </> "output"
+          flags = Posix.defaultFileFlags {Posix.directory = True, Posix.nofollow = True}
+      createDirectory source
+      createDirectory output
+      setFileMode source 0o700
+      setFileMode output 0o700
+      called <- newIORef False
+      bracket (Posix.openFd directory Posix.ReadOnly flags) Posix.closeFd $ \parent ->
+        bracket (Posix.openFd source Posix.ReadOnly flags) Posix.closeFd $ \sourceFd ->
+          bracket (Posix.openFd output Posix.ReadOnly flags) Posix.closeFd $ \outputFd -> do
+            withRecordedMutationLaunch parent sourceFd outputFd "prodbox-mutant-case" "baseline-build" "true" 120 (pure True) (writeIORef called True >> pure (17 :: Int))
+              `shouldReturn` MutationLaunchReturned 17
+            readIORef called `shouldReturn` True
+            writeIORef called False
+            withRecordedMutationLaunch parent sourceFd outputFd "prodbox-mutant-case" "baseline-build" "true" 120 (pure True) (writeIORef called True >> pure (17 :: Int))
+              `shouldReturn` MutationLaunchDenied MutationLaunchIntentExists
+            withRecordedMutationLaunch parent sourceFd outputFd "prodbox-mutant-case" "../bad" "true" 120 (pure True) (writeIORef called True >> pure (17 :: Int))
+              `shouldReturn` MutationLaunchDenied MutationLaunchIntentRefused
+            withRecordedMutationLaunch parent sourceFd outputFd "prodbox-mutant-case" "mutant-build" "true" 120 (pure False) (writeIORef called True >> pure (17 :: Int))
+              `shouldReturn` MutationLaunchDenied MutationLaunchIntentRefused
+            readIORef called `shouldReturn` False
+      names <- filter (isPrefixOf ".mutation-launch-") <$> listDirectory directory
+      case names of
+        [name] -> do
+          bytes <- ByteString.readFile (directory </> name)
+          bytes `shouldSatisfy` ByteString8.isInfixOf "\"stage\":\"baseline-build\""
+          bytes `shouldSatisfy` ByteString8.isInfixOf "\"socket\":\"/run/docker.sock\""
+          bytes `shouldSatisfy` ByteString8.isInfixOf "\"timeout_seconds\":120"
+          bytes `shouldSatisfy` ByteString8.isInfixOf "\"command_sha256\":\"b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b\""
+          status <- getFileStatus (directory </> name)
+          (fileMode status .&. 0o777) `shouldBe` 0o600
+          linkCount status `shouldBe` 1
+        _ -> fail "expected one retained launch intent"
+  it "reads only a stable exact container ID file and never infers container absence" $
+    withSystemTempDirectory "prodbox-mutation-cid" $ \directory -> do
+      let source = directory </> "source"
+          output = directory </> "output"
+          flags = Posix.defaultFileFlags {Posix.directory = True, Posix.nofollow = True}
+          label = "prodbox-mutant-case"
+          stage = "baseline-build"
+          identifier = replicate 64 'a'
+      createDirectory source
+      createDirectory output
+      setFileMode source 0o700
+      setFileMode output 0o700
+      bracket (Posix.openFd directory Posix.ReadOnly flags) Posix.closeFd $ \parent ->
+        bracket (Posix.openFd source Posix.ReadOnly flags) Posix.closeFd $ \sourceFd ->
+          bracket (Posix.openFd output Posix.ReadOnly flags) Posix.closeFd $ \outputFd -> do
+            withRecordedMutationLaunch parent sourceFd outputFd label stage "true" 120 (pure True) (pure ())
+              `shouldReturn` MutationLaunchReturned ()
+            observeMutationContainerId parent label stage (pure True) `shouldReturn` MutationContainerIdMissing
+            names <- filter (isPrefixOf ".mutation-launch-") <$> listDirectory directory
+            case names of
+              [intent] -> do
+                let cid = directory </> (take (length intent - 5) intent ++ ".cid")
+                writeFile cid (identifier ++ "\n")
+                setFileMode cid 0o644
+                observeMutationContainerId parent label stage (pure True)
+                  `shouldReturn` MutationContainerIdObserved identifier
+                observeMutationContainerReceipt parent sourceFd outputFd label stage "true" 120 (pure True)
+                  `shouldReturn` MutationContainerReceiptMissing
+                recordMutationContainerReceipt parent sourceFd outputFd label stage "true" 120 identifier (pure True)
+                  `shouldReturn` MutationContainerReceiptRecorded
+                observeMutationContainerReceipt parent sourceFd outputFd label stage "true" 120 (pure True)
+                  `shouldReturn` MutationContainerReceiptObserved identifier
+                observeMutationContainerReceipt parent sourceFd outputFd label stage "different" 120 (pure True)
+                  `shouldReturn` MutationContainerReceiptConflict
+                recordMutationContainerReceipt parent sourceFd outputFd label stage "true" 120 identifier (pure True)
+                  `shouldReturn` MutationContainerReceiptExists
+                receipts <- filter (isSuffixOf ".receipt.json") <$> listDirectory directory
+                case receipts of
+                  [receipt] -> do
+                    let link = directory </> "receipt-link"
+                    createLink (directory </> receipt) link
+                    observeMutationContainerReceipt parent sourceFd outputFd label stage "true" 120 (pure True)
+                      `shouldReturn` MutationContainerReceiptUnobservable
+                    removeFile link
+                  _ -> fail "expected one container receipt"
+                observeMutationContainerId parent label stage (pure False)
+                  `shouldReturn` MutationContainerIdUnobservable
+                writeFile cid (replicate 64 'A')
+                observeMutationContainerId parent label stage (pure True)
+                  `shouldReturn` MutationContainerIdInvalid
+                removeFile cid
+                observeMutationContainerReceipt parent sourceFd outputFd label stage "true" 120 (pure True)
+                  `shouldReturn` MutationContainerReceiptObserved identifier
+                createSymbolicLink (directory </> "foreign") cid
+                observeMutationContainerId parent label stage (pure True)
+                  `shouldReturn` MutationContainerIdUnobservable
+              _ -> fail "expected one launch intent"
+            let otherStage = "mutant-build"
+                stem = take 32 (ByteString8.unpack (hexSha256 (ByteString8.pack (label ++ "\NUL" ++ otherStage))))
+                foreignCid = directory </> (".mutation-launch-" ++ stem ++ ".cid")
+            writeFile foreignCid (replicate 64 'b')
+            setFileMode foreignCid 0o644
+            called <- newIORef False
+            withRecordedMutationLaunch parent sourceFd outputFd label otherStage "true" 120 (pure True) (writeIORef called True)
+              `shouldReturn` MutationLaunchBindingUnstable
+            readIORef called `shouldReturn` False
+            readFile foreignCid `shouldReturn` replicate 64 'b'
+  it "inspects only bound records in the selected mutation campaign" $
+    withSystemTempDirectory "prodbox-mutation-status" $ \directory -> do
+      let runId = "12345"
+          root = directory </> ".build/mutants" </> runId
+          name = "M01"
+          workspaceName = take 32 (ByteString8.unpack (hexSha256 (ByteString8.pack name)))
+          source = root </> workspaceName
+          output = source ++ "-output"
+          label = "prodbox-mutant-" ++ runId ++ "-" ++ name
+          stage = "isolation"
+          identifier = replicate 64 'c'
+          historicalId = replicate 64 'd'
+          stem = take 32 (ByteString8.unpack (hexSha256 (ByteString8.pack (label ++ "\NUL" ++ stage))))
+          cid = root </> (".mutation-launch-" ++ stem ++ ".cid")
+          flags = Posix.defaultFileFlags {Posix.directory = True, Posix.nofollow = True}
+      createDirectory (directory </> ".build")
+      prepareCampaignRoot root `shouldReturn` True
+      createDirectory source
+      createDirectory output
+      setFileMode source 0o700
+      setFileMode output 0o700
+      bracket (Posix.openFd root Posix.ReadOnly flags) Posix.closeFd $ \parent ->
+        bracket (Posix.openFd source Posix.ReadOnly flags) Posix.closeFd $ \sourceFd ->
+          bracket (Posix.openFd output Posix.ReadOnly flags) Posix.closeFd $ \outputFd -> do
+            withRecordedMutationLaunch parent sourceFd outputFd label stage mutationIsolationCommand 120 (pure True) (pure ())
+              `shouldReturn` MutationLaunchReturned ()
+            writeFile cid identifier
+            setFileMode cid 0o600
+            recordMutationContainerReceipt parent sourceFd outputFd label stage mutationIsolationCommand 120 identifier (pure True)
+              `shouldReturn` MutationContainerReceiptRecorded
+            let historicalStage = "baseline-build"
+                historicalCommand = "older retained build command"
+                historicalStem = take 32 (ByteString8.unpack (hexSha256 (ByteString8.pack (label ++ "\NUL" ++ historicalStage))))
+                historicalCid = root </> (".mutation-launch-" ++ historicalStem ++ ".cid")
+            withRecordedMutationLaunch parent sourceFd outputFd label historicalStage historicalCommand 120 (pure True) (pure ())
+              `shouldReturn` MutationLaunchReturned ()
+            writeFile historicalCid historicalId
+            setFileMode historicalCid 0o600
+            recordMutationContainerReceipt parent sourceFd outputFd label historicalStage historicalCommand 120 historicalId (pure True)
+              `shouldReturn` MutationContainerReceiptRecorded
+      inspected <- inspectMutationCampaign directory runId
+      case inspected of
+        Right lines' -> do
+          any (isInfixOf ("MutationContainerReceiptObserved \"" ++ identifier ++ "\"")) lines' `shouldBe` True
+          any (isInfixOf "M01 isolation") lines' `shouldBe` True
+          any (\line -> historicalId `isInfixOf` line && "binding matches current implementation False" `isInfixOf` line) lines' `shouldBe` True
+        Left failure -> fail failure
+      executable <- makeAbsolute ".build/prodbox"
+      public <- captureSubprocessBounded
+        (BoundedSubprocessLimits 1 65536 65536 30000000)
+        (Subprocess executable ["test", "status", runId] (Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")]) (Just directory))
+      case public of
+        Right result -> do
+          processExitCode result `shouldBe` ExitFailure 1
+          (identifier `isInfixOf` processStdout result) `shouldBe` True
+          ("Worker settlement, Docker state and workspace cleanup were not observed." `isInfixOf` processStdout result) `shouldBe` True
+        Left failure -> fail (show failure)
+      ByteString.writeFile (root </> (".mutation-launch-" ++ stem ++ ".json")) "invalid"
+      conflicted <- inspectMutationCampaign directory runId
+      case conflicted of
+        Right lines' -> any (isInfixOf "RetainedMutationLaunchConflict") lines' `shouldBe` True
+        Left failure -> fail failure
+      inspectMutationCampaign directory "../foreign" >>= (\value -> isRight value `shouldBe` False)
+      createSymbolicLink root (directory </> ".build/mutants/999")
+      inspectMutationCampaign directory "999" >>= (\value -> isRight value `shouldBe` False)
+  it "retains a source-bound campaign creation record and refuses replacement" $
+    withSystemTempDirectory "prodbox-campaign-identity" $ \directory -> do
+      let root = directory </> ".build/mutants/12345"
+      createDirectory (directory </> ".build")
+      source <- sourceIdentity "campaign"
+      result <- withPreparedCampaignRoot root $ \rootFd stable -> do
+        first <- recordCampaignIdentity rootFd "12345" source stable
+        second <- recordCampaignIdentity rootFd "12345" source stable
+        pure (first, second)
+      result `shouldBe` Just (True, False)
+      inspected <- inspectMutationCampaign directory "12345"
+      case inspected of
+        Right lines' -> any (isInfixOf "Campaign creation record: source manifest") lines' `shouldBe` True
+        Left failure -> fail failure
+      ByteString.writeFile (root </> ".mutation-campaign.json") "{}"
+      tampered <- inspectMutationCampaign directory "12345"
+      case tampered of
+        Right lines' -> any (isInfixOf "Campaign creation record invalid") lines' `shouldBe` True
+        Left failure -> fail failure
+  it "refuses a launch from a replacement campaign and preserves a changed result" $
+    withSystemTempDirectory "prodbox-campaign-binding" $ \directory -> do
+      let root = directory </> ".build/mutants/12345"
+          old = directory </> ".build/mutants/old"
+          workspace = root </> "source"
+          output = root </> "output"
+          makeChildren = do
+            createDirectory workspace
+            createDirectory output
+            setFileMode workspace 0o700
+            setFileMode output 0o700
+      createDirectory (directory </> ".build")
+      result <- withPreparedCampaignRoot root $ \campaign stable -> do
+        makeChildren
+        untouched <- newIORef False
+        first <- withCampaignMutationDirectories campaign stable workspace output $ \_ _ _ _ -> do
+          renameDirectory root old
+          createDirectory root
+          setFileMode root 0o700
+          makeChildren
+          pure ("effect returned" :: String)
+        second <- withCampaignMutationDirectories campaign stable workspace output $ \_ _ _ _ -> do
+          writeIORef untouched True
+          pure ()
+        ran <- readIORef untouched
+        pure (first, second, ran)
+      result `shouldBe` Just (MutationBindingsChanged "effect returned", MutationBindingsRefused, False)
+  it "creates a private mutation campaign without adopting existing or unsafe paths" $
+    withSystemTempDirectory "prodbox-mutation-campaign" $ \directory -> do
+      let parent = directory </> ".build/mutants"
+          first = parent </> "first"
+          second = parent </> "second"
+      createDirectory (directory </> ".build")
+      prepareCampaignRoot first `shouldReturn` True
+      writeFile (first </> "retained") "unchanged"
+      prepareCampaignRoot first `shouldReturn` False
+      readFile (first </> "retained") `shouldReturn` "unchanged"
+      setFileMode parent 0o755
+      prepareCampaignRoot second `shouldReturn` False
+      status <- getFileStatus parent
+      (fileMode status .&. 0o777) `shouldBe` 0o755
+      doesDirectoryExist second `shouldReturn` False
+      setFileMode parent 0o700
+  it "does not create a mutation campaign through a substituted build directory" $
+    withSystemTempDirectory "prodbox-mutation-parent" $ \directory -> do
+      let foreignRoot = directory </> "foreign"
+      createDirectory foreignRoot
+      createSymbolicLink foreignRoot (directory </> ".build")
+      prepareCampaignRoot (directory </> ".build/mutants/campaign") `shouldReturn` False
+      doesDirectoryExist (foreignRoot </> "mutants") `shouldReturn` False
   it "keeps the canonical mutation bindings aligned with the reviewed candidates" $ do
     manifest <- TextIO.readFile "DEVELOPMENT_PLAN/mutation_cases.md"
     let phase1 = case Text.splitOn "### Phase 1 preliminary assertion binding" manifest of
@@ -81,7 +419,7 @@ scenarioEvidenceSuite = describe "scenario evidence comparison" $ do
           _ -> ""
         sections = Text.splitOn "The reviewed M01 overlapping-root variant" phase1
     case sections of
-      [m02, m01] -> forM_ [(M01OverlappingRoots, m01), (M02MissingReport, m02)] $ \(mutation, section) -> do
+      [m02, m01] -> forM_ [(M01OverlappingRoots, m01), (M01ArtifactBytes, m01), (M01UnconfirmedNode, m01), (M01UnknownRecreate, m01), (M01FailedRemoval, m01), (M02MissingReport, m02)] $ \(mutation, section) -> do
         source <- captureSourceCandidate "." [] (reviewedSourcePath mutation) >>= either (fail . show) pure
         prepared <-
           either (fail . show) pure (prepareReviewedMutation mutation (sourceCandidateBytes source))
@@ -100,7 +438,7 @@ scenarioEvidenceSuite = describe "scenario evidence comparison" $ do
             (body : _) -> body
             _ -> ""
           _ -> ""
-    forM_ [M03ProductionUnlock, M03VaultIncarnation] $ \mutation -> do
+    forM_ [M03ProductionUnlock, M03VaultIncarnation, M03BackupContent] $ \mutation -> do
       source <- captureSourceCandidate "." [] (reviewedSourcePath mutation) >>= either (fail . show) pure
       prepared <-
         either (fail . show) pure (prepareReviewedMutation mutation (sourceCandidateBytes source))

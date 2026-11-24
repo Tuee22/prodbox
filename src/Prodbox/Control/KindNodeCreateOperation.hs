@@ -30,6 +30,7 @@ module Prodbox.Control.KindNodeCreateOperation
   , runBoundKindNodeWorker
   , KindNodeRemoveAction (..)
   , withNewConnectedKindNodeRemove
+  , withNewConnectedKindNodeRemoveGuarded
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -1023,10 +1024,19 @@ withNewConnectedKindNodeRemove
   -> String
   -> (KindNodeCreateIntent -> String -> DockerSession -> IO Bool -> IO Bool)
   -> IO (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult KindNodeRemoveAction)))
-withNewConnectedKindNodeRemove bootstrap operation admit =
+withNewConnectedKindNodeRemove bootstrap operation =
+  withNewConnectedKindNodeRemoveGuarded bootstrap operation id
+
+withNewConnectedKindNodeRemoveGuarded
+  :: BootstrapProjection
+  -> String
+  -> (IO Bool -> IO Bool)
+  -> (KindNodeCreateIntent -> String -> DockerSession -> IO Bool -> IO Bool)
+  -> IO (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult KindNodeRemoveAction)))
+withNewConnectedKindNodeRemoveGuarded bootstrap operation settlementStable admit =
   withRecoveredKindOperation bootstrap operation $ \operationStable ->
-    withConnectedDockerInfo 30000000 (bootstrapRuntimeSocket bootstrap) $ \session (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable -> do
-      let stable = (&&) <$> operationStable <*> peerStable
+    withConnectedDockerInfo 180000000 (bootstrapRuntimeSocket bootstrap) $ \session (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable -> do
+      let stable = settlementStable ((&&) <$> operationStable <*> peerStable)
       proposal <- observeRecordedKindNodeCreateIntent bootstrap operation stable
       case proposal of
         NodeCreateRecoveryRecorded intent

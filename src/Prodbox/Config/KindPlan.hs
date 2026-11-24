@@ -10,6 +10,7 @@ module Prodbox.Config.KindPlan
   , kindPlan
   , kindPlanScope
   , kindPlanNodeImage
+  , kindPlanMappings
   , matchesObservedKindNodeRun
   , kindNodeRunArguments
   , KindNodeCreateInput (..)
@@ -71,6 +72,9 @@ data KindPlan = KindPlan
 
 kindPlanNodeImage :: KindPlan -> String
 kindPlanNodeImage = nodeImage
+
+kindPlanMappings :: KindPlan -> (PublicationMapping, PublicationMapping)
+kindPlanMappings plan = (httpMapping plan, httpsMapping plan)
 
 -- | Match the observed v0.32.0 provider's exact Docker argv against this
 -- plan. The caller must independently verify the kind tool and image bytes,

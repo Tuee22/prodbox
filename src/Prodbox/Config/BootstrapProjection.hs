@@ -17,6 +17,7 @@ module Prodbox.Config.BootstrapProjection
   , BootstrapDraftPublicationError (..)
   , BootstrapDraftRecovery (..)
   , renderBootstrapDraft
+  , renderBootstrapProjection
   , publishBootstrapDraft
   , recoverBootstrapDraft
   , prepareBootstrapRoot
@@ -44,6 +45,9 @@ import Prodbox.Config.DeploymentScope
   , observeScopeGeneration
   , prepareFreshScopeWithConfig
   , scopeIdentifier
+  , scopeProjectAnchor
+  , scopeEnvironment
+  , scopeApiPort
   , scopeRoot
   , validArtifactDeclaration
   , validRootGeneration
@@ -53,6 +57,8 @@ import Prodbox.Config.KindPlan
   , KindPlanError
   , PublicationMapping (..)
   , kindPlan
+  , kindPlanMappings
+  , kindPlanNodeImage
   )
 import Prodbox.Config.SelectedDhall
   ( SelectedDhallError
@@ -62,7 +68,7 @@ import Prodbox.Config.SelectedDhall
   , recoverSelectedDhall
   , validateSelectedDhallSource
   )
-import Prodbox.Settings.Coordinate (mkIpLiteral)
+import Prodbox.Settings.Coordinate (ipLiteralText, mkIpLiteral)
 import System.Directory (makeAbsolute)
 import System.FilePath (isAbsolute, normalise, splitDirectories, takeDirectory, takeFileName, (</>))
 
@@ -242,6 +248,40 @@ renderBootstrapDraft draft =
       <> " }"
   textValue value = Core.pretty (Core.denote (Dhall.embed (Dhall.inject :: Dhall.Encoder Text) value))
 
+-- | Render only the already validated non-secret bootstrap projection. The
+-- kind family needs both artifact declarations; older incomplete projections
+-- are refused rather than supplied with invented values.
+renderBootstrapProjection :: BootstrapProjection -> Maybe Text
+renderBootstrapProjection projection = do
+  node <- bootstrapNodeArtifact projection
+  tool <- bootstrapKindTool projection
+  let scope = bootstrapScope projection
+      plan = bootstrapKindPlan projection
+      (http, https) = kindPlanMappings plan
+      natural = fromIntegral
+      environment = case scopeEnvironment scope of Production -> "production"; Test -> "test"
+  if publicationListenAddress http /= publicationListenAddress https
+      || artifactMaximumBytes node <= 0 || artifactMaximumBytes tool <= 0
+    then Nothing else pure (renderBootstrapDraft BootstrapDraft
+      { draftProjectAnchor = Text.pack (scopeProjectAnchor scope)
+      , draftRuntimeSocket = Text.pack (bootstrapRuntimeSocket projection)
+      , draftEnvironment = environment
+      , draftDeploymentId = Text.pack (scopeIdentifier scope)
+      , draftRootGeneration = bootstrapRootGeneration projection
+      , draftApiPort = natural (scopeApiPort scope)
+      , draftNodeImage = Text.pack (kindPlanNodeImage plan)
+      , draftHttpHostPort = natural (publicationHostPort http)
+      , draftHttpNodePort = natural (publicationNodePort http)
+      , draftHttpsHostPort = natural (publicationHostPort https)
+      , draftHttpsNodePort = natural (publicationNodePort https)
+      , draftListenAddress = ipLiteralText (publicationListenAddress http)
+      , draftNodePath = Text.pack (artifactPath node)
+      , draftNodeDigest = Text.pack (artifactDigest node)
+      , draftNodeMaximumBytes = fromInteger (artifactMaximumBytes node)
+      , draftKindPath = Text.pack (artifactPath tool)
+      , draftKindDigest = Text.pack (artifactDigest tool)
+      , draftKindMaximumBytes = fromInteger (artifactMaximumBytes tool)
+      })
 data BootstrapProjectionError
   = BootstrapSourceError !SelectedDhallError
   | BootstrapDecodeError

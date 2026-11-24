@@ -179,6 +179,19 @@ assertRetired (Fixture cfg req record) = do
 
 check :: String -> Fixture -> IO ()
 check mode fixture@(Fixture cfg req record) = case mode of
+  "admission-changed" -> do
+    calls <- newIORef (0 :: Int)
+    withOwner fixture $ \ending owner -> do
+      refusedResult <- Reaper.retireHostControllerInputsWithAdmission ending owner record $ do
+        count <- readIORef calls
+        writeIORef calls (count + 1)
+        pure (count == 0)
+      assert "changed admission allowed input retirement" (refused Reaper.InputRetirementAdmissionChanged refusedResult)
+      assertUnprepared fixture
+      assert "changed admission removed configuration" =<< doesPathExist cfg
+      assert "changed admission removed request" =<< doesPathExist req
+    _ <- right =<< retire fixture
+    assertRetired fixture
   "ordinary" -> do
     receipt <- right =<< retire fixture
     assert "receipt lost exact record" (Reaper.hostInputRetirementReceiptMatches receipt record)

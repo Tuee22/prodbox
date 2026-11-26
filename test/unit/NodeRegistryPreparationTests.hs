@@ -5,9 +5,9 @@
 
 module NodeRegistryPreparationTests (nodeRegistryPreparationSuite) where
 
-import Codec.Serialise (Serialise, serialise)
 import Codec.Archive.Tar qualified as Tar
 import Codec.Archive.Tar.Entry qualified as TarEntry
+import Codec.Serialise (Serialise, serialise)
 import Control.Concurrent (newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Concurrent.Async (poll, wait, withAsync)
 import Control.Exception (bracket)
@@ -21,11 +21,11 @@ import Data.ByteString.Lazy qualified as BL
 import Data.Either (isLeft)
 import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
-import Data.Word (Word8, Word32, Word64)
-import GHC.Generics (Generic)
-import GHC.Clock (getMonotonicTimeNSec)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as TextIO
+import Data.Word (Word32, Word64, Word8)
+import GHC.Clock (getMonotonicTimeNSec)
+import GHC.Generics (Generic)
 import Prodbox.Config.BootstrapProjection
   ( BootstrapDraft (..)
   , BootstrapProjection
@@ -45,48 +45,45 @@ import Prodbox.Config.DeploymentScope
   , scopeRoot
   )
 import Prodbox.Config.KindPlan (KindNodeCreateInput (..), kindNodeRunArguments)
+import Prodbox.Control.AuthorityDeploy (deployAuthority)
+import Prodbox.Control.AuthorityJournalClient (admitKindTeardown)
 import Prodbox.Control.Delete
   ( DeleteStep (..)
-  , deleteNewTestIdentity
   , controlContainerId
   , controlContainerMatches
+  , deleteNewTestIdentity
   , networkRemovalRecorded
   , nodeNeverStarted
   , nodeRemovalRecorded
   , priorNetworkRemovalRecorded
   , priorVolumeRemovalRecorded
-  , probeCleanupRecorded
   , probeCleanupPermitsNodeRemoval
+  , probeCleanupRecorded
   , probeRecoveryReceiptMatches
   , volumeRemovalRecorded
   )
-import Prodbox.Control.KindAbsenceNodeReadback
-  ( AbsenceNodeReadback (..), parseAbsenceNodeSample, classifyAbsenceNodeReadback )
-import Prodbox.Control.KindAbsenceSample (AbsenceSampleOutcome (..), recordObservedAbsenceSample)
-import Prodbox.Control.KindAbsenceRemoval (AbsenceRemovalOutcome (..), removeRecordedAbsenceControl)
-import Prodbox.Control.KindAbsenceVolumeReadback
-  ( AbsenceVolumePhase (..), AbsenceVolumeSample (..), AbsenceVolumeReadback (..)
-  , parseAbsenceVolumeSample, classifyAbsenceVolumeReadback )
-import Prodbox.Control.KindNodeVolumeReadback (NodeVolumeInventory (..))
 import Prodbox.Control.DockerConnectedInfo
-  ( DockerConnectedInfoResult (DockerConnectedInfoCompleted)
+  ( DockerAbsenceControlObservation (..)
+  , DockerConnectedInfoResult (DockerConnectedInfoCompleted)
   , DockerImageLoadResult (..)
   , DockerImageLoadStream (..)
   , DockerImageReadback (..)
   , DockerImageSubmissionObservation (..)
-  , DockerNodeConfigReadback (..)
-  , parseDockerKindNodeCaArchive
+  , DockerImageVolumes (..)
   , DockerNetworkRemoveResult (..)
-  , DockerNodeContainerCreateResult (DockerNodeContainerCreateReply, DockerNodeContainerCreateUnconfirmed)
+  , DockerNodeConfigReadback (..)
+  , DockerNodeContainerCreateResult
+    ( DockerNodeContainerCreateReply
+    , DockerNodeContainerCreateUnconfirmed
+    )
   , DockerNodeContainerObservation (..)
   , DockerNodeContainerRemoveResult (..)
   , DockerNodeContainerStartResult (DockerNodeContainerStartReply)
   , DockerNodeVarRemoveResult (..)
-  , DockerImageVolumes (..)
-  , parseDockerImageVolumes
-  , DockerAbsenceControlObservation (..)
-  , parseDockerAbsenceControl
   , absenceControlCreateBody
+  , parseDockerAbsenceControl
+  , parseDockerImageVolumes
+  , parseDockerKindNodeCaArchive
   )
 import Prodbox.Control.DockerIdentity
   ( DockerDaemonObservation (DockerDaemonObserved)
@@ -94,9 +91,20 @@ import Prodbox.Control.DockerIdentity
   )
 import Prodbox.Control.DockerPeer (DockerPeerResult (DockerPeerCompleted))
 import Prodbox.Control.ImageIdObservation (ImageIdObservation (..))
-import Prodbox.Control.NodeImageIntent (NodeImageResultWrite (..))
-import Prodbox.Control.NodeImageOperation (NodeImageRecordedSubmission (..))
-import Prodbox.Control.Reconcile (ReconcileOutcome (..), imageSubmissionAccepted, prepareNewOwnerFamilyOperation, reconcileFamilyPrerequisites)
+import Prodbox.Control.KindAbsenceNodeReadback
+  ( AbsenceNodeReadback (..)
+  , classifyAbsenceNodeReadback
+  , parseAbsenceNodeSample
+  )
+import Prodbox.Control.KindAbsenceRemoval (AbsenceRemovalOutcome (..), removeRecordedAbsenceControl)
+import Prodbox.Control.KindAbsenceSample (AbsenceSampleOutcome (..), recordObservedAbsenceSample)
+import Prodbox.Control.KindAbsenceVolumeReadback
+  ( AbsenceVolumePhase (..)
+  , AbsenceVolumeReadback (..)
+  , AbsenceVolumeSample (..)
+  , classifyAbsenceVolumeReadback
+  , parseAbsenceVolumeSample
+  )
 import Prodbox.Control.KindController
   ( afterControllerSettlement
   , classifyControllerUnitAbsence
@@ -104,89 +112,89 @@ import Prodbox.Control.KindController
   , validControllerResultPath
   , waitForUnitAbsenceWith
   )
+import Prodbox.Control.KindControllerReceipt
+  ( ControllerDomainObservation (..)
+  , ControllerDomainWrite (..)
+  , ControllerFreshProvider (..)
+  , ControllerFreshSender (..)
+  , ControllerJobObservation (..)
+  , ControllerJobWrite (..)
+  , ControllerManagerRead (..)
+  , ControllerProviderMaterialWrite (..)
+  , ControllerProviderWrite (..)
+  , ControllerReceiptObservation (..)
+  , ControllerReceiptWrite (..)
+  , ControllerSenderWrite (..)
+  , ControllerSubmissionObservation (..)
+  , ControllerSubmissionWrite (..)
+  , FamilyInputClosing (..)
+  , FamilyLaunchObservation (..)
+  , FamilyLaunchWrite (..)
+  , FamilyParentClosing (..)
+  , FamilyPostClosing (..)
+  , FamilyPostDisposition (..)
+  , FamilyPrimary (..)
+  , FamilyResult (..)
+  , FamilyResultObservation (..)
+  , FamilyResultWrite (..)
+  , FamilyWorkerClosing (..)
+  , RetainedControllerDomain (..)
+  , RetainedControllerJob (..)
+  , RetainedControllerProvider (..)
+  , RetainedControllerProviderMaterial (..)
+  , RetainedControllerSender (..)
+  , RetainedControllerSubmission (..)
+  , compareControllerProviderBinding
+  , controllerReceiptNode
+  , decodeProviderBinding
+  , hostBusUniqueName
+  , hostExecutionWindow
+  , hostManagerDomain
+  , matchesRetainedFamilyRequest
+  , observeControllerDomain
+  , observeControllerFreshProvider
+  , observeControllerFreshSender
+  , observeControllerJob
+  , observeControllerManagerRead
+  , observeControllerProviderMaterial
+  , observeControllerReceipt
+  , observeControllerSubmissionIntent
+  , observeControllerSubmissionStatus
+  , observeFamilyLaunch
+  , observeFamilyPublicationAttempt
+  , observeFamilyResult
+  , observeRetainedControllerDomain
+  , observeRetainedControllerJob
+  , observeRetainedControllerProvider
+  , observeRetainedControllerSender
+  , observeRetainedControllerSubmission
+  , recordControllerDomain
+  , recordControllerJob
+  , recordControllerProvider
+  , recordControllerProviderMaterial
+  , recordControllerReceipt
+  , recordControllerSender
+  , recordControllerSubmissionIntent
+  , recordFamilyLaunch
+  , recordFamilyPublicationAttempt
+  , recordFamilyResult
+  , recordFamilyResultUntil
+  , withControllerSubmissionIntent
+  )
 import Prodbox.Control.KindControllerRequest
   ( KindControllerRequestError (..)
   , decodeKindControllerRequest
-  , decodeRetainedKindControllerRequest
+  , decodeProbeAttemptVerifierRequest
   , decodeProbeRecoveryRequest
+  , decodeRetainedKindControllerRequest
   , encodeKindControllerRequest
+  , encodeProbeAttemptVerifierRequest
   , encodeProbeRecoveryRequest
   , kindControllerOperationKey
   , kindProbeRecoveryKey
   , mkKindControllerRequest
-  , mkProbeRecoveryRequest
   , mkProbeAttemptVerifierRequest
-  , encodeProbeAttemptVerifierRequest
-  , decodeProbeAttemptVerifierRequest
-  )
-import Prodbox.Control.KubernetesReadiness (ReadinessObservation (..))
-import Prodbox.Control.KindControllerReceipt
-  ( FamilyPrimary (..)
-  , FamilyWorkerClosing (..)
-  , FamilyParentClosing (..)
-  , FamilyInputClosing (..)
-  , FamilyPostDisposition (..)
-  , FamilyPostClosing (..)
-  , FamilyResult (..)
-  , FamilyResultWrite (..)
-  , FamilyResultObservation (..)
-  , recordFamilyResult
-  , observeFamilyResult
-  , FamilyLaunchWrite (..)
-  , FamilyLaunchObservation (..)
-  , recordFamilyLaunch
-  , observeFamilyLaunch
-  , recordFamilyPublicationAttempt
-  , observeFamilyPublicationAttempt
-  , matchesRetainedFamilyRequest
-  , ControllerManagerRead (..)
-  , observeControllerManagerRead
-  , ControllerFreshSender (..)
-  , observeControllerFreshSender
-  , ControllerSenderWrite (..)
-  , RetainedControllerSender (..)
-  , recordControllerSender
-  , observeRetainedControllerSender
-  , hostBusUniqueName
-  , ControllerFreshProvider (..)
-  , compareControllerProviderBinding
-  , observeControllerFreshProvider
-  , decodeProviderBinding
-  , ControllerProviderMaterialWrite (..)
-  , RetainedControllerProviderMaterial (..)
-  , recordControllerProviderMaterial
-  , observeControllerProviderMaterial
-  , ControllerProviderWrite (..)
-  , RetainedControllerProvider (..)
-  , recordControllerProvider
-  , observeRetainedControllerProvider
-  , hostManagerDomain
-  , hostExecutionWindow
-  , RetainedControllerDomain (..)
-  , observeRetainedControllerDomain
-  , ControllerDomainWrite (..)
-  , ControllerDomainObservation (..)
-  , recordControllerDomain
-  , observeControllerDomain
-  , RetainedControllerJob (..)
-  , observeRetainedControllerJob
-  , ControllerJobWrite (..)
-  , ControllerJobObservation (..)
-  , recordControllerJob
-  , observeControllerJob
-  , RetainedControllerSubmission (..)
-  , observeRetainedControllerSubmission
-  , observeControllerSubmissionStatus
-  , ControllerSubmissionObservation (..)
-  , ControllerSubmissionWrite (..)
-  , observeControllerSubmissionIntent
-  , recordControllerSubmissionIntent
-  , withControllerSubmissionIntent
-  , ControllerReceiptObservation (..)
-  , ControllerReceiptWrite (..)
-  , controllerReceiptNode
-  , observeControllerReceipt
-  , recordControllerReceipt
+  , mkProbeRecoveryRequest
   )
 import Prodbox.Control.KindDockerEndpoint
   ( KindDockerBrokerExit (..)
@@ -195,27 +203,38 @@ import Prodbox.Control.KindDockerEndpoint
   )
 import Prodbox.Control.KindIntent
   ( KindIntentObservation (..)
-  , KindIntentResult (KindIntentRecorded, KindIntentAlreadyExists)
-  , observeKindFamilyIntent
-  , observeKindOwnerFamilyIntent
+  , KindIntentResult (KindIntentAlreadyExists, KindIntentRecorded)
   , observeKindExternalFamilyIntent
+  , observeKindFamilyIntent
   , observeKindIntent
+  , observeKindOwnerFamilyIntent
+  , observeKindTeardownAdmission
   , recordKindFamilyIntent
   , recordKindIntent
   )
 import Prodbox.Control.KindLease
-  ( KindOperationOutcome (KindOperationCallbackReturned)
+  ( KindLeaseError (KindLeaseDeadlineExpired)
   , KindLeaseHandoff (..)
+  , KindOperationOutcome (KindOperationCallbackReturned, KindOperationRefused)
+  , KindOperationRefusal (KindOperationLeaseRefused)
   , awaitKindLeaseHandoff
   , withNewKindFamilyOperation
   , withNewKindOwnerFamilyOperation
   , withRecoveredKindOperation
   )
 import Prodbox.Control.KindNetworkProbeRecord
-  ( ProbeCreatedObservation (..), ProbeRecord (..), ProbeRecordObservation (..), ProbeRecordWrite (..)
-  , ProbeRecoveryLaunchObservation (..), ProbeRemovalAttemptObservation (..), ProbePublicationObservation (..)
-  , observeProbeRecoveryLaunch, observeProbePublicationAttempt
-  , observeProbeCreated, observeProbeRecord, recordProbeRecord
+  ( ProbeCreatedObservation (..)
+  , ProbePublicationObservation (..)
+  , ProbeRecord (..)
+  , ProbeRecordObservation (..)
+  , ProbeRecordWrite (..)
+  , ProbeRecoveryLaunchObservation (..)
+  , ProbeRemovalAttemptObservation (..)
+  , observeProbeCreated
+  , observeProbePublicationAttempt
+  , observeProbeRecord
+  , observeProbeRecoveryLaunch
+  , recordProbeRecord
   )
 import Prodbox.Control.KindNetworkReceipt
   ( NetworkReceiptObservation (..)
@@ -227,7 +246,15 @@ import Prodbox.Control.KindNetworkRecovery
   , KindNetworkRemovalAction (KindNetworkRemovalReturned)
   )
 import Prodbox.Control.KindNodeCreateIntent
-  ( KindNodeCreateAttemptObservation (..)
+  ( KindAbsenceControlResultObservation (..)
+  , KindAbsenceFootprintObservation (..)
+  , KindAbsenceIdObservation (..)
+  , KindAbsenceObservation (..)
+  , KindAbsencePlanRecovery (..)
+  , KindAbsenceStage (..)
+  , KindAbsenceVolumeResultObservation (..)
+  , KindAbsenceWrite (..)
+  , KindNodeCreateAttemptObservation (..)
   , KindNodeCreateAttemptWrite (NodeCreateAttemptRecorded)
   , KindNodeCreateIntentWrite (NodeCreateIntentRecorded)
   , KindNodeCreateRecoveryObservation (..)
@@ -239,21 +266,29 @@ import Prodbox.Control.KindNodeCreateIntent
   , KindNodeStartAttemptObservation (..)
   , KindNodeStartResultObservation (..)
   , KindNodeStartResultWrite (NodeStartResultRecorded)
+  , mkKindAbsencePlan
   , mkKindNodeCreateIntent
-  , recordKindNodeCreateIntent, recordKindNodeCreateAttempt, recordKindNodeCreateResult
-  , mkKindAbsencePlan, KindAbsenceStage (..), KindAbsenceWrite (..), KindAbsenceObservation (..)
-  , KindAbsenceIdObservation (..)
-  , KindAbsencePlanRecovery (..), recoverKindAbsencePlan
-  , KindAbsenceFootprintObservation (..)
-  , KindAbsenceVolumeResultObservation (..), recoverKindAbsenceVolumeResult
-  , KindAbsenceControlResultObservation (..), recoverKindAbsenceControlResult
-  , recordKindAbsenceStage, observeKindAbsenceStage, recoverKindAbsenceControlId, recoverKindAbsenceFootprint
+  , observeKindAbsenceStage
+  , recordKindAbsenceStage
+  , recordKindNodeCreateAttempt
+  , recordKindNodeCreateIntent
+  , recordKindNodeCreateResult
+  , recoverKindAbsenceControlId
+  , recoverKindAbsenceControlResult
+  , recoverKindAbsenceFootprint
+  , recoverKindAbsencePlan
+  , recoverKindAbsenceVolumeResult
   )
 import Prodbox.Control.KindNodeCreateOperation
   ( KindNodeCreateAction (NodeCreateActionReturned)
   , KindNodeRemoveAction (NodeRemoveActionReturned)
   , KindNodeRunAction (NodeRunStartObserved)
   , KindNodeStartAction (NodeStartActionReturned)
+  )
+import Prodbox.Control.KindNodeRemovalReadback
+  ( NodeRemovalInventory (..)
+  , NodeRemovalReadback (..)
+  , confirmRecordedRemovalReadback
   )
 import Prodbox.Control.KindNodeVolumeIntent
   ( KindNodeVolumeRemovalReceiptObservation (..)
@@ -262,6 +297,7 @@ import Prodbox.Control.KindNodeVolumeIntent
 import Prodbox.Control.KindNodeVolumeOperation
   ( KindNodeVolumeRemovalAction (NodeVolumeRemovalActionReturned)
   )
+import Prodbox.Control.KindNodeVolumeReadback (NodeVolumeInventory (..))
 import Prodbox.Control.KindTool
   ( ArchiveBoundConfinedKindNode (ConfinedNodeConnected)
   , ConfinedKindNodeAttempt (ConfinedNodeObserved)
@@ -271,29 +307,38 @@ import Prodbox.Control.KindTool
   , KindDockerMarkerObservation (..)
   , confirmedKindWorkerNode
   )
+import Prodbox.Control.KubernetesReadiness (ReadinessObservation (..))
 import Prodbox.Control.NetworkEnforcement
   ( EnforcementCleanup (..)
   , EnforcementObservation (..)
   , EnforcementOutcome (..)
-  , ProbeJournalObservation (..)
-  , ProbeRecoveryOutcome (..)
   , ProbeAttemptReadbackOutcome (..)
-  , confirmAttemptedProbeAbsenceWith
+  , ProbeJournalObservation (..)
   , ProbePublicationState (..)
+  , ProbeRecoveryOutcome (..)
   , classifyProbePublication
+  , confirmAttemptedProbeAbsenceWith
   , enforcementComplete
-  , observeProbeJournal
-  , recoverRecordedProbeWith
   , observeNetworkEnforcementRecorded
   , observeNetworkEnforcementWith
+  , observeProbeJournal
+  , recoverRecordedProbeWith
   )
 import Prodbox.Control.NodeArchive (InspectedArchiveResult (..))
+import Prodbox.Control.NodeImageIntent (NodeImageResultWrite (..))
+import Prodbox.Control.NodeImageOperation (NodeImageRecordedSubmission (..))
 import Prodbox.Control.NodeRegistryArchive
   ( NodeRegistryArchiveResult (..)
   , writeNodeRegistryArchive
   )
 import Prodbox.Control.NodeRegistryClient (NodeRegistryDocument (..), NodeRegistryReadError (..))
 import Prodbox.Control.NodeRegistryManifest (NodeRegistryBlob (..), NodeRegistryPlan (..))
+import Prodbox.Control.Reconcile
+  ( ReconcileOutcome (..)
+  , imageSubmissionAccepted
+  , prepareNewOwnerFamilyOperation
+  , reconcileFamilyPrerequisites
+  )
 import Prodbox.Control.Recreate
   ( ArchiveIntentDecision (..)
   , ArchiveOutcome (..)
@@ -301,6 +346,7 @@ import Prodbox.Control.Recreate
   , classifyArchiveIntent
   , probeArchiveRecord
   )
+import Prodbox.Control.ServiceSupport (ServiceStep (..))
 import Prodbox.Control.Status (NodeCreateStatus (NodeCreateStatus), matchesNodeCreateStatus)
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
@@ -333,10 +379,12 @@ import Prodbox.Test.Phase01Runner
   )
 import System.Directory
   ( createDirectory
+  , createDirectoryIfMissing
   , doesDirectoryExist
   , doesFileExist
   , listDirectory
   , makeAbsolute
+  , removeDirectory
   , removeFile
   , renameFile
   )
@@ -346,10 +394,20 @@ import System.IO (IOMode (ReadMode, WriteMode), withBinaryFile)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Posix.Files (createSymbolicLink, setFileMode)
 import System.Posix.IO qualified as Posix
-import TestSupport (SuiteBuilder, assertMutationInvariant, describe, it, shouldBe, shouldNotBe, shouldReturn, shouldSatisfy)
+import TestSupport
+  ( SuiteBuilder
+  , assertMutationInvariant
+  , describe
+  , it
+  , shouldBe
+  , shouldNotBe
+  , shouldReturn
+  , shouldSatisfy
+  )
 
 -- Matches the public serialization shape, with synthetic non-secret values.
-data FixtureProviderWire = FixtureProviderWire !Word8 !BS.ByteString !Word32 !Word64 !Word32 !Word64 !Word64
+data FixtureProviderWire
+  = FixtureProviderWire !Word8 !BS.ByteString !Word32 !Word64 !Word32 !Word64 !Word64
   deriving (Generic, Serialise)
 
 nodeRegistryPreparationSuite :: SuiteBuilder ()
@@ -361,7 +419,8 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
         archive entries = BL.toStrict (Tar.write entries)
         ca = "test certificate bytes"
     parseDockerKindNodeCaArchive ca (archive [entry path ca]) `shouldBe` Just DockerNodeConfigMatches
-    parseDockerKindNodeCaArchive ca (archive [entry path "different"]) `shouldBe` Just DockerNodeConfigDiffers
+    parseDockerKindNodeCaArchive ca (archive [entry path "different"])
+      `shouldBe` Just DockerNodeConfigDiffers
     parseDockerKindNodeCaArchive ca (archive [entry wrongPath ca]) `shouldBe` Nothing
     parseDockerKindNodeCaArchive ca (archive [entry path ca, entry wrongPath ca]) `shouldBe` Nothing
     parseDockerKindNodeCaArchive ca (archive [entry path (BS.replicate 65537 65)]) `shouldBe` Nothing
@@ -371,13 +430,21 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
         submission transport readback record =
           NodeImageRecordedSubmission (DockerImageSubmissionObservation transport readback) record
     imageSubmissionAccepted (submission accepted present NodeImageResultRecorded) `shouldBe` True
-    imageSubmissionAccepted (submission DockerImageLoadUnconfirmed present NodeImageResultRecorded) `shouldBe` False
-    imageSubmissionAccepted (submission (DockerImageLoadReply 200 DockerImageLoadErrorMessage) present NodeImageResultRecorded) `shouldBe` False
+    imageSubmissionAccepted (submission DockerImageLoadUnconfirmed present NodeImageResultRecorded)
+      `shouldBe` False
+    imageSubmissionAccepted
+      (submission (DockerImageLoadReply 200 DockerImageLoadErrorMessage) present NodeImageResultRecorded)
+      `shouldBe` False
     imageSubmissionAccepted (submission accepted present NodeImageResultIncomplete) `shouldBe` False
-    imageSubmissionAccepted (submission accepted DockerImageReadbackSkipped NodeImageResultRecorded) `shouldBe` False
+    imageSubmissionAccepted (submission accepted DockerImageReadbackSkipped NodeImageResultRecorded)
+      `shouldBe` False
   it "renders a bootstrap-only controller snapshot without unrelated selected fields" $
     withFixture $ \_ projection _ _ _ -> do
-      snapshot <- maybe (fail "complete bootstrap projection was not rendered") pure (renderBootstrapProjection projection)
+      snapshot <-
+        maybe
+          (fail "complete bootstrap projection was not rendered")
+          pure
+          (renderBootstrapProjection projection)
       let secretMarker = "fixture-secret-must-not-be-published"
           selected = Text.replace "\n}\n" ("\n, unrelated_secret = \"" <> secretMarker <> "\"\n}\n") snapshot
       selectedProjection <- decodeOptionalBootstrapSource "selected.dhall" selected
@@ -391,23 +458,35 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
         foreignDaemon = DockerDaemonObserved "daemon-b" (DockerSocketIdentity 1 2 1000 0o140660)
         sample = parseAbsenceNodeSample target control (control ++ "\n") "" "" (control ++ "\n") (control ++ "\n")
         blind = parseAbsenceNodeSample target control (control ++ "\n") "" "" "" ""
-        present = parseAbsenceNodeSample target control (unlines [target, control]) (target ++ "\n") (target ++ "\n") (control ++ "\n") (control ++ "\n")
+        present =
+          parseAbsenceNodeSample
+            target
+            control
+            (unlines [target, control])
+            (target ++ "\n")
+            (target ++ "\n")
+            (control ++ "\n")
+            (control ++ "\n")
         decide = classifyAbsenceNodeReadback control daemon daemon True
     sample `shouldSatisfy` (/= Nothing)
     fmap (decide sample . Just) sample `shouldBe` (AbsenceNodeSampled <$> sample)
     decide blind blind `shouldBe` AbsenceNodeUnobservable
     decide present present `shouldBe` AbsenceNodeUnobservable
     decide sample present `shouldBe` AbsenceNodeChanged
-    classifyAbsenceNodeReadback control daemon foreignDaemon True sample sample `shouldBe` AbsenceNodeChanged
-    classifyAbsenceNodeReadback control daemon daemon False sample sample `shouldBe` AbsenceNodeUnobservable
-    parseAbsenceNodeSample target target (target ++ "\n") "" "" (target ++ "\n") (target ++ "\n") `shouldBe` Nothing
+    classifyAbsenceNodeReadback control daemon foreignDaemon True sample sample
+      `shouldBe` AbsenceNodeChanged
+    classifyAbsenceNodeReadback control daemon daemon False sample sample
+      `shouldBe` AbsenceNodeUnobservable
+    parseAbsenceNodeSample target target (target ++ "\n") "" "" (target ++ "\n") (target ++ "\n")
+      `shouldBe` Nothing
   it "requires visible control volumes before removal and a retained positive volume afterward" $ do
     let positive = "prodbox-t-fixture-node-volume"
         volume = replicate 64 'f'
         control = replicate 64 'e'
         daemon = DockerDaemonObserved "daemon-a" (DockerSocketIdentity 1 2 1000 0o140660)
         foreignDaemon = DockerDaemonObserved "daemon-b" (DockerSocketIdentity 1 2 1000 0o140660)
-        before = parseAbsenceVolumeSample positive [volume] (unlines [positive, volume]) [(volume, control ++ "\n")]
+        before =
+          parseAbsenceVolumeSample positive [volume] (unlines [positive, volume]) [(volume, control ++ "\n")]
         after = parseAbsenceVolumeSample positive [volume] (positive ++ "\n") [(volume, "")]
         blind = parseAbsenceVolumeSample positive [volume] (unlines [positive, volume]) [(volume, "")]
         missingPositive = parseAbsenceVolumeSample positive [volume] (volume ++ "\n") [(volume, control ++ "\n")]
@@ -415,47 +494,155 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
         expectedAfter = AbsenceVolumeSample True [(volume, NodeVolumeInventory False [])]
     before `shouldBe` Just expectedBefore
     after `shouldBe` Just expectedAfter
-    classifyAbsenceVolumeReadback AbsenceVolumesBeforeRemoval control [volume] daemon daemon True before before
+    classifyAbsenceVolumeReadback
+      AbsenceVolumesBeforeRemoval
+      control
+      [volume]
+      daemon
+      daemon
+      True
+      before
+      before
       `shouldBe` AbsenceVolumeSampled expectedBefore
-    classifyAbsenceVolumeReadback AbsenceVolumesAfterRemoval control [volume] daemon daemon True after after
+    classifyAbsenceVolumeReadback
+      AbsenceVolumesAfterRemoval
+      control
+      [volume]
+      daemon
+      daemon
+      True
+      after
+      after
       `shouldBe` AbsenceVolumeSampled expectedAfter
-    classifyAbsenceVolumeReadback AbsenceVolumesBeforeRemoval control [volume] daemon daemon True blind blind `shouldBe` AbsenceVolumeUnobservable
-    classifyAbsenceVolumeReadback AbsenceVolumesAfterRemoval control [volume] daemon daemon True blind blind `shouldBe` AbsenceVolumeResidual [volume]
-    classifyAbsenceVolumeReadback AbsenceVolumesBeforeRemoval control [volume] daemon daemon True missingPositive missingPositive `shouldBe` AbsenceVolumeUnobservable
-    classifyAbsenceVolumeReadback AbsenceVolumesAfterRemoval control [volume] daemon daemon True before before `shouldBe` AbsenceVolumeUnobservable
-    classifyAbsenceVolumeReadback AbsenceVolumesBeforeRemoval control [volume] daemon foreignDaemon True before before `shouldBe` AbsenceVolumeChanged
-    classifyAbsenceVolumeReadback AbsenceVolumesBeforeRemoval control [volume] daemon daemon True before after `shouldBe` AbsenceVolumeChanged
-    parseAbsenceVolumeSample positive [volume, volume] (unlines [positive, volume]) [(volume, control), (volume, control)] `shouldBe` Nothing
+    classifyAbsenceVolumeReadback
+      AbsenceVolumesBeforeRemoval
+      control
+      [volume]
+      daemon
+      daemon
+      True
+      blind
+      blind
+      `shouldBe` AbsenceVolumeUnobservable
+    classifyAbsenceVolumeReadback
+      AbsenceVolumesAfterRemoval
+      control
+      [volume]
+      daemon
+      daemon
+      True
+      blind
+      blind
+      `shouldBe` AbsenceVolumeResidual [volume]
+    classifyAbsenceVolumeReadback
+      AbsenceVolumesBeforeRemoval
+      control
+      [volume]
+      daemon
+      daemon
+      True
+      missingPositive
+      missingPositive
+      `shouldBe` AbsenceVolumeUnobservable
+    classifyAbsenceVolumeReadback
+      AbsenceVolumesAfterRemoval
+      control
+      [volume]
+      daemon
+      daemon
+      True
+      before
+      before
+      `shouldBe` AbsenceVolumeUnobservable
+    classifyAbsenceVolumeReadback
+      AbsenceVolumesBeforeRemoval
+      control
+      [volume]
+      daemon
+      foreignDaemon
+      True
+      before
+      before
+      `shouldBe` AbsenceVolumeChanged
+    classifyAbsenceVolumeReadback
+      AbsenceVolumesBeforeRemoval
+      control
+      [volume]
+      daemon
+      daemon
+      True
+      before
+      after
+      `shouldBe` AbsenceVolumeChanged
+    parseAbsenceVolumeSample
+      positive
+      [volume, volume]
+      (unlines [positive, volume])
+      [(volume, control), (volume, control)]
+      `shouldBe` Nothing
   it "does not record an absence sample when control inspection is unavailable" $
     withFixture $ \parent _ _ _ _ -> do
-      projection <- readBootstrapProjection (takeDirectory parent </> "isolated-status.dhall") >>= either (fail . show) pure
+      projection <-
+        readBootstrapProjection (takeDirectory parent </> "isolated-status.dhall")
+          >>= either (fail . show) pure
       let operation = replicate 32 'd'
           target = replicate 64 'a'
           control = replicate 64 'e'
           volumes = [("/var", replicate 64 'f')]
           image = "sha256:" ++ replicate 64 'c'
           tool = "sha256:50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54"
-          input = KindNodeCreateInput tool image (replicate 64 'b') (replicate 32 'b') operation
-            (kindNodeRunArguments (bootstrapKindPlan projection) image)
+          input =
+            KindNodeCreateInput
+              tool
+              image
+              (replicate 64 'b')
+              (replicate 32 'b')
+              operation
+              (kindNodeRunArguments (bootstrapKindPlan projection) image)
           daemon = DockerDaemonObserved "daemon-a" (DockerSocketIdentity 1 2 1000 0o140660)
       intent <- maybe (fail "node intent fixture") pure (mkKindNodeCreateIntent projection input daemon)
-      plan <- maybe (fail "absence plan fixture") pure (mkKindAbsencePlan intent target (DockerImageVolumes ["/var"]))
+      plan <-
+        maybe
+          (fail "absence plan fixture")
+          pure
+          (mkKindAbsencePlan intent target (DockerImageVolumes ["/var"]))
       recordKindIntent projection operation >>= (`shouldBe` KindIntentRecorded)
       prepared <- withRecoveredKindOperation projection operation $ \stable -> do
         recordKindNodeCreateIntent projection intent stable >>= (`shouldBe` NodeCreateIntentRecorded)
         recordKindNodeCreateAttempt projection intent stable >>= (`shouldBe` NodeCreateAttemptRecorded)
-        recordKindNodeCreateResult projection intent (DockerNodeContainerCreateReply 201 (Just target)) stable >>= (`shouldBe` NodeCreateResultRecorded)
+        recordKindNodeCreateResult
+          projection
+          intent
+          (DockerNodeContainerCreateReply 201 (Just target))
+          stable
+          >>= (`shouldBe` NodeCreateResultRecorded)
         recordKindAbsenceStage projection plan AbsenceCreateAttempt stable >>= (`shouldBe` AbsenceRecorded)
-        recordKindAbsenceStage projection plan (AbsenceCreateResult DockerNodeContainerCreateUnconfirmed) stable >>= (`shouldBe` AbsenceRecorded)
-        recordKindAbsenceStage projection plan (AbsenceControlIdentified control) stable >>= (`shouldBe` AbsenceRecorded)
-        recordKindAbsenceStage projection plan (AbsenceFootprintRecorded control volumes) stable >>= (`shouldBe` AbsenceRecorded)
+        recordKindAbsenceStage
+          projection
+          plan
+          (AbsenceCreateResult DockerNodeContainerCreateUnconfirmed)
+          stable
+          >>= (`shouldBe` AbsenceRecorded)
+        recordKindAbsenceStage projection plan (AbsenceControlIdentified control) stable
+          >>= (`shouldBe` AbsenceRecorded)
+        recordKindAbsenceStage projection plan (AbsenceFootprintRecorded control volumes) stable
+          >>= (`shouldBe` AbsenceRecorded)
       prepared `shouldBe` KindOperationCallbackReturned ()
-      recordObservedAbsenceSample projection plan (const (pure False)) `shouldReturn` KindOperationCallbackReturned AbsenceSampleRecordsUnconfirmed
-      recordObservedAbsenceSample projection plan id `shouldReturn` KindOperationCallbackReturned AbsenceSampleControlUnconfirmed
-      removeRecordedAbsenceControl projection plan id `shouldReturn` KindOperationCallbackReturned (Left AbsenceRemovalCreateUnconfirmed)
-      withRecoveredKindOperation projection operation (observeKindAbsenceStage projection plan (AbsenceControlSampled control volumes))
+      recordObservedAbsenceSample projection plan (const (pure False))
+        `shouldReturn` KindOperationCallbackReturned AbsenceSampleRecordsUnconfirmed
+      recordObservedAbsenceSample projection plan id
+        `shouldReturn` KindOperationCallbackReturned AbsenceSampleControlUnconfirmed
+      removeRecordedAbsenceControl projection plan id
+        `shouldReturn` KindOperationCallbackReturned (Left AbsenceRemovalCreateUnconfirmed)
+      withRecoveredKindOperation
+        projection
+        operation
+        (observeKindAbsenceStage projection plan (AbsenceControlSampled control volumes))
         `shouldReturn` KindOperationCallbackReturned AbsenceMissing
-      withRecoveredKindOperation projection operation (observeKindAbsenceStage projection plan (AbsenceRemoveAttempt control volumes))
+      withRecoveredKindOperation
+        projection
+        operation
+        (observeKindAbsenceStage projection plan (AbsenceRemoveAttempt control volumes))
         `shouldReturn` KindOperationCallbackReturned AbsenceMissing
   it "binds a never-started absence control and exact anonymous volume footprint" $
     withFixture $ \_ projection _ _ _ -> do
@@ -466,35 +653,84 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
           volume = replicate 64 'f'
           scope = bootstrapScope projection
           name = "/" ++ scopeKindName scope ++ "-absence-control"
-          labels generation = Aeson.object
-            [ "io.prodbox.absence-control" .= operation
-            , "io.prodbox.generation" .= (generation :: String)
-            ]
-          mount destination volumeId kind = Aeson.object
-            [ "Type" .= (kind :: String), "Name" .= (volumeId :: String)
-            , "Destination" .= (destination :: String), "Driver" .= ("local" :: String), "RW" .= True
-            ]
-          document identifier selectedName selectedImage generation state networkMode mounts = Aeson.object
-            [ "Id" .= (identifier :: String), "Name" .= (selectedName :: String), "Image" .= (selectedImage :: String)
-            , "Config" .= Aeson.object ["Image" .= selectedImage, "Labels" .= labels generation
-                , "Entrypoint" .= (["/nonexistent"] :: [String]), "Cmd" .= (["/nonexistent"] :: [String]), "NetworkDisabled" .= True]
-            , "State" .= Aeson.object ["Running" .= (state :: Bool), "Paused" .= False, "Restarting" .= False, "Dead" .= False, "Status" .= ("created" :: String)]
-            , "HostConfig" .= Aeson.object ["NetworkMode" .= (networkMode :: String), "Privileged" .= False, "Binds" .= Aeson.Null
-                , "ReadonlyRootfs" .= True, "AutoRemove" .= False, "CapDrop" .= (["ALL"] :: [String])
-                , "RestartPolicy" .= Aeson.object ["Name" .= ("no" :: String), "MaximumRetryCount" .= (0 :: Int)]]
-            , "Mounts" .= (mounts :: [Aeson.Value])
-            , "NetworkSettings" .= Aeson.object ["Networks" .= Aeson.object []]
-            ]
+          labels generation =
+            Aeson.object
+              [ "io.prodbox.absence-control" .= operation
+              , "io.prodbox.generation" .= (generation :: String)
+              ]
+          mount destination volumeId kind =
+            Aeson.object
+              [ "Type" .= (kind :: String)
+              , "Name" .= (volumeId :: String)
+              , "Destination" .= (destination :: String)
+              , "Driver" .= ("local" :: String)
+              , "RW" .= True
+              ]
+          document identifier selectedName selectedImage generation state networkMode mounts =
+            Aeson.object
+              [ "Id" .= (identifier :: String)
+              , "Name" .= (selectedName :: String)
+              , "Image" .= (selectedImage :: String)
+              , "Config"
+                  .= Aeson.object
+                    [ "Image" .= selectedImage
+                    , "Labels" .= labels generation
+                    , "Entrypoint" .= (["/nonexistent"] :: [String])
+                    , "Cmd" .= (["/nonexistent"] :: [String])
+                    , "NetworkDisabled" .= True
+                    ]
+              , "State"
+                  .= Aeson.object
+                    [ "Running" .= (state :: Bool)
+                    , "Paused" .= False
+                    , "Restarting" .= False
+                    , "Dead" .= False
+                    , "Status" .= ("created" :: String)
+                    ]
+              , "HostConfig"
+                  .= Aeson.object
+                    [ "NetworkMode" .= (networkMode :: String)
+                    , "Privileged" .= False
+                    , "Binds" .= Aeson.Null
+                    , "ReadonlyRootfs" .= True
+                    , "AutoRemove" .= False
+                    , "CapDrop" .= (["ALL"] :: [String])
+                    , "RestartPolicy" .= Aeson.object ["Name" .= ("no" :: String), "MaximumRetryCount" .= (0 :: Int)]
+                    ]
+              , "Mounts" .= (mounts :: [Aeson.Value])
+              , "NetworkSettings" .= Aeson.object ["Networks" .= Aeson.object []]
+              ]
           good = document control name image (replicate 32 'b') False "none" [mount "/var" volume "volume"]
-          observe = parseDockerAbsenceControl projection operation target image (DockerImageVolumes ["/var"]) (Just control)
+          observe =
+            parseDockerAbsenceControl
+              projection
+              operation
+              target
+              image
+              (DockerImageVolumes ["/var"])
+              (Just control)
       observe good `shouldBe` Right (DockerAbsenceControlMatching control [("/var", volume)])
-      observe (document control name image (replicate 32 'e') False "none" [mount "/var" volume "volume"]) `shouldBe` Right DockerAbsenceControlConflict
-      observe (document control name image (replicate 32 'b') True "none" [mount "/var" volume "volume"]) `shouldBe` Right DockerAbsenceControlConflict
-      observe (document control name image (replicate 32 'b') False "bridge" [mount "/var" volume "volume"]) `shouldBe` Right DockerAbsenceControlConflict
-      observe (document control name image (replicate 32 'b') False "none" []) `shouldBe` Right DockerAbsenceControlConflict
-      observe (document control name image (replicate 32 'b') False "none" [mount "/var" volume "bind"]) `shouldSatisfy` isLeft
-      observe (document target name image (replicate 32 'b') False "none" [mount "/var" volume "volume"]) `shouldBe` Right DockerAbsenceControlConflict
-      parseDockerAbsenceControl projection operation target image (DockerImageVolumes ["/var"]) Nothing good
+      observe (document control name image (replicate 32 'e') False "none" [mount "/var" volume "volume"])
+        `shouldBe` Right DockerAbsenceControlConflict
+      observe (document control name image (replicate 32 'b') True "none" [mount "/var" volume "volume"])
+        `shouldBe` Right DockerAbsenceControlConflict
+      observe
+        (document control name image (replicate 32 'b') False "bridge" [mount "/var" volume "volume"])
+        `shouldBe` Right DockerAbsenceControlConflict
+      observe (document control name image (replicate 32 'b') False "none" [])
+        `shouldBe` Right DockerAbsenceControlConflict
+      observe (document control name image (replicate 32 'b') False "none" [mount "/var" volume "bind"])
+        `shouldSatisfy` isLeft
+      observe (document target name image (replicate 32 'b') False "none" [mount "/var" volume "volume"])
+        `shouldBe` Right DockerAbsenceControlConflict
+      parseDockerAbsenceControl
+        projection
+        operation
+        target
+        image
+        (DockerImageVolumes ["/var"])
+        Nothing
+        good
         `shouldBe` Right (DockerAbsenceControlMatching control [("/var", volume)])
       case absenceControlCreateBody projection operation target image (DockerImageVolumes ["/var"]) of
         Just (Aeson.Object body) -> do
@@ -508,7 +744,8 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
               KeyMap.lookup "AutoRemove" host `shouldBe` Just (Aeson.Bool False)
             _ -> fail "control host configuration missing"
         _ -> fail "valid control body refused"
-      absenceControlCreateBody projection operation "not-a-node-id" image (DockerImageVolumes ["/var"]) `shouldBe` Nothing
+      absenceControlCreateBody projection operation "not-a-node-id" image (DockerImageVolumes ["/var"])
+        `shouldBe` Nothing
   it "binds residual volume removal to the sampled exact footprint" $
     withFixture $ \_ projection _ _ _ -> do
       let operation = replicate 32 'd'
@@ -518,33 +755,87 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
           volumes = [("/var", volume)]
           image = "sha256:" ++ replicate 64 'c'
           tool = "sha256:50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54"
-          input = KindNodeCreateInput tool image (replicate 64 'b') (replicate 32 'b') operation
-            (kindNodeRunArguments (bootstrapKindPlan projection) image)
+          input =
+            KindNodeCreateInput
+              tool
+              image
+              (replicate 64 'b')
+              (replicate 32 'b')
+              operation
+              (kindNodeRunArguments (bootstrapKindPlan projection) image)
           daemon = DockerDaemonObserved "daemon-a" (DockerSocketIdentity 1 2 1000 0o140660)
       intent <- maybe (fail "node intent fixture") pure (mkKindNodeCreateIntent projection input daemon)
-      plan <- maybe (fail "absence plan fixture") pure (mkKindAbsencePlan intent target (DockerImageVolumes ["/var"]))
+      plan <-
+        maybe
+          (fail "absence plan fixture")
+          pure
+          (mkKindAbsencePlan intent target (DockerImageVolumes ["/var"]))
       recordKindIntent projection operation >>= (`shouldBe` KindIntentRecorded)
       outcome <- withRecoveredKindOperation projection operation $ \stable -> do
         recordKindNodeCreateIntent projection intent stable >>= (`shouldBe` NodeCreateIntentRecorded)
         recordKindNodeCreateAttempt projection intent stable >>= (`shouldBe` NodeCreateAttemptRecorded)
-        recordKindNodeCreateResult projection intent (DockerNodeContainerCreateReply 201 (Just target)) stable >>= (`shouldBe` NodeCreateResultRecorded)
+        recordKindNodeCreateResult
+          projection
+          intent
+          (DockerNodeContainerCreateReply 201 (Just target))
+          stable
+          >>= (`shouldBe` NodeCreateResultRecorded)
         recordKindAbsenceStage projection plan AbsenceCreateAttempt stable >>= (`shouldBe` AbsenceRecorded)
-        recordKindAbsenceStage projection plan (AbsenceCreateResult (DockerNodeContainerCreateReply 201 (Just control))) stable >>= (`shouldBe` AbsenceRecorded)
-        recordKindAbsenceStage projection plan (AbsenceControlIdentified control) stable >>= (`shouldBe` AbsenceRecorded)
-        recordKindAbsenceStage projection plan (AbsenceFootprintRecorded control volumes) stable >>= (`shouldBe` AbsenceRecorded)
-        recordKindAbsenceStage projection plan (AbsenceControlSampled control volumes) stable >>= (`shouldBe` AbsenceRecorded)
-        recordKindAbsenceStage projection plan (AbsenceRemoveAttempt control volumes) stable >>= (`shouldBe` AbsenceRecorded)
-        recoverKindAbsenceVolumeResult projection plan control volumes volume stable >>= (`shouldBe` AbsenceVolumeAttemptMissing)
-        recordKindAbsenceStage projection plan (AbsenceVolumeRemoveAttempt control volumes (replicate 64 '9')) stable >>= (`shouldBe` AbsenceRefused)
-        recordKindAbsenceStage projection plan (AbsenceVolumeRemoveAttempt control volumes volume) stable >>= (`shouldBe` AbsenceRecorded)
-        recoverKindAbsenceVolumeResult projection plan control volumes volume stable >>= (`shouldBe` AbsenceVolumeResultMissing)
-        recordKindAbsenceStage projection plan (AbsenceVolumeRemoveAttempt control volumes volume) stable >>= (`shouldBe` AbsenceAlreadyExists)
-        recordKindAbsenceStage projection plan (AbsenceVolumeRemoveResult control volumes volume DockerNodeVarRemoveUnconfirmed) stable >>= (`shouldBe` AbsenceRecorded)
-        observeKindAbsenceStage projection plan (AbsenceVolumeRemoveResult control volumes volume DockerNodeVarRemoveUnconfirmed) stable >>= (`shouldBe` AbsenceMatches)
-        recoverKindAbsenceVolumeResult projection plan control volumes volume stable >>= (`shouldBe` AbsenceVolumeResultObserved DockerNodeVarRemoveUnconfirmed)
-        observeKindAbsenceStage projection plan (AbsenceVolumeRemoveResult control volumes volume (DockerNodeVarRemoveReply 204)) stable >>= (`shouldBe` AbsenceConflict)
-        BS.writeFile (scopeRoot (bootstrapScope projection) </> ("kind-node-absence-control-volume-" ++ volume ++ "-result.json")) "{}"
-        recoverKindAbsenceVolumeResult projection plan control volumes volume stable >>= (`shouldBe` AbsenceVolumeResultUnconfirmed)
+        recordKindAbsenceStage
+          projection
+          plan
+          (AbsenceCreateResult (DockerNodeContainerCreateReply 201 (Just control)))
+          stable
+          >>= (`shouldBe` AbsenceRecorded)
+        recordKindAbsenceStage projection plan (AbsenceControlIdentified control) stable
+          >>= (`shouldBe` AbsenceRecorded)
+        recordKindAbsenceStage projection plan (AbsenceFootprintRecorded control volumes) stable
+          >>= (`shouldBe` AbsenceRecorded)
+        recordKindAbsenceStage projection plan (AbsenceControlSampled control volumes) stable
+          >>= (`shouldBe` AbsenceRecorded)
+        recordKindAbsenceStage projection plan (AbsenceRemoveAttempt control volumes) stable
+          >>= (`shouldBe` AbsenceRecorded)
+        recoverKindAbsenceVolumeResult projection plan control volumes volume stable
+          >>= (`shouldBe` AbsenceVolumeAttemptMissing)
+        recordKindAbsenceStage
+          projection
+          plan
+          (AbsenceVolumeRemoveAttempt control volumes (replicate 64 '9'))
+          stable
+          >>= (`shouldBe` AbsenceRefused)
+        recordKindAbsenceStage projection plan (AbsenceVolumeRemoveAttempt control volumes volume) stable
+          >>= (`shouldBe` AbsenceRecorded)
+        recoverKindAbsenceVolumeResult projection plan control volumes volume stable
+          >>= (`shouldBe` AbsenceVolumeResultMissing)
+        recordKindAbsenceStage projection plan (AbsenceVolumeRemoveAttempt control volumes volume) stable
+          >>= (`shouldBe` AbsenceAlreadyExists)
+        recordKindAbsenceStage
+          projection
+          plan
+          (AbsenceVolumeRemoveResult control volumes volume DockerNodeVarRemoveUnconfirmed)
+          stable
+          >>= (`shouldBe` AbsenceRecorded)
+        observeKindAbsenceStage
+          projection
+          plan
+          (AbsenceVolumeRemoveResult control volumes volume DockerNodeVarRemoveUnconfirmed)
+          stable
+          >>= (`shouldBe` AbsenceMatches)
+        recoverKindAbsenceVolumeResult projection plan control volumes volume stable
+          >>= (`shouldBe` AbsenceVolumeResultObserved DockerNodeVarRemoveUnconfirmed)
+        observeKindAbsenceStage
+          projection
+          plan
+          (AbsenceVolumeRemoveResult control volumes volume (DockerNodeVarRemoveReply 204))
+          stable
+          >>= (`shouldBe` AbsenceConflict)
+        BS.writeFile
+          ( scopeRoot (bootstrapScope projection)
+              </> ("kind-node-absence-control-volume-" ++ volume ++ "-result.json")
+          )
+          "{}"
+        recoverKindAbsenceVolumeResult projection plan control volumes volume stable
+          >>= (`shouldBe` AbsenceVolumeResultUnconfirmed)
       outcome `shouldBe` KindOperationCallbackReturned ()
   it "journals the exact absence-control attempt and recovers its identity in order" $
     withFixture $ \parent projection _ _ _ -> do
@@ -554,98 +845,227 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
           volumes = [("/var", replicate 64 'f')]
           image = "sha256:" ++ replicate 64 'c'
           tool = "sha256:50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54"
-          input = KindNodeCreateInput tool image (replicate 64 'b') (replicate 32 'b') operation
-            (kindNodeRunArguments (bootstrapKindPlan projection) image)
+          input =
+            KindNodeCreateInput
+              tool
+              image
+              (replicate 64 'b')
+              (replicate 32 'b')
+              operation
+              (kindNodeRunArguments (bootstrapKindPlan projection) image)
           daemon = DockerDaemonObserved "daemon-a" (DockerSocketIdentity 1 2 1000 0o140660)
-          attemptPath = takeDirectory parent </> ".test-data" </> "fixture" </> "kind-node-absence-control-create-attempt.json"
+          attemptPath =
+            takeDirectory parent
+              </> ".test-data"
+              </> "fixture"
+              </> "kind-node-absence-control-create-attempt.json"
       intent <- maybe (fail "node intent fixture") pure (mkKindNodeCreateIntent projection input daemon)
-      plan <- maybe (fail "absence plan fixture") pure (mkKindAbsencePlan intent target (DockerImageVolumes ["/var"]))
-      otherPlan <- maybe (fail "other absence plan fixture") pure (mkKindAbsencePlan intent target (DockerImageVolumes []))
+      plan <-
+        maybe
+          (fail "absence plan fixture")
+          pure
+          (mkKindAbsencePlan intent target (DockerImageVolumes ["/var"]))
+      otherPlan <-
+        maybe
+          (fail "other absence plan fixture")
+          pure
+          (mkKindAbsencePlan intent target (DockerImageVolumes []))
       mkKindAbsencePlan intent target (DockerImageVolumes ["/var/", "/var"]) `shouldBe` Nothing
       recordKindIntent projection operation >>= (`shouldBe` KindIntentRecorded)
       outcome <- withRecoveredKindOperation projection operation $ \stable -> do
         recordKindNodeCreateIntent projection intent stable >>= (`shouldBe` NodeCreateIntentRecorded)
         recordKindNodeCreateAttempt projection intent stable >>= (`shouldBe` NodeCreateAttemptRecorded)
-        recordKindNodeCreateResult projection intent (DockerNodeContainerCreateReply 201 (Just target)) stable >>= (`shouldBe` NodeCreateResultRecorded)
-        recordKindAbsenceStage projection plan (AbsenceControlIdentified control) stable >>= (`shouldBe` AbsenceRefused)
+        recordKindNodeCreateResult
+          projection
+          intent
+          (DockerNodeContainerCreateReply 201 (Just target))
+          stable
+          >>= (`shouldBe` NodeCreateResultRecorded)
+        recordKindAbsenceStage projection plan (AbsenceControlIdentified control) stable
+          >>= (`shouldBe` AbsenceRefused)
         recoverKindAbsencePlan projection operation stable >>= (`shouldBe` AbsencePlanMissing)
         observeKindAbsenceStage projection plan AbsenceCreateAttempt stable >>= (`shouldBe` AbsenceMissing)
         recordKindAbsenceStage projection plan AbsenceCreateAttempt stable >>= (`shouldBe` AbsenceRecorded)
         recoverKindAbsencePlan projection operation stable >>= (`shouldBe` AbsencePlanObserved plan)
-        recordKindAbsenceStage projection plan AbsenceCreateAttempt stable >>= (`shouldBe` AbsenceAlreadyExists)
-        recordKindAbsenceStage projection plan (AbsenceCreateResult DockerNodeContainerCreateUnconfirmed) stable >>= (`shouldBe` AbsenceRecorded)
-        observeKindAbsenceStage projection plan (AbsenceCreateResult (DockerNodeContainerCreateReply 201 (Just control))) stable >>= (`shouldBe` AbsenceConflict)
-        observeKindAbsenceStage projection otherPlan AbsenceCreateAttempt stable >>= (`shouldBe` AbsenceConflict)
-        recordKindAbsenceStage projection plan (AbsenceControlIdentified target) stable >>= (`shouldBe` AbsenceRefused)
-        recordKindAbsenceStage projection plan (AbsenceControlIdentified control) stable >>= (`shouldBe` AbsenceRecorded)
+        recordKindAbsenceStage projection plan AbsenceCreateAttempt stable
+          >>= (`shouldBe` AbsenceAlreadyExists)
+        recordKindAbsenceStage
+          projection
+          plan
+          (AbsenceCreateResult DockerNodeContainerCreateUnconfirmed)
+          stable
+          >>= (`shouldBe` AbsenceRecorded)
+        observeKindAbsenceStage
+          projection
+          plan
+          (AbsenceCreateResult (DockerNodeContainerCreateReply 201 (Just control)))
+          stable
+          >>= (`shouldBe` AbsenceConflict)
+        observeKindAbsenceStage projection otherPlan AbsenceCreateAttempt stable
+          >>= (`shouldBe` AbsenceConflict)
+        recordKindAbsenceStage projection plan (AbsenceControlIdentified target) stable
+          >>= (`shouldBe` AbsenceRefused)
+        recordKindAbsenceStage projection plan (AbsenceControlIdentified control) stable
+          >>= (`shouldBe` AbsenceRecorded)
         recoverKindAbsenceControlId projection plan stable >>= (`shouldBe` AbsenceIdObserved control)
-        recordKindAbsenceStage projection plan (AbsenceRemoveAttempt control volumes) stable >>= (`shouldBe` AbsenceRefused)
-        recordKindAbsenceStage projection plan (AbsenceFootprintRecorded control []) stable >>= (`shouldBe` AbsenceRefused)
-        recordKindAbsenceStage projection plan (AbsenceFootprintRecorded control volumes) stable >>= (`shouldBe` AbsenceRecorded)
-        recoverKindAbsenceFootprint projection plan control stable >>= (`shouldBe` AbsenceFootprintObserved volumes)
-        observeKindAbsenceStage projection plan (AbsenceControlSampled control volumes) stable >>= (`shouldBe` AbsenceMissing)
-        recoverKindAbsenceControlResult projection plan control volumes stable >>= (`shouldBe` AbsenceControlAttemptMissing)
-        recordKindAbsenceStage projection plan (AbsenceRemoveAttempt control volumes) stable >>= (`shouldBe` AbsenceRecorded)
-        recoverKindAbsenceControlResult projection plan control volumes stable >>= (`shouldBe` AbsenceControlResultMissing)
-        recordKindAbsenceStage projection plan (AbsenceVolumeRemoveAttempt control volumes (replicate 64 'f')) stable >>= (`shouldBe` AbsenceRefused)
-        recordKindAbsenceStage projection plan (AbsenceControlSampled control volumes) stable >>= (`shouldBe` AbsenceRefused)
-        recordKindAbsenceStage projection plan (AbsenceRemoveResult control volumes DockerNodeContainerRemoveUnconfirmed) stable >>= (`shouldBe` AbsenceRecorded)
-        recoverKindAbsenceControlResult projection plan control volumes stable >>= (`shouldBe` AbsenceControlResultObserved DockerNodeContainerRemoveUnconfirmed)
-        observeKindAbsenceStage projection plan (AbsenceRemoveResult control volumes (DockerNodeContainerRemoveReply 204)) stable >>= (`shouldBe` AbsenceConflict)
+        recordKindAbsenceStage projection plan (AbsenceRemoveAttempt control volumes) stable
+          >>= (`shouldBe` AbsenceRefused)
+        recordKindAbsenceStage projection plan (AbsenceFootprintRecorded control []) stable
+          >>= (`shouldBe` AbsenceRefused)
+        recordKindAbsenceStage projection plan (AbsenceFootprintRecorded control volumes) stable
+          >>= (`shouldBe` AbsenceRecorded)
+        recoverKindAbsenceFootprint projection plan control stable
+          >>= (`shouldBe` AbsenceFootprintObserved volumes)
+        observeKindAbsenceStage projection plan (AbsenceControlSampled control volumes) stable
+          >>= (`shouldBe` AbsenceMissing)
+        recoverKindAbsenceControlResult projection plan control volumes stable
+          >>= (`shouldBe` AbsenceControlAttemptMissing)
+        recordKindAbsenceStage projection plan (AbsenceRemoveAttempt control volumes) stable
+          >>= (`shouldBe` AbsenceRecorded)
+        recoverKindAbsenceControlResult projection plan control volumes stable
+          >>= (`shouldBe` AbsenceControlResultMissing)
+        recordKindAbsenceStage
+          projection
+          plan
+          (AbsenceVolumeRemoveAttempt control volumes (replicate 64 'f'))
+          stable
+          >>= (`shouldBe` AbsenceRefused)
+        recordKindAbsenceStage projection plan (AbsenceControlSampled control volumes) stable
+          >>= (`shouldBe` AbsenceRefused)
+        recordKindAbsenceStage
+          projection
+          plan
+          (AbsenceRemoveResult control volumes DockerNodeContainerRemoveUnconfirmed)
+          stable
+          >>= (`shouldBe` AbsenceRecorded)
+        recoverKindAbsenceControlResult projection plan control volumes stable
+          >>= (`shouldBe` AbsenceControlResultObserved DockerNodeContainerRemoveUnconfirmed)
+        observeKindAbsenceStage
+          projection
+          plan
+          (AbsenceRemoveResult control volumes (DockerNodeContainerRemoveReply 204))
+          stable
+          >>= (`shouldBe` AbsenceConflict)
         BS.writeFile attemptPath "{}"
         recoverKindAbsencePlan projection operation stable >>= (`shouldBe` AbsencePlanUnconfirmed)
         recoverKindAbsenceControlId projection plan stable >>= (`shouldBe` AbsenceIdUnconfirmed)
-        observeKindAbsenceStage projection plan (AbsenceFootprintRecorded control volumes) stable >>= (`shouldBe` AbsenceUnobservable)
-        recoverKindAbsenceFootprint projection plan control stable >>= (`shouldBe` AbsenceFootprintUnconfirmed)
+        observeKindAbsenceStage projection plan (AbsenceFootprintRecorded control volumes) stable
+          >>= (`shouldBe` AbsenceUnobservable)
+        recoverKindAbsenceFootprint projection plan control stable
+          >>= (`shouldBe` AbsenceFootprintUnconfirmed)
       outcome `shouldBe` KindOperationCallbackReturned ()
   it "observes image-declared volumes without inferring missing configuration is empty" $ do
     let imageId = "sha256:" ++ replicate 64 'a'
-        document ident volumes = Aeson.object ["Id" .= (ident :: String), "Config" .= Aeson.object ["Volumes" .= (volumes :: Aeson.Value)]]
+        document ident volumes =
+          Aeson.object
+            ["Id" .= (ident :: String), "Config" .= Aeson.object ["Volumes" .= (volumes :: Aeson.Value)]]
         declared = Aeson.object ["/var" .= Aeson.object [], "/data" .= Aeson.object []]
         invalidPath = Aeson.object ["/var/../host" .= Aeson.object []]
-    parseDockerImageVolumes imageId (document imageId Aeson.Null) `shouldBe` Right (DockerImageVolumes [])
-    parseDockerImageVolumes imageId (document imageId declared) `shouldBe` Right (DockerImageVolumes ["/data", "/var"])
+    parseDockerImageVolumes imageId (document imageId Aeson.Null)
+      `shouldBe` Right (DockerImageVolumes [])
+    parseDockerImageVolumes imageId (document imageId declared)
+      `shouldBe` Right (DockerImageVolumes ["/data", "/var"])
     case parseDockerImageVolumes imageId (document ("sha256:" ++ replicate 64 'b') declared) of
-      Left _ -> pure (); Right _ -> fail "foreign image was accepted"
+      Left _ -> pure ()
+      Right _ -> fail "foreign image was accepted"
     case parseDockerImageVolumes imageId (Aeson.object ["Id" .= imageId, "Config" .= Aeson.object []]) of
-      Left _ -> pure (); Right _ -> fail "missing volume observation was treated as empty"
+      Left _ -> pure ()
+      Right _ -> fail "missing volume observation was treated as empty"
     case parseDockerImageVolumes imageId (document imageId invalidPath) of
-      Left _ -> pure (); Right _ -> fail "noncanonical volume path was accepted"
+      Left _ -> pure ()
+      Right _ -> fail "noncanonical volume path was accepted"
     case parseDockerImageVolumes imageId (document imageId (Aeson.object ["/var/" .= Aeson.object []])) of
-      Left _ -> pure (); Right _ -> fail "aliased volume path was accepted"
+      Left _ -> pure ()
+      Right _ -> fail "aliased volume path was accepted"
   it "waits for the launcher lease and refuses an expired or changed owner" $
     withFixture $ \_ projection _ _ _ -> do
       let operation = replicate 32 'd'
       recordKindIntent projection operation >>= (`shouldBe` KindIntentRecorded)
       entered <- newEmptyMVar
       release <- newEmptyMVar
-      withAsync (withRecoveredKindOperation projection operation $ \_ -> putMVar entered () >> takeMVar release) $ \owner -> do
-        takeMVar entered
-        now <- getMonotonicTimeNSec
-        awaitKindLeaseHandoff (now + 120000000) projection operation (pure True) >>= (`shouldBe` KindLeaseHandoffExpired)
-        awaitKindLeaseHandoff (now + 2000000000) projection operation (pure False) >>= (`shouldBe` KindLeaseHandoffUnstable)
-        withAsync (awaitKindLeaseHandoff (now + 2000000000) projection operation (pure True)) $ \worker -> do
-          threadDelay 80000
-          pending <- poll worker
-          case pending of Nothing -> pure (); Just _ -> fail "worker crossed a held operation lease"
-          putMVar release ()
-          wait owner >>= (`shouldBe` KindOperationCallbackReturned ())
-          wait worker >>= (`shouldBe` KindLeaseHandoffReady)
+      withAsync
+        (withRecoveredKindOperation projection operation $ \_ -> putMVar entered () >> takeMVar release)
+        $ \owner -> do
+          takeMVar entered
+          now <- getMonotonicTimeNSec
+          awaitKindLeaseHandoff (now + 120000000) projection operation (pure True)
+            >>= (`shouldBe` KindLeaseHandoffExpired)
+          awaitKindLeaseHandoff (now + 2000000000) projection operation (pure False)
+            >>= (`shouldBe` KindLeaseHandoffUnstable)
+          withAsync (awaitKindLeaseHandoff (now + 2000000000) projection operation (pure True)) $ \worker -> do
+            threadDelay 80000
+            pending <- poll worker
+            case pending of Nothing -> pure (); Just _ -> fail "worker crossed a held operation lease"
+            putMVar release ()
+            wait owner >>= (`shouldBe` KindOperationCallbackReturned ())
+            wait worker >>= (`shouldBe` KindLeaseHandoffReady)
+  it "records a family result once a briefly held scope lease closes" $
+    withFixture $ \_ projection _ _ _ -> do
+      let operation = replicate 32 'd'
+          summaryDigest = replicate 64 'c'
+          summary =
+            FamilyResult
+              FamilyWorkerNotObserved
+              FamilyWorkerNotStarted
+              FamilyParentComplete
+              FamilyInputComplete
+              FamilyPostImageClosingUnconfirmed
+              FamilyPostNotStarted
+      now <- getMonotonicTimeNSec
+      withNewKindOwnerFamilyOperation projection operation (const (pure ()))
+        `shouldReturn` KindOperationCallbackReturned ()
+      entered <- newEmptyMVar
+      release <- newEmptyMVar
+      withAsync
+        (withRecoveredKindOperation projection operation $ \_ -> putMVar entered () >> takeMVar release)
+        $ \owner -> do
+          takeMVar entered
+          recordFamilyResultUntil now projection operation summaryDigest summary
+            `shouldReturn` KindOperationRefused (KindOperationLeaseRefused KindLeaseDeadlineExpired)
+          withAsync (recordFamilyResultUntil (now + 5000000000) projection operation summaryDigest summary) $ \writer -> do
+            threadDelay 80000
+            pending <- poll writer
+            case pending of
+              Nothing -> pure ()
+              Just _ -> fail "the result writer returned while a scope reader held the lease"
+            putMVar release ()
+            wait owner `shouldReturn` KindOperationCallbackReturned ()
+            wait writer `shouldReturn` KindOperationCallbackReturned FamilyResultRecorded
+      withRecoveredKindOperation projection operation (observeFamilyResult projection operation)
+        `shouldReturn` KindOperationCallbackReturned (FamilyResultObserved summaryDigest summary)
   it "retains the original family launch coordinates without treating them as submission" $
     withFixture $ \parent projection _ _ _ -> do
       let operation = replicate 32 'd'
           recordPath = takeDirectory parent </> ".test-data" </> "fixture" </> "kind-family-launch-request.json"
-      domain <- maybe (fail "domain invalid") pure (hostManagerDomain "11111111-1111-1111-1111-111111111111" (replicate 32 'a') ":1.42" 1000 1234 5678)
+      domain <-
+        maybe
+          (fail "domain invalid")
+          pure
+          (hostManagerDomain "11111111-1111-1111-1111-111111111111" (replicate 32 'a') ":1.42" 1000 1234 5678)
       window <- maybe (fail "window invalid") pure (hostExecutionWindow 50 10 20 30 40)
-      request <- either (fail . show) pure (mkKindControllerRequest projection operation ("sha256:" ++ replicate 64 'a') domain window)
-      differentRequest <- either (fail . show) pure (mkKindControllerRequest projection operation ("sha256:" ++ replicate 64 'b') domain window)
-      decodeRetainedKindControllerRequest projection operation (encodeKindControllerRequest request) `shouldBe` Right request
-      decodeRetainedKindControllerRequest projection (replicate 32 'e') (encodeKindControllerRequest request) `shouldBe` Left KindRequestBindingMismatch
+      request <-
+        either
+          (fail . show)
+          pure
+          (mkKindControllerRequest projection operation ("sha256:" ++ replicate 64 'a') domain window)
+      differentRequest <-
+        either
+          (fail . show)
+          pure
+          (mkKindControllerRequest projection operation ("sha256:" ++ replicate 64 'b') domain window)
+      decodeRetainedKindControllerRequest projection operation (encodeKindControllerRequest request)
+        `shouldBe` Right request
+      decodeRetainedKindControllerRequest
+        projection
+        (replicate 32 'e')
+        (encodeKindControllerRequest request)
+        `shouldBe` Left KindRequestBindingMismatch
       recordKindFamilyIntent projection operation >>= (`shouldBe` KindIntentRecorded)
       outcome <- withRecoveredKindOperation projection operation $ \stable -> do
         observeKindIntent projection >>= (`shouldBe` KindIntentMatches operation)
         observeKindFamilyIntent projection >>= (`shouldBe` KindIntentMatches operation)
-        recordControllerSubmissionIntent projection operation (replicate 64 'a') stable >>= (`shouldBe` ControllerSubmissionRefused)
+        recordControllerSubmissionIntent projection operation (replicate 64 'a') stable
+          >>= (`shouldBe` ControllerSubmissionRefused)
         observeFamilyLaunch projection operation stable >>= (`shouldBe` FamilyLaunchMissing)
         recordFamilyPublicationAttempt projection request stable `shouldReturn` FamilyLaunchRefused
         matchesRetainedFamilyRequest projection request stable `shouldReturn` False
@@ -656,7 +1076,8 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
         observeFamilyPublicationAttempt projection operation stable `shouldReturn` FamilyLaunchMissing
         recordFamilyPublicationAttempt projection differentRequest stable `shouldReturn` FamilyLaunchRefused
         recordFamilyPublicationAttempt projection request stable `shouldReturn` FamilyLaunchRecorded
-        observeFamilyPublicationAttempt projection operation stable `shouldReturn` FamilyLaunchObserved request
+        observeFamilyPublicationAttempt projection operation stable
+          `shouldReturn` FamilyLaunchObserved request
         recordFamilyPublicationAttempt projection request stable `shouldReturn` FamilyLaunchAlreadyExists
         matchesRetainedFamilyRequest projection request (pure False) `shouldReturn` False
         recordFamilyLaunch projection request stable >>= (`shouldBe` FamilyLaunchAlreadyExists)
@@ -678,9 +1099,17 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
       observeKindFamilyIntent projection `shouldReturn` KindIntentConflict
       recordKindFamilyIntent projection operation `shouldReturn` KindIntentAlreadyExists
       observeKindIntent projection `shouldReturn` KindIntentMatches operation
-      domain <- maybe (fail "domain invalid") pure (hostManagerDomain "11111111-1111-1111-1111-111111111111" (replicate 32 'a') ":1.42" 1000 1234 5678)
+      domain <-
+        maybe
+          (fail "domain invalid")
+          pure
+          (hostManagerDomain "11111111-1111-1111-1111-111111111111" (replicate 32 'a') ":1.42" 1000 1234 5678)
       window <- maybe (fail "window invalid") pure (hostExecutionWindow 50 10 20 30 40)
-      request <- either (fail . show) pure (mkKindControllerRequest projection operation ("sha256:" ++ replicate 64 'a') domain window)
+      request <-
+        either
+          (fail . show)
+          pure
+          (mkKindControllerRequest projection operation ("sha256:" ++ replicate 64 'a') domain window)
       result <- withRecoveredKindOperation projection operation (recordFamilyLaunch projection request)
       result `shouldBe` KindOperationCallbackReturned FamilyLaunchRefused
   it "creates the family protocol under the initial operation lease" $
@@ -707,14 +1136,108 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
       let path = scopeRoot (bootstrapScope projection) </> "kind-intent.json"
       stored <- BS.readFile path
       external <- case Aeson.decodeStrict' stored of
-        Just (Aeson.Object fields) -> pure $ Aeson.Object $
-          KeyMap.insert "schema_version" (Aeson.toJSON (3 :: Int)) $
-            KeyMap.insert "controller_protocol" (Aeson.toJSON ("family-v1" :: String)) fields
+        Just (Aeson.Object fields) ->
+          pure $
+            Aeson.Object $
+              KeyMap.insert "schema_version" (Aeson.toJSON (3 :: Int)) $
+                KeyMap.insert "controller_protocol" (Aeson.toJSON ("family-v1" :: String)) fields
         _ -> fail "owner-family intent was not an object"
       BL.writeFile path (Aeson.encode external)
       observeKindOwnerFamilyIntent projection `shouldReturn` KindIntentConflict
       observeKindExternalFamilyIntent projection `shouldReturn` KindIntentMatches operation
-      reconcileFamilyPrerequisites projection operation id `shouldReturn` ReconcileFamilyAdmissionRefused
+      ending <- (+ 1000000000) <$> getMonotonicTimeNSec
+      outcome <- reconcileFamilyPrerequisites ending projection operation id
+      assertMutationInvariant
+        "controller.rejects_external_family"
+        (outcome == ReconcileFamilyAdmissionRefused)
+  it "waits for the scope lease before checking owner-family prerequisite admission" $
+    withFixture $ \_ projection _ _ _ -> do
+      let operation = replicate 32 'd'
+          root = scopeRoot (bootstrapScope projection)
+      withNewKindOwnerFamilyOperation projection operation (const (pure ()))
+        `shouldReturn` KindOperationCallbackReturned ()
+      entered <- newEmptyMVar
+      release <- newEmptyMVar
+      admissionChecks <- newIORef (0 :: Int)
+      let admit _ = modifyIORef' admissionChecks (+ 1) >> pure False
+      withAsync
+        (withRecoveredKindOperation projection operation $ \_ -> putMVar entered () >> takeMVar release)
+        $ \owner -> do
+          takeMVar entered
+          now <- getMonotonicTimeNSec
+          reconcileFamilyPrerequisites now projection operation admit
+            `shouldReturn` ReconcileFamilyAdmissionRefused
+          withAsync (reconcileFamilyPrerequisites (now + 5000000000) projection operation admit) $ \worker -> do
+            threadDelay 80000
+            poll worker >>= maybe (pure ()) (const (fail "the family worker returned before lease release"))
+            readIORef admissionChecks `shouldReturn` 0
+            putMVar release ()
+            wait owner `shouldReturn` KindOperationCallbackReturned ()
+            wait worker `shouldReturn` ReconcileFamilyAdmissionRefused
+      readIORef admissionChecks `shouldReturn` 2
+      doesFileExist (root </> "kind-network-intent.json") `shouldReturn` False
+  it "retains early teardown admission across API loss and fences Authority deployment" $
+    withFixture $ \_ projection _ _ _ -> do
+      let operation = replicate 32 'd'
+          root = scopeRoot (bootstrapScope projection)
+          apiConfig = root </> "control" </> "kubeconfig"
+          checkpoint = root </> "kind-teardown-admission.json"
+      let deploySteps = map (\step -> (serviceStepName step, serviceStepOk step)) <$> deployAuthority projection
+      withNewKindOwnerFamilyOperation
+        projection
+        operation
+        ( const $ do
+            admitKindTeardown projection >>= (`shouldSatisfy` isLeft)
+            deploySteps `shouldReturn` [("authority-admission", False)]
+        )
+        `shouldReturn` KindOperationCallbackReturned ()
+      createDirectoryIfMissing True (root </> "control")
+      BS.writeFile apiConfig "invalid"
+      unobservable <- admitKindTeardown projection
+      assertMutationInvariant "delete.requires_observed_admission" (isLeft unobservable)
+      observeKindTeardownAdmission projection `shouldReturn` KindIntentMissing
+      removeFile apiConfig
+      let localJournal = root </> "authority"
+      createSymbolicLink (root </> "missing-local-journal") localJournal
+      admitKindTeardown projection >>= (`shouldSatisfy` isLeft)
+      observeKindTeardownAdmission projection `shouldReturn` KindIntentMissing
+      removeFile localJournal
+      admitKindTeardown projection `shouldReturn` Right ()
+      observeKindTeardownAdmission projection `shouldReturn` KindIntentMatches operation
+      originalCheckpoint <- BS.readFile checkpoint
+      case Aeson.decodeStrict' originalCheckpoint of
+        Just (Aeson.Object fields) ->
+          BL.writeFile checkpoint $
+            Aeson.encode $
+              Aeson.Object (KeyMap.insert "operation_id" (Aeson.toJSON (replicate 32 'f')) fields)
+        _ -> fail "the teardown admission was not an object"
+      admitKindTeardown projection >>= (`shouldSatisfy` isLeft)
+      observeKindOwnerFamilyIntent projection `shouldReturn` KindIntentMatches operation
+      BS.writeFile checkpoint originalCheckpoint
+      BS.writeFile apiConfig "invalid"
+      admitKindTeardown projection `shouldReturn` Right ()
+      archive <- archiveCompletedOperation projection
+      case archive of
+        ArchiveNotCompletelyRemoved _ -> pure ()
+        other -> fail ("archive accepted admission without settled removal: " ++ show other)
+      observeKindOwnerFamilyIntent projection `shouldReturn` KindIntentMatches operation
+      doesDirectoryExist (root </> "history") `shouldReturn` False
+      let reservedArchive = root </> "history" </> operation
+      createDirectoryIfMissing True reservedArchive
+      admitKindTeardown projection >>= (`shouldSatisfy` isLeft)
+      removeDirectory reservedArchive
+      admissionSteps <- deploySteps
+      assertMutationInvariant
+        "delete.fences_authority_deployment"
+        (admissionSteps == [("authority-admission", False)])
+      doesDirectoryExist (root </> "authority-journal") `shouldReturn` False
+      createDirectoryIfMissing False (root </> "authority-journal")
+      admitKindTeardown projection >>= (`shouldSatisfy` isLeft)
+      BS.readFile (root </> "kind-intent.json") >>= BS.writeFile checkpoint
+      observeKindTeardownAdmission projection `shouldReturn` KindIntentConflict
+      removeFile checkpoint
+      createSymbolicLink (root </> "missing-admission") checkpoint
+      admitKindTeardown projection >>= (`shouldSatisfy` isLeft)
   it "prepares an owner-first operation before any prerequisite intent" $
     withFixture $ \_ projection _ _ _ -> do
       result <- prepareNewOwnerFamilyOperation (pure Nothing) projection
@@ -722,21 +1245,36 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
         ReconcileFamilyOperationReady operation -> do
           observeKindOwnerFamilyIntent projection `shouldReturn` KindIntentMatches operation
           let root = scopeRoot (bootstrapScope projection)
-          mapM_ (\name -> doesFileExist (root </> name) `shouldReturn` False)
-            ["node-image-intent.json", "kind-network-intent.json", "kind-node-var-volume-intent.json", "kind-node-create-intent.json"]
+          mapM_
+            (\name -> doesFileExist (root </> name) `shouldReturn` False)
+            [ "node-image-intent.json"
+            , "kind-network-intent.json"
+            , "kind-node-var-volume-intent.json"
+            , "kind-node-create-intent.json"
+            ]
         other -> fail ("owner-first preparation was refused: " ++ show other)
   it "retains distinct family primary and closing dispositions under the operation lease" $
     withFixture $ \parent projection _ _ _ -> do
       let operation = replicate 32 'd'
           digestText = replicate 64 'a'
-          result = FamilyResult FamilyWorkerConfirmed FamilyWorkerIoUnconfirmed FamilyParentUnconfirmed FamilyInputUnconfirmed FamilyPostReceiptComplete FamilyPostLeaseUnconfirmed
+          result =
+            FamilyResult
+              FamilyWorkerConfirmed
+              FamilyWorkerIoUnconfirmed
+              FamilyParentUnconfirmed
+              FamilyInputUnconfirmed
+              FamilyPostReceiptComplete
+              FamilyPostLeaseUnconfirmed
           recordPath = takeDirectory parent </> ".test-data" </> "fixture" </> "kind-family-dispatch-result.json"
       recordKindIntent projection operation >>= (`shouldBe` KindIntentRecorded)
       outcome <- withRecoveredKindOperation projection operation $ \stable -> do
         observeFamilyResult projection operation stable >>= (`shouldBe` FamilyResultMissing)
-        recordFamilyResult projection operation digestText result stable >>= (`shouldBe` FamilyResultRecorded)
-        observeFamilyResult projection operation stable >>= (`shouldBe` FamilyResultObserved digestText result)
-        recordFamilyResult projection operation digestText result stable >>= (`shouldBe` FamilyResultAlreadyExists)
+        recordFamilyResult projection operation digestText result stable
+          >>= (`shouldBe` FamilyResultRecorded)
+        observeFamilyResult projection operation stable
+          >>= (`shouldBe` FamilyResultObserved digestText result)
+        recordFamilyResult projection operation digestText result stable
+          >>= (`shouldBe` FamilyResultAlreadyExists)
         observeFamilyResult projection operation (pure False) >>= (`shouldBe` FamilyResultUnobservable)
         BS.writeFile recordPath "{}"
         observeFamilyResult projection operation stable >>= (`shouldBe` FamilyResultConflict)
@@ -745,31 +1283,47 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
     withFixture $ \_ projection _ _ _ -> do
       let operation = replicate 32 'd'
           exeDigest = "sha256:" ++ replicate 64 'a'
-      domain <- maybe (fail "domain invalid") pure (hostManagerDomain "11111111-1111-1111-1111-111111111111" (replicate 32 'a') ":1.42" 1000 1234 5678)
-      otherDomain <- maybe (fail "other domain invalid") pure (hostManagerDomain "11111111-1111-1111-1111-111111111111" (replicate 32 'a') ":1.43" 1000 1234 5678)
+      domain <-
+        maybe
+          (fail "domain invalid")
+          pure
+          (hostManagerDomain "11111111-1111-1111-1111-111111111111" (replicate 32 'a') ":1.42" 1000 1234 5678)
+      otherDomain <-
+        maybe
+          (fail "other domain invalid")
+          pure
+          (hostManagerDomain "11111111-1111-1111-1111-111111111111" (replicate 32 'a') ":1.43" 1000 1234 5678)
       window <- maybe (fail "window invalid") pure (hostExecutionWindow 50 10 20 30 40)
       otherWindow <- maybe (fail "other window invalid") pure (hostExecutionWindow 51 10 20 30 40)
       key <- maybe (fail "key invalid") pure (kindControllerOperationKey operation)
       otherKey <- maybe (fail "other key invalid") pure (kindControllerOperationKey (replicate 32 'e'))
-      recoveryKey <- maybe (fail "recovery key invalid") pure (kindProbeRecoveryKey operation (replicate 32 'e'))
+      recoveryKey <-
+        maybe (fail "recovery key invalid") pure (kindProbeRecoveryKey operation (replicate 32 'e'))
       recoveryKey `shouldNotBe` key
       kindProbeRecoveryKey operation operation `shouldBe` Nothing
       kindProbeRecoveryKey operation "invalid" `shouldBe` Nothing
       kindProbeRecoveryKey (replicate 32 'e') operation `shouldNotBe` Just recoveryKey
-      request <- either (fail . show) pure (mkKindControllerRequest projection operation exeDigest domain window)
+      request <-
+        either (fail . show) pure (mkKindControllerRequest projection operation exeDigest domain window)
       let encoded = encodeKindControllerRequest request
           decode = decodeKindControllerRequest projection key window domain exeDigest
       decode encoded `shouldBe` Right request
-      decodeKindControllerRequest projection otherKey window domain exeDigest encoded `shouldBe` Left KindRequestBindingMismatch
-      decodeKindControllerRequest projection key otherWindow domain exeDigest encoded `shouldBe` Left KindRequestBindingMismatch
-      decodeKindControllerRequest projection key window otherDomain exeDigest encoded `shouldBe` Left KindRequestBindingMismatch
-      decodeKindControllerRequest projection key window domain ("sha256:" ++ replicate 64 'b') encoded `shouldBe` Left KindRequestBindingMismatch
+      decodeKindControllerRequest projection otherKey window domain exeDigest encoded
+        `shouldBe` Left KindRequestBindingMismatch
+      decodeKindControllerRequest projection key otherWindow domain exeDigest encoded
+        `shouldBe` Left KindRequestBindingMismatch
+      decodeKindControllerRequest projection key window otherDomain exeDigest encoded
+        `shouldBe` Left KindRequestBindingMismatch
+      decodeKindControllerRequest projection key window domain ("sha256:" ++ replicate 64 'b') encoded
+        `shouldBe` Left KindRequestBindingMismatch
       withFixture $ \_ otherProjection _ _ _ ->
-        decodeKindControllerRequest otherProjection key window domain exeDigest encoded `shouldBe` Left KindRequestBindingMismatch
+        decodeKindControllerRequest otherProjection key window domain exeDigest encoded
+          `shouldBe` Left KindRequestBindingMismatch
       decode (encoded <> " ") `shouldBe` Left KindRequestNonCanonical
       decode "{}" `shouldBe` Left KindRequestMalformed
       decode (BS.replicate 16385 0) `shouldBe` Left KindRequestTooLarge
-      mkKindControllerRequest projection operation "sha256:invalid" domain window `shouldBe` Left KindRequestInvalid
+      mkKindControllerRequest projection operation "sha256:invalid" domain window
+        `shouldBe` Left KindRequestInvalid
   it "binds a worker receipt to the running recorded node" $
     withFixture $ \_ projection _ _ _ -> do
       let identifier = replicate 64 'a'
@@ -804,7 +1358,9 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
               (Just (Right inspection))
           good = status identifier (DockerNodeContainerMatching True) NodeRemoveAttemptMissing
       matchesNodeCreateStatus identifier good `shouldBe` True
-      matchesNodeCreateStatus (replicate 64 'e') good `shouldBe` False
+      assertMutationInvariant
+        "controller.rejects_wrong_node"
+        (not (matchesNodeCreateStatus (replicate 64 'e') good))
       matchesNodeCreateStatus
         identifier
         (status identifier (DockerNodeContainerMatching False) NodeRemoveAttemptMissing)
@@ -813,9 +1369,6 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
         identifier
         (status identifier (DockerNodeContainerMatching True) NodeRemoveAttemptMatches)
         `shouldBe` False
-      assertMutationInvariant
-        "controller.rejects_wrong_node"
-        (not (matchesNodeCreateStatus (replicate 64 'e') good))
   it "accepts only a bound worker receipt and a scoped diagnostic path" $
     withFixture $ \parent projection _ _ _ -> do
       let operation = replicate 32 'd'
@@ -859,9 +1412,13 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
         complete = EnforcementOutcome (Just observation) Nothing EnforcementCleanupConfirmed
     enforcementComplete complete `shouldBe` True
     enforcementComplete (complete {enforcementFailure = Just "probe failed"}) `shouldBe` False
-    enforcementComplete (complete {enforcementCleanup = EnforcementCleanupUnconfirmed "namespace removed"}) `shouldBe` False
+    enforcementComplete
+      (complete {enforcementCleanup = EnforcementCleanupUnconfirmed "namespace removed"})
+      `shouldBe` False
     enforcementComplete (complete {enforcementObservation = Nothing}) `shouldBe` False
-    enforcementComplete (complete {enforcementObservation = Just (observation {observedPolicyOther = True})}) `shouldBe` False
+    enforcementComplete
+      (complete {enforcementObservation = Just (observation {observedPolicyOther = True})})
+      `shouldBe` False
   it "never deletes a namespace whose creation or UID is unconfirmed" $ do
     calls <- newIORef ([] :: [[String]])
     let execute arguments _ = modifyIORef' calls (++ [arguments]) >> pure (Right (1, "already exists"))
@@ -869,7 +1426,6 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
     enforcementObservation result `shouldBe` Nothing
     observed <- readIORef calls
     let expected = [["create", "namespace", "prodbox-test-probe", "-o", "jsonpath={.metadata.uid}"]]
-    observed `shouldBe` expected
     assertMutationInvariant "network.rejects_foreign_namespace_cleanup" (observed == expected)
     malformedCalls <- newIORef ([] :: [[String]])
     let malformed arguments _ = modifyIORef' malformedCalls (++ [arguments]) >> pure (Right (0, "not-a-uid"))
@@ -881,12 +1437,27 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
     let uid = "12345678-1234-1234-1234-123456789abc"
         execute arguments _ = modifyIORef' calls (++ [arguments]) >> pure (Right (0, uid))
         namespace = "prodbox-test-probe"
-    refused <- observeNetworkEnforcementRecorded execute (const (pure ())) (pure False) (const (pure True)) (const (pure True)) namespace
+    refused <-
+      observeNetworkEnforcementRecorded
+        execute
+        (const (pure ()))
+        (pure False)
+        (const (pure True))
+        (const (pure True))
+        namespace
     enforcementCleanup refused `shouldBe` EnforcementCleanupNotStarted
     readIORef calls >>= (`shouldBe` [])
-    unrecorded <- observeNetworkEnforcementRecorded execute (const (pure ())) (pure True) (const (pure False)) (const (pure True)) namespace
+    unrecorded <-
+      observeNetworkEnforcementRecorded
+        execute
+        (const (pure ()))
+        (pure True)
+        (const (pure False))
+        (const (pure True))
+        namespace
     enforcementObservation unrecorded `shouldBe` Nothing
-    readIORef calls >>= (`shouldBe` [["create", "namespace", namespace, "-o", "jsonpath={.metadata.uid}"]])
+    readIORef calls
+      >>= (`shouldBe` [["create", "namespace", namespace, "-o", "jsonpath={.metadata.uid}"]])
   it "binds probe records to operation, namespace, UID and retained root" $
     withFixture $ \_ projection _ _ _ -> do
       let operation = replicate 32 'd'
@@ -896,35 +1467,64 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
       outcome <- withRecoveredKindOperation projection operation $ \stable -> do
         observeProbeJournal projection operation namespace stable `shouldReturn` ProbeJournalEmpty
         observeProbeRecord projection operation namespace ProbeIntent stable >>= (`shouldBe` ProbeMissing)
-        recordProbeRecord projection (replicate 32 'e') namespace ProbeIntent stable >>= (`shouldBe` ProbeRefused)
+        recordProbeRecord projection (replicate 32 'e') namespace ProbeIntent stable
+          >>= (`shouldBe` ProbeRefused)
         observeProbeRecord projection operation namespace ProbeIntent stable >>= (`shouldBe` ProbeMissing)
         recordProbeRecord projection operation namespace ProbeIntent stable >>= (`shouldBe` ProbeRecorded)
         observeProbeJournal projection operation namespace stable `shouldReturn` ProbeJournalUidUnconfirmed
         observeProbeRecord projection operation namespace ProbeIntent stable >>= (`shouldBe` ProbeMatches)
-        recordProbeRecord projection operation namespace ProbeIntent stable >>= (`shouldBe` ProbeAlreadyExists)
+        recordProbeRecord projection operation namespace ProbeIntent stable
+          >>= (`shouldBe` ProbeAlreadyExists)
         observeProbeCreated projection operation namespace stable >>= (`shouldBe` ProbeCreatedMissing)
-        recordProbeRecord projection operation namespace (ProbeCreated uid) stable >>= (`shouldBe` ProbeRecorded)
-        observeProbeJournal projection operation namespace stable `shouldReturn` ProbeJournalRemovalMissing uid
+        recordProbeRecord projection operation namespace (ProbeCreated uid) stable
+          >>= (`shouldBe` ProbeRecorded)
+        observeProbeJournal projection operation namespace stable
+          `shouldReturn` ProbeJournalRemovalMissing uid
         observeProbeCreated projection operation namespace stable >>= (`shouldBe` ProbeCreatedObserved uid)
-        observeProbeCreated projection (replicate 32 'e') namespace stable >>= (`shouldBe` ProbeCreatedConflict)
-        observeProbeRecord projection operation namespace (ProbeCreated uid) stable >>= (`shouldBe` ProbeMatches)
-        observeProbeRecord projection operation namespace (ProbeCreated "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") stable >>= (`shouldBe` ProbeConflict)
-        observeProbeRecord projection (replicate 32 'e') namespace ProbeIntent stable >>= (`shouldBe` ProbeConflict)
-        recordProbeRecord projection operation namespace (ProbeRemovalAttempt uid operation) stable `shouldReturn` ProbeRefused
-        recordProbeRecord projection operation namespace (ProbeRemovalAttempt uid (replicate 32 'e')) stable `shouldReturn` ProbeRecorded
-        observeProbeJournal projection operation namespace stable `shouldReturn` ProbeJournalRemovalAttempted uid (replicate 32 'e')
-        recordProbeRecord projection operation namespace (ProbeRemoved uid) stable `shouldReturn` ProbeRecorded
-        observeProbeJournal projection operation namespace stable `shouldReturn` ProbeJournalRemovalRecorded uid
+        observeProbeCreated projection (replicate 32 'e') namespace stable
+          >>= (`shouldBe` ProbeCreatedConflict)
+        observeProbeRecord projection operation namespace (ProbeCreated uid) stable
+          >>= (`shouldBe` ProbeMatches)
+        observeProbeRecord
+          projection
+          operation
+          namespace
+          (ProbeCreated "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+          stable
+          >>= (`shouldBe` ProbeConflict)
+        observeProbeRecord projection (replicate 32 'e') namespace ProbeIntent stable
+          >>= (`shouldBe` ProbeConflict)
+        recordProbeRecord projection operation namespace (ProbeRemovalAttempt uid operation) stable
+          `shouldReturn` ProbeRefused
+        recordProbeRecord projection operation namespace (ProbeRemovalAttempt uid (replicate 32 'e')) stable
+          `shouldReturn` ProbeRecorded
+        observeProbeJournal projection operation namespace stable
+          `shouldReturn` ProbeJournalRemovalAttempted uid (replicate 32 'e')
+        recordProbeRecord projection operation namespace (ProbeRemoved uid) stable
+          `shouldReturn` ProbeRecorded
+        observeProbeJournal projection operation namespace stable
+          `shouldReturn` ProbeJournalRemovalRecorded uid
         observeProbeJournal projection operation namespace (pure False) `shouldReturn` ProbeJournalConflict
         let failedNamespace = "failed-probe"
             recoveryId = replicate 32 'e'
-        recordProbeRecord projection operation failedNamespace (ProbeRemovalFailure uid recoveryId 7) stable `shouldReturn` ProbeRefused
-        mapM_ (\stage -> recordProbeRecord projection operation failedNamespace stage stable `shouldReturn` ProbeRecorded)
-          [ProbeIntent, ProbeCreated uid, ProbeRemovalAttempt uid recoveryId, ProbeRemovalFailure uid recoveryId 7]
-        observeProbeJournal projection operation failedNamespace stable `shouldReturn` ProbeJournalRemovalFailed uid recoveryId 7
-        recordProbeRecord projection operation failedNamespace (ProbeRemoved uid) stable `shouldReturn` ProbeRecorded
-        observeProbeJournal projection operation failedNamespace stable `shouldReturn` ProbeJournalRemovalRecordedAfterFailure uid recoveryId 7
-        recordProbeRecord projection operation "orphan-probe" (ProbeRemoved uid) stable `shouldReturn` ProbeRecorded
+        recordProbeRecord projection operation failedNamespace (ProbeRemovalFailure uid recoveryId 7) stable
+          `shouldReturn` ProbeRefused
+        mapM_
+          ( \stage -> recordProbeRecord projection operation failedNamespace stage stable `shouldReturn` ProbeRecorded
+          )
+          [ ProbeIntent
+          , ProbeCreated uid
+          , ProbeRemovalAttempt uid recoveryId
+          , ProbeRemovalFailure uid recoveryId 7
+          ]
+        observeProbeJournal projection operation failedNamespace stable
+          `shouldReturn` ProbeJournalRemovalFailed uid recoveryId 7
+        recordProbeRecord projection operation failedNamespace (ProbeRemoved uid) stable
+          `shouldReturn` ProbeRecorded
+        observeProbeJournal projection operation failedNamespace stable
+          `shouldReturn` ProbeJournalRemovalRecordedAfterFailure uid recoveryId 7
+        recordProbeRecord projection operation "orphan-probe" (ProbeRemoved uid) stable
+          `shouldReturn` ProbeRecorded
         observeProbeJournal projection operation "orphan-probe" stable `shouldReturn` ProbeJournalConflict
         recordProbeRecord projection operation "../foreign" ProbeIntent stable >>= (`shouldBe` ProbeRefused)
       outcome `shouldBe` KindOperationCallbackReturned ()
@@ -934,46 +1534,92 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
           recovery = replicate 32 'e'
           namespace = "prodbox-netcheck-" ++ take 12 operation
           uid = "12345678-1234-1234-1234-123456789abc"
-          recordPath = takeDirectory parent </> ".test-data" </> "fixture" </> ("kind-network-probe-" ++ namespace ++ "-recovery-launch.json")
-      domain <- maybe (fail "domain invalid") pure (hostManagerDomain "11111111-1111-1111-1111-111111111111" (replicate 32 'a') ":1.42" 1000 1234 5678)
+          recordPath =
+            takeDirectory parent
+              </> ".test-data"
+              </> "fixture"
+              </> ("kind-network-probe-" ++ namespace ++ "-recovery-launch.json")
+      domain <-
+        maybe
+          (fail "domain invalid")
+          pure
+          (hostManagerDomain "11111111-1111-1111-1111-111111111111" (replicate 32 'a') ":1.42" 1000 1234 5678)
       window <- maybe (fail "window invalid") pure (hostExecutionWindow 50 10 20 30 40)
-      controller <- either (fail . show) pure (mkKindControllerRequest projection operation ("sha256:" ++ replicate 64 'a') domain window)
+      controller <-
+        either
+          (fail . show)
+          pure
+          (mkKindControllerRequest projection operation ("sha256:" ++ replicate 64 'a') domain window)
       request <- either (fail . show) pure (mkProbeRecoveryRequest controller recovery uid)
-      other <- either (fail . show) pure (mkProbeRecoveryRequest controller recovery "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-      classifyProbePublication ProbeRecoveryLaunchMissing ProbePublicationMissing `shouldBe` ProbePublicationNotRecorded
-      classifyProbePublication (ProbeRecoveryLaunchObserved request) ProbePublicationMissing `shouldBe` ProbePublicationBeforeAttempt recovery
-      classifyProbePublication (ProbeRecoveryLaunchObserved request) (ProbePublicationObserved request) `shouldBe` ProbePublicationAttemptRecorded recovery
-      classifyProbePublication (ProbeRecoveryLaunchObserved request) (ProbePublicationObserved other) `shouldBe` ProbePublicationStateUnconfirmed
-      classifyProbePublication ProbeRecoveryLaunchMissing (ProbePublicationObserved request) `shouldBe` ProbePublicationStateUnconfirmed
-      classifyProbePublication (ProbeRecoveryLaunchObserved request) ProbePublicationUnobservable `shouldBe` ProbePublicationStateUnconfirmed
-      probeCleanupPermitsNodeRemoval (ProbeJournalRemovalRecorded uid) (ProbeRecoveryLaunchObserved request) `shouldBe` False
+      other <-
+        either
+          (fail . show)
+          pure
+          (mkProbeRecoveryRequest controller recovery "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+      classifyProbePublication ProbeRecoveryLaunchMissing ProbePublicationMissing
+        `shouldBe` ProbePublicationNotRecorded
+      classifyProbePublication (ProbeRecoveryLaunchObserved request) ProbePublicationMissing
+        `shouldBe` ProbePublicationBeforeAttempt recovery
+      classifyProbePublication (ProbeRecoveryLaunchObserved request) (ProbePublicationObserved request)
+        `shouldBe` ProbePublicationAttemptRecorded recovery
+      classifyProbePublication (ProbeRecoveryLaunchObserved request) (ProbePublicationObserved other)
+        `shouldBe` ProbePublicationStateUnconfirmed
+      classifyProbePublication ProbeRecoveryLaunchMissing (ProbePublicationObserved request)
+        `shouldBe` ProbePublicationStateUnconfirmed
+      classifyProbePublication (ProbeRecoveryLaunchObserved request) ProbePublicationUnobservable
+        `shouldBe` ProbePublicationStateUnconfirmed
+      probeCleanupPermitsNodeRemoval
+        (ProbeJournalRemovalRecorded uid)
+        (ProbeRecoveryLaunchObserved request)
+        `shouldBe` False
       probeRecoveryReceiptMatches uid request (ProbeRemovalAttemptObserved uid recovery) `shouldBe` True
       probeRecoveryReceiptMatches uid request (ProbeRemovalAttemptObserved uid operation) `shouldBe` False
-      probeRecoveryReceiptMatches "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" request (ProbeRemovalAttemptObserved uid recovery) `shouldBe` False
+      probeRecoveryReceiptMatches
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        request
+        (ProbeRemovalAttemptObserved uid recovery)
+        `shouldBe` False
       probeRecoveryReceiptMatches uid request ProbeRemovalAttemptUnobservable `shouldBe` False
       mkProbeRecoveryRequest controller operation uid `shouldBe` Left KindRequestInvalid
       mkProbeRecoveryRequest controller recovery "bad" `shouldBe` Left KindRequestInvalid
-      decodeProbeRecoveryRequest projection operation (encodeProbeRecoveryRequest request) `shouldBe` Right request
-      decodeProbeRecoveryRequest projection recovery (encodeProbeRecoveryRequest request) `shouldBe` Left KindRequestBindingMismatch
+      decodeProbeRecoveryRequest projection operation (encodeProbeRecoveryRequest request)
+        `shouldBe` Right request
+      decodeProbeRecoveryRequest projection recovery (encodeProbeRecoveryRequest request)
+        `shouldBe` Left KindRequestBindingMismatch
       recordKindFamilyIntent projection operation `shouldReturn` KindIntentRecorded
       outcome <- withRecoveredKindOperation projection operation $ \stable -> do
-        observeProbeRecoveryLaunch projection operation namespace stable `shouldReturn` ProbeRecoveryLaunchMissing
-        recordProbeRecord projection operation namespace (ProbeRecoveryLaunch request) stable `shouldReturn` ProbeRefused
-        recordProbeRecord projection operation namespace (ProbePublicationAttempt request) stable `shouldReturn` ProbeRefused
+        observeProbeRecoveryLaunch projection operation namespace stable
+          `shouldReturn` ProbeRecoveryLaunchMissing
+        recordProbeRecord projection operation namespace (ProbeRecoveryLaunch request) stable
+          `shouldReturn` ProbeRefused
+        recordProbeRecord projection operation namespace (ProbePublicationAttempt request) stable
+          `shouldReturn` ProbeRefused
         recordProbeRecord projection operation namespace ProbeIntent stable `shouldReturn` ProbeRecorded
-        recordProbeRecord projection operation namespace (ProbeCreated uid) stable `shouldReturn` ProbeRecorded
-        recordProbeRecord projection operation namespace (ProbeRecoveryLaunch other) stable `shouldReturn` ProbeRefused
-        recordProbeRecord projection operation namespace (ProbeRecoveryLaunch request) stable `shouldReturn` ProbeRecorded
-        observeProbeRecoveryLaunch projection operation namespace stable `shouldReturn` ProbeRecoveryLaunchObserved request
-        recordProbeRecord projection operation namespace (ProbeRecoveryLaunch request) stable `shouldReturn` ProbeAlreadyExists
-        observeProbePublicationAttempt projection operation namespace stable `shouldReturn` ProbePublicationMissing
-        recordProbeRecord projection operation namespace (ProbePublicationAttempt other) stable `shouldReturn` ProbeRefused
-        recordProbeRecord projection operation namespace (ProbePublicationAttempt request) stable `shouldReturn` ProbeRecorded
-        observeProbePublicationAttempt projection operation namespace stable `shouldReturn` ProbePublicationObserved request
-        recordProbeRecord projection operation namespace (ProbePublicationAttempt request) stable `shouldReturn` ProbeAlreadyExists
-        observeProbeRecoveryLaunch projection operation namespace (pure False) `shouldReturn` ProbeRecoveryLaunchUnobservable
+        recordProbeRecord projection operation namespace (ProbeCreated uid) stable
+          `shouldReturn` ProbeRecorded
+        recordProbeRecord projection operation namespace (ProbeRecoveryLaunch other) stable
+          `shouldReturn` ProbeRefused
+        recordProbeRecord projection operation namespace (ProbeRecoveryLaunch request) stable
+          `shouldReturn` ProbeRecorded
+        observeProbeRecoveryLaunch projection operation namespace stable
+          `shouldReturn` ProbeRecoveryLaunchObserved request
+        recordProbeRecord projection operation namespace (ProbeRecoveryLaunch request) stable
+          `shouldReturn` ProbeAlreadyExists
+        observeProbePublicationAttempt projection operation namespace stable
+          `shouldReturn` ProbePublicationMissing
+        recordProbeRecord projection operation namespace (ProbePublicationAttempt other) stable
+          `shouldReturn` ProbeRefused
+        recordProbeRecord projection operation namespace (ProbePublicationAttempt request) stable
+          `shouldReturn` ProbeRecorded
+        observeProbePublicationAttempt projection operation namespace stable
+          `shouldReturn` ProbePublicationObserved request
+        recordProbeRecord projection operation namespace (ProbePublicationAttempt request) stable
+          `shouldReturn` ProbeAlreadyExists
+        observeProbeRecoveryLaunch projection operation namespace (pure False)
+          `shouldReturn` ProbeRecoveryLaunchUnobservable
         BS.writeFile recordPath "{}"
-        observeProbeRecoveryLaunch projection operation namespace stable `shouldReturn` ProbeRecoveryLaunchConflict
+        observeProbeRecoveryLaunch projection operation namespace stable
+          `shouldReturn` ProbeRecoveryLaunchConflict
       outcome `shouldBe` KindOperationCallbackReturned ()
   it "retains distinct verifier coordinates for an uncertain attempt" $
     withFixture $ \parent projection _ _ _ -> do
@@ -982,31 +1628,62 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
           verifier = replicate 32 'f'
           namespace = "prodbox-netcheck-" ++ take 12 operation
           uid = "12345678-1234-1234-1234-123456789abc"
-      domain <- maybe (fail "domain invalid") pure (hostManagerDomain "11111111-1111-1111-1111-111111111111" (replicate 32 'a') ":1.42" 1000 1234 5678)
+      domain <-
+        maybe
+          (fail "domain invalid")
+          pure
+          (hostManagerDomain "11111111-1111-1111-1111-111111111111" (replicate 32 'a') ":1.42" 1000 1234 5678)
       window <- maybe (fail "window invalid") pure (hostExecutionWindow 50 10 20 30 40)
-      controller <- either (fail . show) pure (mkKindControllerRequest projection operation ("sha256:" ++ replicate 64 'a') domain window)
+      controller <-
+        either
+          (fail . show)
+          pure
+          (mkKindControllerRequest projection operation ("sha256:" ++ replicate 64 'a') domain window)
       original <- either (fail . show) pure (mkProbeRecoveryRequest controller prior uid)
       verifierCoordinates <- either (fail . show) pure (mkProbeRecoveryRequest controller verifier uid)
       request <- either (fail . show) pure (mkProbeAttemptVerifierRequest verifierCoordinates prior)
       mkProbeAttemptVerifierRequest verifierCoordinates verifier `shouldBe` Left KindRequestInvalid
       mkProbeAttemptVerifierRequest verifierCoordinates operation `shouldBe` Left KindRequestInvalid
-      decodeProbeAttemptVerifierRequest projection operation (encodeProbeAttemptVerifierRequest request) `shouldBe` Right request
-      decodeProbeAttemptVerifierRequest projection prior (encodeProbeAttemptVerifierRequest request) `shouldBe` Left KindRequestBindingMismatch
+      decodeProbeAttemptVerifierRequest projection operation (encodeProbeAttemptVerifierRequest request)
+        `shouldBe` Right request
+      decodeProbeAttemptVerifierRequest projection prior (encodeProbeAttemptVerifierRequest request)
+        `shouldBe` Left KindRequestBindingMismatch
       recordKindFamilyIntent projection operation `shouldReturn` KindIntentRecorded
       outcome <- withRecoveredKindOperation projection operation $ \stable -> do
-        recordProbeRecord projection operation namespace (ProbeVerifierLaunch request) stable `shouldReturn` ProbeRefused
-        recordProbeRecord projection operation namespace (ProbeAttemptReadback uid prior verifier) stable `shouldReturn` ProbeRefused
-        mapM_ (\stage -> recordProbeRecord projection operation namespace stage stable `shouldReturn` ProbeRecorded)
-          [ProbeIntent, ProbeCreated uid, ProbeRecoveryLaunch original, ProbePublicationAttempt original, ProbeRemovalAttempt uid prior]
-        recordProbeRecord projection operation namespace (ProbeVerifierLaunch request) stable `shouldReturn` ProbeRecorded
-        observeProbeJournal projection operation namespace stable `shouldReturn` ProbeJournalVerifierPending uid prior verifier False
-        recordProbeRecord projection operation namespace (ProbeAttemptReadback uid prior verifier) stable `shouldReturn` ProbeRefused
-        recordProbeRecord projection operation namespace (ProbeVerifierPublicationAttempt request) stable `shouldReturn` ProbeRecorded
-        observeProbeJournal projection operation namespace stable `shouldReturn` ProbeJournalVerifierPending uid prior verifier True
-        recordProbeRecord projection operation namespace (ProbeAttemptReadback uid prior verifier) stable `shouldReturn` ProbeRecorded
-        observeProbeJournal projection operation namespace stable `shouldReturn` ProbeJournalAttemptReadbackRecorded uid prior verifier
-        recordProbeRecord projection operation namespace (ProbeAttemptReadback uid prior prior) stable `shouldReturn` ProbeRefused
-        removeFile (takeDirectory parent </> ".test-data" </> "fixture" </> ("kind-network-probe-" ++ namespace ++ "-verifier-launch.json"))
+        recordProbeRecord projection operation namespace (ProbeVerifierLaunch request) stable
+          `shouldReturn` ProbeRefused
+        recordProbeRecord projection operation namespace (ProbeAttemptReadback uid prior verifier) stable
+          `shouldReturn` ProbeRefused
+        mapM_
+          (\stage -> recordProbeRecord projection operation namespace stage stable `shouldReturn` ProbeRecorded)
+          [ ProbeIntent
+          , ProbeCreated uid
+          , ProbeRecoveryLaunch original
+          , ProbePublicationAttempt original
+          , ProbeRemovalAttempt uid prior
+          ]
+        recordProbeRecord projection operation namespace (ProbeVerifierLaunch request) stable
+          `shouldReturn` ProbeRecorded
+        observeProbeJournal projection operation namespace stable
+          `shouldReturn` ProbeJournalVerifierPending uid prior verifier False
+        recordProbeRecord projection operation namespace (ProbeAttemptReadback uid prior verifier) stable
+          `shouldReturn` ProbeRefused
+        recordProbeRecord projection operation namespace (ProbeVerifierPublicationAttempt request) stable
+          `shouldReturn` ProbeRecorded
+        observeProbeJournal projection operation namespace stable
+          `shouldReturn` ProbeJournalVerifierPending uid prior verifier True
+        recordProbeRecord projection operation namespace (ProbeAttemptReadback uid prior verifier) stable
+          `shouldReturn` ProbeRecorded
+        observeProbeJournal projection operation namespace stable
+          `shouldReturn` ProbeJournalAttemptReadbackRecorded uid prior verifier
+        recordProbeRecord projection operation namespace (ProbeAttemptReadback uid prior prior) stable
+          `shouldReturn` ProbeRefused
+        removeFile
+          ( takeDirectory parent
+              </> ".test-data"
+              </> "fixture"
+              </> ("kind-network-probe-" ++ namespace ++ "-verifier-launch.json")
+          )
         observeProbeJournal projection operation namespace stable `shouldReturn` ProbeJournalConflict
       outcome `shouldBe` KindOperationCallbackReturned ()
   it "records an uncertain attempt readback without issuing another delete" $ do
@@ -1027,21 +1704,43 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
         record value first second = do
           modifyIORef' events (++ ["record readback"])
           pure (if (value, first, second) == (uid, prior, verifier) then ProbeRecorded else ProbeRefused)
-    confirmAttemptedProbeAbsenceWith operation namespace uid prior prior (pure True) execute record `shouldReturn` ProbeAttemptReadbackInvalid
-    confirmAttemptedProbeAbsenceWith operation namespace uid prior verifier (pure False) execute record `shouldReturn` ProbeAttemptReadbackIdentityChanged
+    confirmAttemptedProbeAbsenceWith operation namespace uid prior prior (pure True) execute record
+      `shouldReturn` ProbeAttemptReadbackInvalid
+    confirmAttemptedProbeAbsenceWith operation namespace uid prior verifier (pure False) execute record
+      `shouldReturn` ProbeAttemptReadbackIdentityChanged
     readIORef events `shouldReturn` []
-    confirmAttemptedProbeAbsenceWith operation namespace uid prior verifier (pure True) execute record `shouldReturn` ProbeAttemptReadbackRecorded
+    confirmAttemptedProbeAbsenceWith operation namespace uid prior verifier (pure True) execute record
+      `shouldReturn` ProbeAttemptReadbackRecorded
     seen <- readIORef events
     length seen `shouldBe` 4
     last seen `shouldBe` "record readback"
     any (isInfixOf "delete") seen `shouldBe` False
-    let blind arguments input = case arguments of "get" : "namespaces" : _ -> pure (Left "unavailable"); _ -> execute arguments input
-    confirmAttemptedProbeAbsenceWith operation namespace uid prior verifier (pure True) blind record `shouldReturn` ProbeAttemptReadbackAbsenceUnconfirmed
-    confirmAttemptedProbeAbsenceWith operation namespace uid prior verifier (pure True) execute (\_ _ _ -> pure ProbeRefused)
+    let blind arguments input = case arguments of
+          "get" : "namespaces" : _ -> pure (Left "unavailable")
+          _ -> execute arguments input
+    confirmAttemptedProbeAbsenceWith operation namespace uid prior verifier (pure True) blind record
+      `shouldReturn` ProbeAttemptReadbackAbsenceUnconfirmed
+    confirmAttemptedProbeAbsenceWith
+      operation
+      namespace
+      uid
+      prior
+      verifier
+      (pure True)
+      execute
+      (\_ _ _ -> pure ProbeRefused)
       `shouldReturn` ProbeAttemptReadbackRecordRefused ProbeRefused
     current <- newIORef True
     let changed _ _ _ = writeIORef current False >> pure ProbeRecorded
-    confirmAttemptedProbeAbsenceWith operation namespace uid prior verifier (readIORef current) execute changed
+    confirmAttemptedProbeAbsenceWith
+      operation
+      namespace
+      uid
+      prior
+      verifier
+      (readIORef current)
+      execute
+      changed
       `shouldReturn` ProbeAttemptReadbackChangedAfterRecord
   it "recovers only the recorded probe UID and requires independent absence" $ do
     let operation = replicate 32 'd'
@@ -1063,11 +1762,21 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
         attempt _ = modifyIORef' events (++ ["record attempt"]) >> pure ProbeRecorded
         failure _ code = modifyIORef' events (++ ["record delete failure " ++ show code]) >> pure ProbeRecorded
         receipt _ = modifyIORef' events (++ ["record receipt"]) >> pure ProbeRecorded
-    recoverRecordedProbeWith operation "foreign" uid (pure True) execute attempt failure receipt `shouldReturn` ProbeRecoveryInvalid
-    recoverRecordedProbeWith operation namespace other (pure True) execute attempt failure receipt `shouldReturn` ProbeRecoveryIdentityUnconfirmed
+    recoverRecordedProbeWith operation "foreign" uid (pure True) execute attempt failure receipt
+      `shouldReturn` ProbeRecoveryInvalid
+    recoverRecordedProbeWith operation namespace other (pure True) execute attempt failure receipt
+      `shouldReturn` ProbeRecoveryIdentityUnconfirmed
     readIORef events >>= (\seen -> any (isInfixOf "delete") seen `shouldBe` False)
     writeIORef events []
-    recoverRecordedProbeWith operation namespace uid (pure True) execute (const (pure ProbeAlreadyExists)) failure receipt
+    recoverRecordedProbeWith
+      operation
+      namespace
+      uid
+      (pure True)
+      execute
+      (const (pure ProbeAlreadyExists))
+      failure
+      receipt
       `shouldReturn` ProbeRecoveryAttemptRefused ProbeAlreadyExists
     readIORef events >>= (\seen -> any (isInfixOf "delete") seen `shouldBe` False)
     let lost arguments input = case arguments of
@@ -1082,17 +1791,33 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
         failedBlind arguments input = case arguments of
           "get" : "namespaces" : _ -> pure (Left "inventory unavailable")
           _ -> failed arguments input
-    recoverRecordedProbeWith operation namespace uid (pure True) lost attempt failure receipt `shouldReturn` ProbeRecoveryDeleteUnconfirmed
-    recoverRecordedProbeWith operation namespace uid (pure True) blind attempt failure receipt `shouldReturn` ProbeRecoveryAbsenceUnconfirmed
+    recoverRecordedProbeWith operation namespace uid (pure True) lost attempt failure receipt
+      `shouldReturn` ProbeRecoveryDeleteUnconfirmed
+    recoverRecordedProbeWith operation namespace uid (pure True) blind attempt failure receipt
+      `shouldReturn` ProbeRecoveryAbsenceUnconfirmed
     writeIORef events []
-    recoverRecordedProbeWith operation namespace uid (pure True) failed attempt failure receipt `shouldReturn` ProbeRecoveryCompletedAfterDeleteFailure 1
+    recoverRecordedProbeWith operation namespace uid (pure True) failed attempt failure receipt
+      `shouldReturn` ProbeRecoveryCompletedAfterDeleteFailure 1
     failedEvents <- readIORef events
-    take 3 failedEvents `shouldBe` ["get namespace " ++ namespace ++ " -o jsonpath={.metadata.uid}", "record attempt", "record delete failure 1"]
+    take 3 failedEvents
+      `shouldBe` [ "get namespace " ++ namespace ++ " -o jsonpath={.metadata.uid}"
+                 , "record attempt"
+                 , "record delete failure 1"
+                 ]
     last failedEvents `shouldBe` "record receipt"
     writeIORef events []
-    recoverRecordedProbeWith operation namespace uid (pure True) failedBlind attempt failure receipt `shouldReturn` ProbeRecoveryDeleteFailureAbsenceUnconfirmed 1
+    recoverRecordedProbeWith operation namespace uid (pure True) failedBlind attempt failure receipt
+      `shouldReturn` ProbeRecoveryDeleteFailureAbsenceUnconfirmed 1
     readIORef events >>= (\seen -> ("record receipt" `elem` seen) `shouldBe` False)
-    recoverRecordedProbeWith operation namespace uid (pure True) failed attempt (\_ _ -> pure ProbeRefused) receipt
+    recoverRecordedProbeWith
+      operation
+      namespace
+      uid
+      (pure True)
+      failed
+      attempt
+      (\_ _ -> pure ProbeRefused)
+      receipt
       `shouldReturn` ProbeRecoveryFailureRecordRefused 1 ProbeRefused
     ownership <- newIORef True
     let changing arguments input = do
@@ -1102,16 +1827,32 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
             _ -> pure ()
           pure result
     writeIORef events []
-    recoverRecordedProbeWith operation namespace uid (readIORef ownership) changing attempt failure receipt
+    recoverRecordedProbeWith
+      operation
+      namespace
+      uid
+      (readIORef ownership)
+      changing
+      attempt
+      failure
+      receipt
       `shouldReturn` ProbeRecoveryAttemptRefused ProbeRefused
     readIORef events >>= (\seen -> any (isInfixOf "delete") seen `shouldBe` False)
     writeIORef events []
-    recoverRecordedProbeWith operation namespace uid (pure True) execute attempt failure receipt `shouldReturn` ProbeRecoveryCompleted
+    recoverRecordedProbeWith operation namespace uid (pure True) execute attempt failure receipt
+      `shouldReturn` ProbeRecoveryCompleted
     captured <- readIORef body
-    Aeson.decodeStrict' captured `shouldBe` Just (Aeson.object
-      ["apiVersion" .= ("v1" :: String), "kind" .= ("DeleteOptions" :: String), "preconditions" .= Aeson.object ["uid" .= uid]])
+    Aeson.decodeStrict' captured
+      `shouldBe` Just
+        ( Aeson.object
+            [ "apiVersion" .= ("v1" :: String)
+            , "kind" .= ("DeleteOptions" :: String)
+            , "preconditions" .= Aeson.object ["uid" .= uid]
+            ]
+        )
     seen <- readIORef events
-    take 2 seen `shouldBe` ["get namespace " ++ namespace ++ " -o jsonpath={.metadata.uid}", "record attempt"]
+    take 2 seen
+      `shouldBe` ["get namespace " ++ namespace ++ " -o jsonpath={.metadata.uid}", "record attempt"]
     last seen `shouldBe` "record receipt"
   it "deletes only the created namespace UID after a failed probe" $ do
     calls <- newIORef ([] :: [([String], BS.ByteString)])
@@ -1148,7 +1889,14 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
                 ["get", "namespace", "kube-system", "-o", "jsonpath={.metadata.uid}"] -> control
                 ["get", "namespaces", "--field-selector", _, "-o", "json"] -> Right (0, inventory)
                 _ -> Left "nodes unavailable"
-          result <- observeNetworkEnforcementRecorded execute (const (pure ())) (pure True) (const (pure True)) (\_ -> writeIORef recorded True >> pure True) namespace
+          result <-
+            observeNetworkEnforcementRecorded
+              execute
+              (const (pure ()))
+              (pure True)
+              (const (pure True))
+              (\_ -> writeIORef recorded True >> pure True)
+              namespace
           removed <- readIORef recorded
           pure (enforcementCleanup result, removed)
     let empty = "{\"apiVersion\":\"v1\",\"kind\":\"NamespaceList\",\"items\":[]}"
@@ -1169,13 +1917,12 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
             "delete" : "--raw" : _ -> Right (1, "precondition conflict")
             _ -> Right (0, "ok")
     result <- observeNetworkEnforcementWith execute (const (pure ())) "prodbox-test-probe"
-    enforcementObservation result `shouldBe` Nothing
     observed <- readIORef calls
     let didApply arguments = case arguments of
           "apply" : _ -> True
           _ -> False
     assertMutationInvariant "network.rejects_replaced_namespace" (not (any didApply observed))
-    any didApply observed `shouldBe` False
+    enforcementObservation result `shouldBe` Nothing
   it "does not turn an unavailable connection observation into a network denial" $ do
     let uid = "12345678-1234-1234-1234-123456789abc"
         execute arguments _ = pure $ case arguments of
@@ -1188,6 +1935,42 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
     result <- observeNetworkEnforcementWith execute (const (pure ())) "prodbox-test-probe"
     enforcementObservation result `shouldBe` Nothing
     enforcementFailure result `shouldBe` Just "policy or restored connection observation unavailable"
+  it "waits for both exact probe clients before reading connection logs" $ do
+    let uid = "12345678-1234-1234-1234-123456789abc"
+        namespace = "prodbox-test-probe"
+        empty = "{\"apiVersion\":\"v1\",\"kind\":\"NamespaceList\",\"items\":[]}"
+        runProbe canFinish = do
+          finished <- newIORef ([] :: [String])
+          logReads <- newIORef ([] :: [String])
+          let execute arguments _ = case arguments of
+                "create" : _ -> pure (Right (0, uid))
+                "get" : "namespace" : _ -> pure (Right (0, uid))
+                ["get", "namespaces", "--field-selector", _, "-o", "json"] -> pure (Right (0, empty))
+                "-n" : _ : "get" : "pod" : _ -> pure (Right (0, "10.2.3.4"))
+                ["-n", name, "wait", "--for=jsonpath={.status.phase}=Succeeded", first, second, "--timeout=30s"]
+                  | name == namespace && canFinish -> do
+                      modifyIORef' finished (++ [first, second])
+                      pure (Right (0, "completed"))
+                  | otherwise -> pure (Right (1, "client still pending"))
+                ["-n", name, "logs", pod] | name == namespace -> do
+                  modifyIORef' logReads (++ [pod])
+                  complete <- elem ("pod/" ++ pod) <$> readIORef finished
+                  pure $
+                    if not complete
+                      then Right (1, "client still pending")
+                      else Right (0, if pod == "pol-other" then "REFUSED" else "CONNECTED")
+                _ -> pure (Right (0, "ok"))
+          result <- observeNetworkEnforcementWith execute (const (pure ())) namespace
+          logs <- readIORef logReads
+          pure (result, logs)
+    (completed, logs) <- runProbe True
+    enforcementComplete completed `shouldBe` True
+    logs
+      `shouldBe` ["base-allowed", "base-other", "pol-allowed", "pol-other", "off-allowed", "off-other"]
+    (pending, unavailableLogs) <- runProbe False
+    enforcementObservation pending `shouldBe` Nothing
+    enforcementCleanup pending `shouldBe` EnforcementCleanupConfirmed
+    unavailableLogs `shouldBe` []
   it "records an exclusive scoped controller submission before an effect" $
     withFixture $ \parent _ _ _ _ -> do
       let root = takeDirectory parent </> ".test-data" </> "fixture"
@@ -1199,7 +1982,9 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
           jobPath = root </> "kind-controller-submission-job.json"
           domainPath = root </> "kind-controller-manager-domain.json"
           providerPath = root </> "kind-controller-provider-binding.json"
-          providerBytes = "prodbox-native-provider-binding/v1\NUL" <> BL.toStrict (serialise (FixtureProviderWire 1 (BS.replicate 32 1) 1234 5678 1000 2 3))
+          providerBytes =
+            "prodbox-native-provider-binding/v1\NUL"
+              <> BL.toStrict (serialise (FixtureProviderWire 1 (BS.replicate 32 1) 1234 5678 1000 2 3))
           providerDigest = Text.unpack (Text.drop 7 (digest providerBytes))
           materialPath = root </> "kind-controller-provider-material.json"
           senderPath = root </> "kind-controller-sender.json"
@@ -1207,90 +1992,139 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
       projection <- readBootstrapProjection selected >>= either (fail . show) pure
       binding <- either (fail . show) pure (decodeProviderBinding providerBytes)
       sender <- maybe (fail "test sender invalid") pure (hostBusUniqueName ":1.77")
-      let manager = hostManagerDomain "12345678-1234-1234-1234-123456789abc" (replicate 32 'a') ":1.42" 1000 1234 5678
-          otherManager = hostManagerDomain "12345678-1234-1234-1234-123456789abc" (replicate 32 'a') ":1.42" 1000 1235 5678
+      let manager =
+            hostManagerDomain "12345678-1234-1234-1234-123456789abc" (replicate 32 'a') ":1.42" 1000 1234 5678
+          otherManager =
+            hostManagerDomain "12345678-1234-1234-1234-123456789abc" (replicate 32 'a') ":1.42" 1000 1235 5678
           executionWindow = hostExecutionWindow 50 10 20 30 40
       domain <- maybe (fail "test manager domain invalid") pure manager
       otherDomain <- maybe (fail "test alternate manager domain invalid") pure otherManager
       window <- maybe (fail "test controller window invalid") pure executionWindow
       recordKindIntent projection operation >>= (`shouldBe` KindIntentRecorded)
       outcome <- withRecoveredKindOperation projection operation $ \stable -> do
-        observeControllerSubmissionIntent projection operation request stable >>= (`shouldBe` ControllerSubmissionMissing)
-        recordControllerSubmissionIntent projection (replicate 32 'e') request stable >>= (`shouldBe` ControllerSubmissionRefused)
-        observeControllerSubmissionIntent projection operation request stable >>= (`shouldBe` ControllerSubmissionMissing)
+        observeControllerSubmissionIntent projection operation request stable
+          >>= (`shouldBe` ControllerSubmissionMissing)
+        recordControllerSubmissionIntent projection (replicate 32 'e') request stable
+          >>= (`shouldBe` ControllerSubmissionRefused)
+        observeControllerSubmissionIntent projection operation request stable
+          >>= (`shouldBe` ControllerSubmissionMissing)
         calls <- newIORef (0 :: Int)
-        submitted <- withControllerSubmissionIntent projection operation request stable (modifyIORef' calls (+ 1))
+        submitted <-
+          withControllerSubmissionIntent projection operation request stable (modifyIORef' calls (+ 1))
         submitted `shouldBe` Right ()
-        observeControllerSubmissionIntent projection operation request stable >>= (`shouldBe` ControllerSubmissionMatches)
-        observeRetainedControllerSubmission projection operation stable >>= (`shouldBe` RetainedControllerSubmissionObserved request)
-        again <- withControllerSubmissionIntent projection operation request stable (modifyIORef' calls (+ 1))
+        observeControllerSubmissionIntent projection operation request stable
+          >>= (`shouldBe` ControllerSubmissionMatches)
+        observeRetainedControllerSubmission projection operation stable
+          >>= (`shouldBe` RetainedControllerSubmissionObserved request)
+        again <-
+          withControllerSubmissionIntent projection operation request stable (modifyIORef' calls (+ 1))
         again `shouldBe` Left ControllerSubmissionAlreadyExists
         readIORef calls >>= (`shouldBe` 1)
-        observeControllerSubmissionIntent projection operation changedRequest stable >>= (`shouldBe` ControllerSubmissionConflict)
-        recordControllerDomain projection operation changedRequest domain window stable >>= (`shouldBe` ControllerDomainRefused)
-        observeControllerDomain projection operation request domain window stable >>= (`shouldBe` ControllerDomainMissing)
-        recordControllerDomain projection operation request domain window stable >>= (`shouldBe` ControllerDomainRecorded)
-        observeControllerDomain projection operation request domain window stable >>= (`shouldBe` ControllerDomainMatches)
-        observeRetainedControllerDomain projection operation request stable >>= (`shouldBe` RetainedControllerDomainObserved domain window)
-        observeControllerDomain projection operation request otherDomain window stable >>= (`shouldBe` ControllerDomainConflict)
-        recordControllerDomain projection operation request domain window stable >>= (`shouldBe` ControllerDomainAlreadyExists)
+        observeControllerSubmissionIntent projection operation changedRequest stable
+          >>= (`shouldBe` ControllerSubmissionConflict)
+        recordControllerDomain projection operation changedRequest domain window stable
+          >>= (`shouldBe` ControllerDomainRefused)
+        observeControllerDomain projection operation request domain window stable
+          >>= (`shouldBe` ControllerDomainMissing)
+        recordControllerDomain projection operation request domain window stable
+          >>= (`shouldBe` ControllerDomainRecorded)
+        observeControllerDomain projection operation request domain window stable
+          >>= (`shouldBe` ControllerDomainMatches)
+        observeRetainedControllerDomain projection operation request stable
+          >>= (`shouldBe` RetainedControllerDomainObserved domain window)
+        observeControllerDomain projection operation request otherDomain window stable
+          >>= (`shouldBe` ControllerDomainConflict)
+        recordControllerDomain projection operation request domain window stable
+          >>= (`shouldBe` ControllerDomainAlreadyExists)
         setFileMode domainPath 0o644
-        observeControllerDomain projection operation request domain window stable >>= (`shouldBe` ControllerDomainUnobservable)
+        observeControllerDomain projection operation request domain window stable
+          >>= (`shouldBe` ControllerDomainUnobservable)
         setFileMode domainPath 0o600
-        recordControllerProvider projection operation changedRequest providerDigest stable >>= (`shouldBe` ControllerProviderRefused)
-        observeRetainedControllerProvider projection operation request stable >>= (`shouldBe` RetainedControllerProviderMissing)
-        recordControllerProvider projection operation request providerDigest stable >>= (`shouldBe` ControllerProviderRecorded)
-        observeRetainedControllerProvider projection operation request stable >>= (`shouldBe` RetainedControllerProviderObserved providerDigest)
-        recordControllerProvider projection operation request providerDigest stable >>= (`shouldBe` ControllerProviderAlreadyExists)
-        observeControllerProviderMaterial projection operation request stable >>= (`shouldBe` RetainedControllerProviderMaterialMissing)
-        recordControllerProviderMaterial projection operation request binding stable >>= (`shouldBe` ControllerProviderMaterialRecorded)
-        observeControllerProviderMaterial projection operation request stable >>= (`shouldBe` RetainedControllerProviderMaterialObserved binding)
-        recordControllerProviderMaterial projection operation request binding stable >>= (`shouldBe` ControllerProviderMaterialAlreadyExists)
+        recordControllerProvider projection operation changedRequest providerDigest stable
+          >>= (`shouldBe` ControllerProviderRefused)
+        observeRetainedControllerProvider projection operation request stable
+          >>= (`shouldBe` RetainedControllerProviderMissing)
+        recordControllerProvider projection operation request providerDigest stable
+          >>= (`shouldBe` ControllerProviderRecorded)
+        observeRetainedControllerProvider projection operation request stable
+          >>= (`shouldBe` RetainedControllerProviderObserved providerDigest)
+        recordControllerProvider projection operation request providerDigest stable
+          >>= (`shouldBe` ControllerProviderAlreadyExists)
+        observeControllerProviderMaterial projection operation request stable
+          >>= (`shouldBe` RetainedControllerProviderMaterialMissing)
+        recordControllerProviderMaterial projection operation request binding stable
+          >>= (`shouldBe` ControllerProviderMaterialRecorded)
+        observeControllerProviderMaterial projection operation request stable
+          >>= (`shouldBe` RetainedControllerProviderMaterialObserved binding)
+        recordControllerProviderMaterial projection operation request binding stable
+          >>= (`shouldBe` ControllerProviderMaterialAlreadyExists)
         setFileMode materialPath 0o644
-        observeControllerProviderMaterial projection operation request stable >>= (`shouldBe` RetainedControllerProviderMaterialUnobservable)
+        observeControllerProviderMaterial projection operation request stable
+          >>= (`shouldBe` RetainedControllerProviderMaterialUnobservable)
         setFileMode materialPath 0o600
-        recordControllerSender projection operation changedRequest sender stable >>= (`shouldBe` ControllerSenderRefused)
-        observeRetainedControllerSender projection operation request stable >>= (`shouldBe` RetainedControllerSenderMissing)
-        recordControllerSender projection operation request sender stable >>= (`shouldBe` ControllerSenderRecorded)
-        observeRetainedControllerSender projection operation request stable >>= (`shouldBe` RetainedControllerSenderObserved sender)
-        recordControllerSender projection operation request sender stable >>= (`shouldBe` ControllerSenderAlreadyExists)
+        recordControllerSender projection operation changedRequest sender stable
+          >>= (`shouldBe` ControllerSenderRefused)
+        observeRetainedControllerSender projection operation request stable
+          >>= (`shouldBe` RetainedControllerSenderMissing)
+        recordControllerSender projection operation request sender stable
+          >>= (`shouldBe` ControllerSenderRecorded)
+        observeRetainedControllerSender projection operation request stable
+          >>= (`shouldBe` RetainedControllerSenderObserved sender)
+        recordControllerSender projection operation request sender stable
+          >>= (`shouldBe` ControllerSenderAlreadyExists)
         setFileMode senderPath 0o644
-        observeRetainedControllerSender projection operation request stable >>= (`shouldBe` RetainedControllerSenderUnobservable)
+        observeRetainedControllerSender projection operation request stable
+          >>= (`shouldBe` RetainedControllerSenderUnobservable)
         setFileMode senderPath 0o600
         setFileMode providerPath 0o644
-        observeRetainedControllerProvider projection operation request stable >>= (`shouldBe` RetainedControllerProviderUnobservable)
+        observeRetainedControllerProvider projection operation request stable
+          >>= (`shouldBe` RetainedControllerProviderUnobservable)
         setFileMode providerPath 0o600
-        recordControllerSubmissionIntent projection operation request stable >>= (`shouldBe` ControllerSubmissionAlreadyExists)
-        recordControllerJob projection operation changedRequest job stable >>= (`shouldBe` ControllerJobRefused)
-        recordControllerJob projection operation request "/org/freedesktop/systemd1/job/042" stable >>= (`shouldBe` ControllerJobRefused)
+        recordControllerSubmissionIntent projection operation request stable
+          >>= (`shouldBe` ControllerSubmissionAlreadyExists)
+        recordControllerJob projection operation changedRequest job stable
+          >>= (`shouldBe` ControllerJobRefused)
+        recordControllerJob projection operation request "/org/freedesktop/systemd1/job/042" stable
+          >>= (`shouldBe` ControllerJobRefused)
         observeControllerJob projection operation request job stable >>= (`shouldBe` ControllerJobMissing)
         recordControllerJob projection operation request job stable >>= (`shouldBe` ControllerJobRecorded)
         observeControllerJob projection operation request job stable >>= (`shouldBe` ControllerJobMatches)
-        observeRetainedControllerJob projection operation request stable >>= (`shouldBe` RetainedControllerJobObserved job)
-        observeControllerJob projection operation request "/org/freedesktop/systemd1/job/43" stable >>= (`shouldBe` ControllerJobConflict)
-        recordControllerJob projection operation request job stable >>= (`shouldBe` ControllerJobAlreadyExists)
+        observeRetainedControllerJob projection operation request stable
+          >>= (`shouldBe` RetainedControllerJobObserved job)
+        observeControllerJob projection operation request "/org/freedesktop/systemd1/job/43" stable
+          >>= (`shouldBe` ControllerJobConflict)
+        recordControllerJob projection operation request job stable
+          >>= (`shouldBe` ControllerJobAlreadyExists)
         setFileMode jobPath 0o644
-        observeControllerJob projection operation request job stable >>= (`shouldBe` ControllerJobUnobservable)
+        observeControllerJob projection operation request job stable
+          >>= (`shouldBe` ControllerJobUnobservable)
         setFileMode jobPath 0o600
         setFileMode path 0o644
-        observeControllerSubmissionIntent projection operation request stable >>= (`shouldBe` ControllerSubmissionUnobservable)
+        observeControllerSubmissionIntent projection operation request stable
+          >>= (`shouldBe` ControllerSubmissionUnobservable)
         setFileMode path 0o600
         BS.writeFile path "{}"
-        observeControllerSubmissionIntent projection operation request stable >>= (`shouldBe` ControllerSubmissionConflict)
+        observeControllerSubmissionIntent projection operation request stable
+          >>= (`shouldBe` ControllerSubmissionConflict)
       outcome `shouldBe` KindOperationCallbackReturned ()
       status <- observeControllerSubmissionStatus projection
       ("RetainedControllerSubmissionConflict" `isInfixOf` status) `shouldBe` True
       ("worker settlement not observed" `isInfixOf` status) `shouldBe` True
-      public <- captureSubprocessWithInputBounded
-        (BoundedSubprocessLimits 1 65536 65536 30000000)
-        BS.empty
-        (Subprocess "./.build/prodbox" ["--config", selected, "control", "status"]
-          (Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")]) Nothing)
+      public <-
+        captureSubprocessWithInputBounded
+          (BoundedSubprocessLimits 1 65536 65536 30000000)
+          BS.empty
+          ( Subprocess
+              "./.build/prodbox"
+              ["--config", selected, "control", "status"]
+              (Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")])
+              Nothing
+          )
       case public of
         Right result -> do
           let output = processStdout result ++ processStderr result
           if "RetainedControllerSubmissionConflict" `isInfixOf` output
-              && "worker settlement not observed" `isInfixOf` output
+            && "worker settlement not observed" `isInfixOf` output
             then pure ()
             else fail ("public status omitted retained submission detail: " ++ output)
         Left failure -> fail (show failure)
@@ -1298,25 +2132,45 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
     withFixture $ \_ projection _ _ _ -> do
       let operation = replicate 32 'd'
           request = replicate 64 'a'
-          wire n = "prodbox-native-provider-binding/v1\NUL" <> BL.toStrict (serialise (FixtureProviderWire 1 (BS.replicate 32 n) 1234 5678 1000 2 3))
+          wire n =
+            "prodbox-native-provider-binding/v1\NUL"
+              <> BL.toStrict (serialise (FixtureProviderWire 1 (BS.replicate 32 n) 1234 5678 1000 2 3))
       bootText <- BS8.unpack <$> BS.readFile "/proc/sys/kernel/random/boot_id"
       let otherBoot = (if take 1 bootText == "a" then "b" else "a") ++ take 35 (drop 1 bootText)
       binding <- either (fail . show) pure (decodeProviderBinding (wire 1))
       sender <- maybe (fail "sender invalid") pure (hostBusUniqueName ":1.77")
       otherBinding <- either (fail . show) pure (decodeProviderBinding (wire 2))
-      domain <- maybe (fail "domain invalid") pure (hostManagerDomain otherBoot (replicate 32 'a') ":1.42" 1000 1234 5678)
-      otherDomain <- maybe (fail "alternate domain invalid") pure (hostManagerDomain otherBoot (replicate 32 'a') ":1.42" 1000 1235 5678)
+      domain <-
+        maybe
+          (fail "domain invalid")
+          pure
+          (hostManagerDomain otherBoot (replicate 32 'a') ":1.42" 1000 1234 5678)
+      otherDomain <-
+        maybe
+          (fail "alternate domain invalid")
+          pure
+          (hostManagerDomain otherBoot (replicate 32 'a') ":1.42" 1000 1235 5678)
       window <- maybe (fail "window invalid") pure (hostExecutionWindow 50 10 20 30 40)
       compareControllerProviderBinding domain binding domain binding `shouldBe` True
       compareControllerProviderBinding domain binding otherDomain binding `shouldBe` False
       compareControllerProviderBinding domain binding domain otherBinding `shouldBe` False
       recordKindIntent projection operation >>= (`shouldBe` KindIntentRecorded)
       recorded <- withRecoveredKindOperation projection operation $ \stable -> do
-        recordControllerSubmissionIntent projection operation request stable >>= (`shouldBe` ControllerSubmissionRecorded)
-        recordControllerDomain projection operation request domain window stable >>= (`shouldBe` ControllerDomainRecorded)
-        recordControllerProvider projection operation request (Text.unpack (Text.drop 7 (digest (wire 1)))) stable >>= (`shouldBe` ControllerProviderRecorded)
-        recordControllerProviderMaterial projection operation request binding stable >>= (`shouldBe` ControllerProviderMaterialRecorded)
-        recordControllerSender projection operation request sender stable >>= (`shouldBe` ControllerSenderRecorded)
+        recordControllerSubmissionIntent projection operation request stable
+          >>= (`shouldBe` ControllerSubmissionRecorded)
+        recordControllerDomain projection operation request domain window stable
+          >>= (`shouldBe` ControllerDomainRecorded)
+        recordControllerProvider
+          projection
+          operation
+          request
+          (Text.unpack (Text.drop 7 (digest (wire 1))))
+          stable
+          >>= (`shouldBe` ControllerProviderRecorded)
+        recordControllerProviderMaterial projection operation request binding stable
+          >>= (`shouldBe` ControllerProviderMaterialRecorded)
+        recordControllerSender projection operation request sender stable
+          >>= (`shouldBe` ControllerSenderRecorded)
       recorded `shouldBe` KindOperationCallbackReturned ()
       observeControllerFreshProvider projection >>= (`shouldBe` ControllerFreshProviderDifferentDomain)
       observeControllerFreshSender projection >>= (`shouldBe` ControllerFreshSenderDifferentDomain)
@@ -1340,7 +2194,6 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
         recordControllerReceipt projection operation identifier stable
           >>= (`shouldBe` ControllerReceiptAlreadyExists)
         foreignReceipt <- observeControllerReceipt projection (replicate 32 'e') stable
-        foreignReceipt `shouldBe` ControllerReceiptConflict
         assertMutationInvariant
           "controller.rejects_foreign_receipt"
           (foreignReceipt == ControllerReceiptConflict)
@@ -1382,7 +2235,8 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
         [DeleteStep "controller settlement" False reason] ->
           "physical retirement are unconfirmed" `isInfixOf` reason `shouldBe` True
         other -> fail (show other)
-      archiveCompletedOperation projection >>= \outcome -> case outcome of
+      archived <- archiveCompletedOperation projection
+      case archived of
         ArchiveFailed reason -> "physical retirement are unconfirmed" `isInfixOf` reason `shouldBe` True
         other -> fail (show other)
       BS.readFile intent >>= (`shouldBe` before)
@@ -1398,17 +2252,24 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
           "KindFamilyRecoveryRequestMissing" `isInfixOf` reason `shouldBe` True
         other -> fail (show other)
       let selected = takeDirectory parent </> "family-reconcile.dhall"
-      rendered <- maybe (fail "family projection could not be rendered") pure (renderBootstrapProjection projection)
+      rendered <-
+        maybe (fail "family projection could not be rendered") pure (renderBootstrapProjection projection)
       TextIO.writeFile selected rendered
-      public <- captureSubprocessWithInputBounded
-        (BoundedSubprocessLimits 1 65536 65536 30000000)
-        BS.empty
-        (Subprocess "./.build/prodbox" ["--config", selected, "control", "reconcile"]
-          (Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")]) Nothing)
+      public <-
+        captureSubprocessWithInputBounded
+          (BoundedSubprocessLimits 1 65536 65536 30000000)
+          BS.empty
+          ( Subprocess
+              "./.build/prodbox"
+              ["--config", selected, "control", "reconcile"]
+              (Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")])
+              Nothing
+          )
       case public of
         Right output -> do
           processExitCode output `shouldBe` ExitFailure 1
-          ("KindFamilyRecoveryRequestMissing" `isInfixOf` (processStdout output ++ processStderr output)) `shouldBe` True
+          ("KindFamilyRecoveryRequestMissing" `isInfixOf` (processStdout output ++ processStderr output))
+            `shouldBe` True
         Left failure -> fail (show failure)
       BS.readFile intent `shouldReturn` before
   it "refuses an orphan network attempt even after an unlaunched owner is fenced" $
@@ -1419,26 +2280,49 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
       withNewKindOwnerFamilyOperation projection operation (const (pure ()))
         `shouldReturn` KindOperationCallbackReturned ()
       BS.writeFile attempt "orphan"
-      rendered <- maybe (fail "projection could not be rendered") pure (renderBootstrapProjection projection)
+      rendered <-
+        maybe (fail "projection could not be rendered") pure (renderBootstrapProjection projection)
       TextIO.writeFile selected rendered
-      public <- captureSubprocessWithInputBounded
-        (BoundedSubprocessLimits 1 65536 65536 30000000)
-        BS.empty
-        (Subprocess "./.build/prodbox" ["--config", selected, "control", "delete", "--yes"]
-          (Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")]) Nothing)
+      public <-
+        captureSubprocessWithInputBounded
+          (BoundedSubprocessLimits 1 65536 65536 30000000)
+          BS.empty
+          ( Subprocess
+              "./.build/prodbox"
+              ["--config", selected, "control", "delete", "--yes"]
+              (Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")])
+              Nothing
+          )
       case public of
         Right output -> do
           processExitCode output `shouldBe` ExitFailure 1
-          ("network: NOT completed" `isInfixOf` (processStdout output ++ processStderr output)) `shouldBe` True
+          ("network: NOT completed" `isInfixOf` (processStdout output ++ processStderr output))
+            `shouldBe` True
           BS.readFile attempt `shouldReturn` "orphan"
         Left failure -> fail (show failure)
   it "does not accept missing, failed or unobservable prior removal receipts" $ do
-    probeCleanupRecorded (ProbeJournalRemovalRecorded "12345678-1234-1234-1234-123456789abc") `shouldBe` True
-    probeCleanupPermitsNodeRemoval (ProbeJournalRemovalRecorded "12345678-1234-1234-1234-123456789abc") ProbeRecoveryLaunchMissing `shouldBe` True
-    probeCleanupPermitsNodeRemoval (ProbeJournalRemovalRecorded "12345678-1234-1234-1234-123456789abc") ProbeRecoveryLaunchUnobservable `shouldBe` False
-    probeCleanupPermitsNodeRemoval (ProbeJournalRemovalRecorded "12345678-1234-1234-1234-123456789abc") ProbeRecoveryLaunchConflict `shouldBe` False
-    mapM_ (\observation -> probeCleanupRecorded observation `shouldBe` False)
-      [ProbeJournalEmpty, ProbeJournalUidUnconfirmed, ProbeJournalRemovalMissing "uid", ProbeJournalRemovalAttempted "uid" "recovery", ProbeJournalConflict]
+    probeCleanupRecorded (ProbeJournalRemovalRecorded "12345678-1234-1234-1234-123456789abc")
+      `shouldBe` True
+    probeCleanupPermitsNodeRemoval
+      (ProbeJournalRemovalRecorded "12345678-1234-1234-1234-123456789abc")
+      ProbeRecoveryLaunchMissing
+      `shouldBe` True
+    probeCleanupPermitsNodeRemoval
+      (ProbeJournalRemovalRecorded "12345678-1234-1234-1234-123456789abc")
+      ProbeRecoveryLaunchUnobservable
+      `shouldBe` False
+    probeCleanupPermitsNodeRemoval
+      (ProbeJournalRemovalRecorded "12345678-1234-1234-1234-123456789abc")
+      ProbeRecoveryLaunchConflict
+      `shouldBe` False
+    mapM_
+      (\observation -> probeCleanupRecorded observation `shouldBe` False)
+      [ ProbeJournalEmpty
+      , ProbeJournalUidUnconfirmed
+      , ProbeJournalRemovalMissing "uid"
+      , ProbeJournalRemovalAttempted "uid" "recovery"
+      , ProbeJournalConflict
+      ]
     priorVolumeRemovalRecorded (NodeVolumeRemovalReceiptObserved (DockerNodeVarRemoveReply 204))
       `shouldBe` True
     priorVolumeRemovalRecorded (NodeVolumeRemovalReceiptObserved (DockerNodeVarRemoveReply 409))
@@ -1451,13 +2335,21 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
     priorNetworkRemovalRecorded
       (NetworkReceiptObserved (NetworkRemovalTransport (DockerNetworkRemoveReply 500)))
       `shouldBe` False
-    priorNetworkRemovalRecorded NetworkReceiptInvalid `shouldBe` False
     priorNetworkRemovalRecorded NetworkReceiptUnobservable `shouldBe` False
     assertMutationInvariant
       "delete.rejects_unbound_receipt"
       ( not (priorVolumeRemovalRecorded NodeVolumeRemovalReceiptUnobservable)
           && not (priorNetworkRemovalRecorded NetworkReceiptInvalid)
       )
+  it "requires independent node absence after a successful removal receipt" $ do
+    let identifier = replicate 64 'a'
+        present = NodeRemovalReadbackSampled (NodeRemovalInventory True [identifier] [identifier])
+        empty = NodeRemovalReadbackSampled (NodeRemovalInventory False [] [])
+    remained <- confirmRecordedRemovalReadback present (pure True)
+    assertMutationInvariant "delete.requires_independent_removal" (not remained)
+    confirmRecordedRemovalReadback NodeRemovalReadbackUnobservable (pure True) `shouldReturn` False
+    confirmRecordedRemovalReadback empty (pure False) `shouldReturn` False
+    confirmRecordedRemovalReadback empty (pure True) `shouldReturn` True
   it "only removes the exact created, stopped and isolated absence control" $ do
     let identifier = replicate 64 'a'
         name = "selected-absence-control"
@@ -1562,7 +2454,8 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
     afterControllerSettlement (classifyControllerUnitAbsence True) followup >>= (`shouldBe` Nothing)
     afterControllerSettlement (classifyControllerUnitAbsence False) followup >>= (`shouldBe` Nothing)
     readIORef calls >>= (`shouldBe` 0)
-    afterControllerSettlement (Right "independently confirmed settlement") followup >>= (`shouldBe` Just "observed")
+    afterControllerSettlement (Right "independently confirmed settlement") followup
+      >>= (`shouldBe` Just "observed")
     readIORef calls >>= (`shouldBe` 1)
   it "only recognizes a returned, bound worker with recorded create and start" $ do
     let identifier = replicate 64 'a'
@@ -1615,11 +2508,12 @@ nodeRegistryPreparationSuite = describe "test node artifact preparation" $ do
     fixtureBaseMatches ("unexpected" : expected) `shouldBe` False
     fixtureBaseMatches (drop 1 expected) `shouldBe` False
   it "requires observed controller absence before the deadline" $ do
-    let clockFrom values = do
+    let advance times = case times of
+          [] -> ([], 10)
+          value : rest -> (rest, value)
+        clockFrom values = do
           remaining <- newIORef values
-          pure $ atomicModifyIORef' remaining $ \times -> case times of
-            [] -> ([], 10)
-            value : rest -> (rest, value)
+          pure (atomicModifyIORef' remaining advance)
     onTime <- clockFrom [1, 2]
     waitForUnitAbsenceWith onTime (pure True) (pure ()) 10 >>= (`shouldBe` True)
     late <- clockFrom [1, 10]

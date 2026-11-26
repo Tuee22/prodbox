@@ -21,6 +21,8 @@ module Prodbox.CLI.Vault
   , brokerInitializeSelected
   , brokerUnsealSelected
   , brokerBaselineSelected
+  , runVaultPkiSelected
+  , runVaultMaintenanceSelected
   )
 where
 
@@ -85,6 +87,7 @@ import Prodbox.Bootstrap.Broker.Program
   ( PkiIssueRequest
   , mkPkiIssueRequest
   )
+import Prodbox.Bootstrap.Broker.Protocol (brokerActionStorageGeneration)
 import Prodbox.Bootstrap.Broker.Request
   ( IdempotencyKey
   , RequestDigest
@@ -111,8 +114,14 @@ import Prodbox.Bootstrap.Broker.Types
   , mkVaultStorageGeneration
   )
 import Prodbox.Bootstrap.HarnessInitRecovery
-import Prodbox.CLI.Command (VaultCommand (..))
+import Prodbox.CLI.Command
+  ( VaultCommand (..)
+  , VaultMaintenanceCommand (..)
+  , VaultOperationConfirmation (..)
+  , VaultPkiCommand (..)
+  )
 import Prodbox.CLI.Output (writeOutput)
+import Prodbox.Control.OperatorInput (readSecretLine)
 import Prodbox.ControlPlane.Deadline
   ( Deadline
   , DeadlineObservation (..)
@@ -133,6 +142,7 @@ import Prodbox.Vault.Host
   ( obtainNewOperatorPassword
   , obtainOperatorPassword
   )
+import Prodbox.Vault.Reconcile (bootstrapBrokerRotatableTransitKeys)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.Timeout (timeout)
@@ -407,25 +417,33 @@ runBrokerVaultResetAmbiguousInitialization repoRoot confirmed
       failBrokerCommand
         "Vault ambiguous-initialization reset"
         "Refusing to replace the ambiguous Vault storage generation without --yes confirmation"
-  | otherwise = do
-      let connect =
-            withBrokerHostRecoveryConnection (brokerHostConnection repoRoot)
-      observed <- queryObservedBrokerStatusWith connect
-      case observed of
-        Left err -> failBrokerCommand "Vault ambiguous-initialization reset" err
-        Right status
-          | not (observedInitializationAmbiguous status) ->
-              failBrokerCommand
-                "Vault ambiguous-initialization reset"
-                "Broker does not report an ambiguous initialization"
-          | otherwise -> case observedResetAction status of
-              Left cause -> failBrokerCommand "Vault reset binding" cause
-              Right action ->
+  | otherwise =
+      runVaultResetWith
+        (withBrokerHostRecoveryConnection (brokerHostConnection repoRoot))
+        Nothing
+
+runVaultResetWith
+  :: BrokerConnector -> Maybe (VaultStorageGeneration, IdempotencyKey) -> IO ExitCode
+runVaultResetWith connect expected = do
+  observed <- queryObservedBrokerStatusWith connect
+  case observed of
+    Left err -> failBrokerCommand label err
+    Right status
+      | not (observedInitializationAmbiguous status) ->
+          failBrokerCommand label "Broker does not report an ambiguous initialization"
+      | otherwise -> case observedResetAction status of
+          Left cause -> failBrokerCommand "Vault reset binding" cause
+          Right action
+            | not (matchesVaultGeneration expected (brokerActionStorageGeneration action)) ->
+                failBrokerCommand label "The confirmed storage generation differs from the retained recovery action"
+            | otherwise ->
                 runBrokerMutationActionWith
-                  connect
-                  "Vault ambiguous-initialization reset"
+                  (confirmOperationKey expected connect)
+                  label
                   action
                   resetAmbiguousVaultInitialization
+ where
+  label = "Vault ambiguous-initialization reset"
 
 runBrokerVaultUnseal :: FilePath -> IO ExitCode
 runBrokerVaultUnseal repoRoot = do
@@ -605,31 +623,37 @@ runBrokerVaultSeal repoRoot =
     sealVault
 
 runBrokerVaultRotateUnlockBundle :: FilePath -> IO ExitCode
-runBrokerVaultRotateUnlockBundle repoRoot = do
-  observed <- queryObservedBrokerStatus repoRoot
+runBrokerVaultRotateUnlockBundle repoRoot =
+  runVaultRotateUnlockBundleWith Nothing connect repoRoot Nothing passwords
+ where
+  connect = withBrokerHostConnection (brokerHostConnection repoRoot)
+  passwords = do
+    current <- obtainOperatorPassword repoRoot
+    replacement <- obtainNewOperatorPassword repoRoot
+    pure ((,) <$> current <*> replacement)
+
+runVaultRotateUnlockBundleWith
+  :: Maybe [(String, String)]
+  -> BrokerConnector
+  -> FilePath
+  -> Maybe (VaultStorageGeneration, IdempotencyKey)
+  -> IO (Either String (Text, Text))
+  -> IO ExitCode
+runVaultRotateUnlockBundleWith environment connect repoRoot expected passwords = do
+  observed <- queryObservedBrokerStatusWith connect
   case observed of
-    Left err -> failBrokerCommand "Vault unlock-bundle rotation" err
-    Right status -> do
-      current <- obtainOperatorPassword repoRoot
-      replacement <- obtainNewOperatorPassword repoRoot
-      case (current, replacement) of
-        (Left err, _) -> failBrokerCommand "Vault unlock-bundle rotation" err
-        (_, Left err) -> failBrokerCommand "Vault unlock-bundle rotation" err
-        (Right currentPassword, Right newPassword) ->
-          case secretPayloadFromBytes
-            ( LazyByteString.toStrict
-                ( encode
-                    ( object
-                        [ "schema_version" .= (1 :: Int)
-                        , "current_password" .= currentPassword
-                        , "new_password" .= newPassword
-                        ]
-                    )
-                )
-            ) of
-            Left err -> failBrokerCommand "Vault unlock-bundle rotation" err
+    Left err -> failBrokerCommand label err
+    Right status
+      | not (matchesVaultGeneration expected (observedStorageGeneration status)) ->
+          failBrokerCommand label "The confirmed storage generation differs from the selected Vault"
+      | otherwise -> do
+          supplied <- passwords
+          case supplied >>= makePayload of
+            Left err -> failBrokerCommand label err
             Right payload ->
-              runSecretBrokerMutation
+              runSecretBrokerMutationSelected
+                environment
+                (confirmOperationKey expected connect)
                 repoRoot
                 BrokerVaultRotateUnlockBundle
                 (observedStorageGeneration status)
@@ -637,44 +661,143 @@ runBrokerVaultRotateUnlockBundle repoRoot = do
                 [SecretWorkerRotateUnlockBundle]
                 payload
                 rotateVaultUnlockBundle
+ where
+  label = "Vault unlock-bundle rotation"
+
+  makePayload (currentPassword, newPassword) =
+    secretPayloadFromBytes
+      ( LazyByteString.toStrict
+          ( encode
+              ( object
+                  [ "schema_version" .= (1 :: Int)
+                  , "current_password" .= currentPassword
+                  , "new_password" .= newPassword
+                  ]
+              )
+          )
+      )
 
 runBrokerVaultRotateTransitKey :: FilePath -> Text -> IO ExitCode
-runBrokerVaultRotateTransitKey repoRoot keyName = do
-  observed <- queryObservedBrokerStatus repoRoot
+runBrokerVaultRotateTransitKey repoRoot =
+  runVaultRotateTransitWith
+    Nothing
+    (withBrokerHostConnection (brokerHostConnection repoRoot))
+    repoRoot
+    Nothing
+
+runVaultRotateTransitWith
+  :: Maybe [(String, String)]
+  -> BrokerConnector
+  -> FilePath
+  -> Maybe (VaultStorageGeneration, IdempotencyKey)
+  -> Text
+  -> IO ExitCode
+runVaultRotateTransitWith environment connect repoRoot expected keyName = do
+  observed <- queryObservedBrokerStatusWith connect
   case observed of
     Left err -> failBrokerCommand label err
-    Right status ->
-      case secretPayloadFromBytes (TextEncoding.encodeUtf8 keyName) of
-        Left err -> failBrokerCommand label err
-        Right payload ->
-          runSecretBrokerMutation
-            repoRoot
-            BrokerVaultRotateTransitKey
-            (observedStorageGeneration status)
-            ("rotate-transit-key:" <> keyName)
-            [SecretWorkerRotateTransitKey]
-            payload
-            rotateVaultTransitKey
+    Right status
+      | not (matchesVaultGeneration expected (observedStorageGeneration status)) ->
+          failBrokerCommand label "The confirmed storage generation differs from the selected Vault"
+      | otherwise -> case secretPayloadFromBytes (TextEncoding.encodeUtf8 keyName) of
+          Left err -> failBrokerCommand label err
+          Right payload ->
+            runSecretBrokerMutationSelected
+              environment
+              (confirmOperationKey expected connect)
+              repoRoot
+              BrokerVaultRotateTransitKey
+              (observedStorageGeneration status)
+              ("rotate-transit-key:" <> keyName)
+              [SecretWorkerRotateTransitKey]
+              payload
+              rotateVaultTransitKey
  where
   label = "Vault Transit-key rotation"
 
+matchesVaultGeneration
+  :: Maybe (VaultStorageGeneration, IdempotencyKey) -> VaultStorageGeneration -> Bool
+matchesVaultGeneration expected observed = maybe True ((== observed) . fst) expected
+
+confirmOperationKey
+  :: Maybe (VaultStorageGeneration, IdempotencyKey) -> BrokerConnector -> BrokerConnector
+confirmOperationKey confirmed connect generated action =
+  connect (maybe generated snd confirmed) action
+
+runVaultMaintenanceSelected
+  :: FilePath -> [(String, String)] -> VaultMaintenanceCommand -> IO ExitCode
+runVaultMaintenanceSelected repoRoot selected command = case command of
+  ObserveScopedVault -> do
+    result <- brokerQueryWith connect queryVaultStatus
+    either (failBrokerCommand "Vault status") (writeBrokerSuccess "Vault status") result
+  RotateScopedUnlockBundle confirmation ->
+    withExpected confirmation $ \expected ->
+      runVaultRotateUnlockBundleWith environment connect repoRoot (Just expected) promptPasswords
+  RotateScopedTransitKey keyName confirmation
+    | keyName `notElem` bootstrapBrokerRotatableTransitKeys ->
+        failBrokerCommand "Vault Transit-key rotation" "The key is outside the compiled rotation inventory"
+    | otherwise ->
+        withExpected confirmation $ \expected ->
+          runVaultRotateTransitWith environment connect repoRoot (Just expected) keyName
+  ResetScopedVaultInitialization confirmation ->
+    withExpected confirmation $ \expected ->
+      runVaultResetWith (withBrokerHostRecoveryConnection connection) (Just expected)
+ where
+  environment = Just selected
+  connection = BrokerHostConnection environment repoRoot
+  connect = withBrokerHostConnection connection
+
+  withExpected confirmation action =
+    case ( mkVaultStorageGeneration (vaultConfirmationGeneration confirmation)
+         , mkIdempotencyKey (vaultConfirmationOperation confirmation)
+         ) of
+      (Right generation, Right operation) -> action (generation, operation)
+      _ ->
+        failBrokerCommand "Vault maintenance" "The confirmed storage generation or operation ID is invalid"
+
+  promptPasswords :: IO (Either String (Text, Text))
+  promptPasswords = do
+    current <- readSecretLine "Current Vault operator password: "
+    replacement <- readSecretLine "New Vault operator password: "
+    pure $ case (current, replacement) of
+      (Just old, Just new) ->
+        case (TextEncoding.decodeUtf8' old, TextEncoding.decodeUtf8' new) of
+          (Right oldText, Right newText) -> Right (oldText, newText)
+          _ -> Left "Vault passwords must be UTF-8"
+      _ -> Left "both operator passwords are required"
+
 runBrokerVaultPkiStatus :: FilePath -> IO ExitCode
-runBrokerVaultPkiStatus repoRoot = do
-  result <- brokerQuery repoRoot queryVaultPkiStatus
+runBrokerVaultPkiStatus repoRoot =
+  runBrokerVaultPkiStatusWith (withBrokerHostConnection (brokerHostConnection repoRoot))
+
+runBrokerVaultPkiStatusWith :: BrokerConnector -> IO ExitCode
+runBrokerVaultPkiStatusWith connect = do
+  result <- brokerQueryWith connect queryVaultPkiStatus
   case result of
     Left err -> failBrokerCommand "Vault PKI status" err
     Right response -> writeBrokerSuccess "Vault PKI status" response
 
 runBrokerVaultPkiIssueTestCert :: FilePath -> IO ExitCode
-runBrokerVaultPkiIssueTestCert repoRoot = do
-  observed <- queryObservedBrokerStatus repoRoot
+runBrokerVaultPkiIssueTestCert repoRoot =
+  runBrokerVaultPkiIssueTestCertWith (withBrokerHostConnection (brokerHostConnection repoRoot))
+
+runBrokerVaultPkiIssueTestCertWith :: BrokerConnector -> IO ExitCode
+runBrokerVaultPkiIssueTestCertWith connect = do
+  observed <- queryObservedBrokerStatusWith connect
   case observed of
     Left err -> failBrokerCommand "Vault PKI test-certificate issue" err
     Right status ->
       case mkPkiIssueRequest "prodbox-vault-test.internal" 60 of
         Left err -> failBrokerCommand "Vault PKI test-certificate issue" err
         Right pkiRequest ->
-          runPkiBrokerMutation repoRoot status pkiRequest
+          runPkiBrokerMutation connect status pkiRequest
+
+runVaultPkiSelected :: FilePath -> [(String, String)] -> VaultPkiCommand -> IO ExitCode
+runVaultPkiSelected repoRoot environment command = case command of
+  ObserveVaultPki -> runBrokerVaultPkiStatusWith connect
+  IssueVaultTestCertificate -> runBrokerVaultPkiIssueTestCertWith connect
+ where
+  connect = withBrokerHostConnection (BrokerHostConnection (Just environment) repoRoot)
 
 data ObservedBrokerStatus = ObservedBrokerStatus
   { observedStorageGeneration :: !VaultStorageGeneration
@@ -853,20 +976,6 @@ runBrokerMutationActionWith connect label action mutation = do
         Right (Left err) -> failBrokerCommand label (renderBrokerError err)
         Right (Right response) -> writeBrokerSuccess label response
 
-runSecretBrokerMutation
-  :: FilePath
-  -> BrokerRoute
-  -> VaultStorageGeneration
-  -> Text
-  -> [SecretWorkerOperation]
-  -> SecretPayload
-  -> BrokerMutation
-  -> IO ExitCode
-runSecretBrokerMutation repoRoot =
-  runSecretBrokerMutationWith
-    (withBrokerHostConnection (brokerHostConnection repoRoot))
-    repoRoot
-
 runSecretBrokerMutationWith
   :: BrokerConnector
   -> FilePath
@@ -963,8 +1072,8 @@ maximumSecretWorkerDeliveries :: Int
 maximumSecretWorkerDeliveries = 8
 
 runPkiBrokerMutation
-  :: FilePath -> ObservedBrokerStatus -> PkiIssueRequest -> IO ExitCode
-runPkiBrokerMutation repoRoot status pkiRequest = do
+  :: BrokerConnector -> ObservedBrokerStatus -> PkiIssueRequest -> IO ExitCode
+runPkiBrokerMutation connect status pkiRequest = do
   let route = BrokerVaultPkiIssueTestCertificate
       generation = observedStorageGeneration status
   case actionDigestFor route "pki-issue:prodbox-vault-test.internal:60" of
@@ -976,8 +1085,7 @@ runPkiBrokerMutation repoRoot status pkiRequest = do
         Left err -> failBrokerCommand label err
         Right key -> do
           connected <-
-            withBrokerHostConnection
-              (brokerHostConnection repoRoot)
+            connect
               key
               ( \endpoint context ->
                   issueVaultPkiTestCert endpoint context action pkiRequest

@@ -1063,6 +1063,13 @@ Inspect retained local mutation-campaign records. Worker settlement, Docker stat
 Examples:
 - prodbox test status 123456789  # Inspect a retained mutation campaign.
 
+## prodbox test cleanup
+prodbox test cleanup - Recover unused mutation storage
+
+Remove a recorded unused mutation volume from its original Docker daemon and verify exact absence.
+Examples:
+- prodbox test cleanup 123456789  # Recover unused storage for a retained mutation campaign.
+
 ## prodbox test init
 prodbox test init - Create prodbox.test.dhall
 
@@ -1081,6 +1088,7 @@ Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
 - --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+- --runtime-socket <PATH> - Select a Docker Unix socket for a fresh Phase 1 run
 
 Examples:
 - prodbox test run unit  # Run the unit suites without a deployment topology.

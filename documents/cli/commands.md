@@ -14,6 +14,12 @@ The generated payload below remains unchanged. It describes actual old command n
 <!-- prodbox:command-registry.markdown:start -->
 | Command | Summary |
 |---------|---------|
+| `prodbox admin vault status` | Observe scoped Vault state |
+| `prodbox admin vault rotate-unlock-bundle` | Rotate the selected Vault unlock bundle |
+| `prodbox admin vault rotate-transit-key` | Rotate an allowlisted Vault Transit key |
+| `prodbox admin vault reset-ambiguous-initialization` | Recover from an ambiguous Vault initialization |
+| `prodbox admin vault pki status` | Observe scoped Vault PKI |
+| `prodbox admin vault pki issue-test-cert` | Issue a short-lived test certificate |
 | `prodbox admin-action run` | Run one signed Admin Action |
 | `prodbox aws policy` | Render IAM policy JSON |
 | `prodbox aws setup` | Create or refresh operational IAM user |
@@ -90,6 +96,13 @@ The generated payload below remains unchanged. It describes actual old command n
 | `prodbox control inspect-node-archive` | Inspect the retained OCI node archive |
 | `prodbox control inspect-image-attempt` | Inspect a retained image attempt |
 | `prodbox delete` | Delete the selected deployment's cloud-owned resources and keep the local plane |
+| `prodbox status` | Observe local control and current lifecycle admission |
+| `prodbox plan reconcile` | Plan reconciliation for the selected deployment |
+| `prodbox plan delete` | Plan deletion of the selected deployment's AWS resources |
+| `prodbox operations list` | List recorded operations in the selected scope |
+| `prodbox operations show` | Show a recorded operation |
+| `prodbox operations resume` | Resume a recorded operation |
+| `prodbox operations cancel` | Record cancellation before publication |
 | `prodbox config setup` | Interactively author config |
 | `prodbox config show` | Display current config |
 | `prodbox config validate` | Validate current config |
@@ -123,6 +136,7 @@ The generated payload below remains unchanged. It describes actual old command n
 | `prodbox nuke` | Total teardown of every prodbox-owned AWS resource (operator-only) |
 | `prodbox test list` | List locally registered test suites |
 | `prodbox test status` | Inspect a retained test campaign |
+| `prodbox test cleanup` | Retire a registered test run |
 | `prodbox test init` | Create prodbox.test.dhall |
 | `prodbox test run` | Run a named test suite |
 | `prodbox test all` | Run the full test suite |

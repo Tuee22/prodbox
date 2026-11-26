@@ -328,8 +328,13 @@ recordKindNodeVolumeRemoval bootstrap intent stable = do
   touched <- newIORef False
   outcome <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
     checked <- try $ do
-      ready <- receiptPreconditions bootstrap intent stable sameRoot
-      if not ready
+      before <- stable
+      ready <-
+        if before
+          then receiptPreconditions bootstrap intent (pure True) sameRoot
+          else pure False
+      beforeWrite <- if ready then stable else pure False
+      if not beforeWrite
         then pure NodeVolumeRemovalRefused
         else mask $ \restore -> do
           created <- try (Posix.openFdAt (Just root) removalName Posix.WriteOnly createFlags)
@@ -346,9 +351,10 @@ recordKindNodeVolumeRemoval bootstrap intent stable = do
               case written of
                 Left (_ :: IOException) -> pure NodeVolumeRemovalIncomplete
                 Right () -> do
-                  observed <- observeKindNodeVolumeRemoval bootstrap intent stable
+                  observed <- observeKindNodeVolumeRemoval bootstrap intent (pure True)
+                  after <- stable
                   pure
-                    ( if observed == NodeVolumeRemovalMatches
+                    ( if after && observed == NodeVolumeRemovalMatches
                         then NodeVolumeRemovalRecorded
                         else NodeVolumeRemovalIncomplete
                     )
@@ -564,8 +570,13 @@ recordKindNodeVolumeRemovalReceipt bootstrap intent result stable
       touched <- newIORef False
       outcome <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
         checked <- try $ do
-          ready <- removalReceiptPreconditions bootstrap intent stable sameRoot
-          if not ready
+          before <- stable
+          ready <-
+            if before
+              then removalReceiptPreconditions bootstrap intent (pure True) sameRoot
+              else pure False
+          beforeWrite <- if ready then stable else pure False
+          if not beforeWrite
             then pure NodeVolumeRemovalReceiptRefused
             else mask $ \restore -> do
               created <- try (Posix.openFdAt (Just root) removalReceiptName Posix.WriteOnly createFlags)
@@ -582,9 +593,10 @@ recordKindNodeVolumeRemovalReceipt bootstrap intent result stable
                   case written of
                     Left (_ :: IOException) -> pure NodeVolumeRemovalReceiptIncomplete
                     Right () -> do
-                      observed <- observeKindNodeVolumeRemovalReceipt bootstrap intent stable
+                      observed <- observeKindNodeVolumeRemovalReceipt bootstrap intent (pure True)
+                      after <- stable
                       pure
-                        ( if observed == NodeVolumeRemovalReceiptObserved result
+                        ( if after && observed == NodeVolumeRemovalReceiptObserved result
                             then NodeVolumeRemovalReceiptRecorded
                             else NodeVolumeRemovalReceiptIncomplete
                         )

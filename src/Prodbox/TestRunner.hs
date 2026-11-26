@@ -5,6 +5,9 @@ module Prodbox.TestRunner
   , validatePhaseOneOptions
   , runSelectedPhaseScenario
   , runSelectedMutationCatalog
+  , namedMutationSuite
+  , runSelectedMutationStatus
+  , runMutationCampaignCleanup
   , runSelectedPhaseTwoScenario
   , runSelectedPhaseTwoBrokerScenario
   , runSelectedPhaseThreeScenario
@@ -222,8 +225,16 @@ import Prodbox.Test.LifecycleCleanupClient
   , renderLifecycleTestHarnessCleanupError
   , runLifecycleTestHarnessCleanup
   )
-import Prodbox.Test.MutationExecutor (runMutationCatalog)
-import Prodbox.Test.Phase01Runner (runFreshPhase01Scenario, runPhase01Scenario)
+import Prodbox.Test.MutationExecutor
+  ( runMutationCampaignCleanup
+  , runMutationCampaignStatus
+  , runMutationCatalog
+  )
+import Prodbox.Test.Phase01Runner
+  ( runFreshPhase01OnSocket
+  , runFreshPhase01Scenario
+  , runPhase01Scenario
+  )
 import Prodbox.Test.Phase02BrokerRunner (runPhase02BrokerScenario)
 import Prodbox.Test.Phase02Runner (runPhase02Scenario)
 import Prodbox.Test.Phase03Runner (runPhase03Scenario)
@@ -368,7 +379,13 @@ data TestRefusal
   | UnknownTopologySuite String
   deriving (Eq, Show)
 
-data NamedLocalSuite = NamedUnit | NamedEnvironment | NamedCli | NamedEvidence | NamedPhaseOne
+data NamedLocalSuite
+  = NamedUnit
+  | NamedEnvironment
+  | NamedCli
+  | NamedEvidence
+  | NamedPhaseOne
+  | NamedMutations
   deriving (Eq, Show)
 
 namedLocalSuites :: [(String, NamedLocalSuite)]
@@ -378,7 +395,16 @@ namedLocalSuites =
   , ("cli", NamedCli)
   , ("evidence", NamedEvidence)
   , ("phase-01", NamedPhaseOne)
+  , ("mutations", NamedMutations)
   ]
+
+lookupLocalSuite :: String -> Maybe NamedLocalSuite
+lookupLocalSuite "phase-01-mutation" = Just NamedMutations
+lookupLocalSuite name | "mutations:" `isPrefixOf` name = Just NamedMutations
+lookupLocalSuite name = lookup name namedLocalSuites
+
+namedMutationSuite :: String -> Bool
+namedMutationSuite suite = lookupLocalSuite suite == Just NamedMutations
 
 renderNamedLocalTestList :: String
 renderNamedLocalTestList =
@@ -399,8 +425,20 @@ runSelectedPhaseTwoBrokerScenario = runPhase02BrokerScenario
 runSelectedPhaseTwoScenario :: FilePath -> IO ExitCode
 runSelectedPhaseTwoScenario = runPhase02Scenario
 
-runSelectedMutationCatalog :: IO ExitCode
-runSelectedMutationCatalog = runMutationCatalog
+runSelectedMutationCatalog :: TestCommand -> IO ExitCode
+runSelectedMutationCatalog command
+  | testCoverage command /= CoverageFlags False Nothing =
+      failWith "Coverage is not supported by the isolated mutation runner."
+  | testSubstrate command /= SubstrateHomeLocal =
+      failWith "The isolated mutation runner requires the home-local substrate."
+  | testRecordProfile command =
+      failWith "The isolated mutation runner does not record a capacity profile."
+  | otherwise = case testScope command of
+      TestRun suite | namedMutationSuite suite -> runMutationCatalog (stripPrefix "mutations:" suite)
+      _ -> failWith "The selected command does not name a mutation suite."
+
+runSelectedMutationStatus :: String -> IO ExitCode
+runSelectedMutationStatus = runMutationCampaignStatus
 
 runSelectedPhaseScenario :: FilePath -> IO ExitCode
 runSelectedPhaseScenario = runPhase01Scenario
@@ -421,11 +459,15 @@ runTests repoRoot command =
     Right () ->
       case testScope command of
         TestInit force -> runTopologyTestInit repoRoot force
-        TestRun suiteName -> case lookup suiteName namedLocalSuites of
+        TestRunAtRuntimeSocket "phase-01" socket ->
+          either failWith (const (runFreshPhase01OnSocket repoRoot socket)) (validatePhaseOneOptions command)
+        TestRunAtRuntimeSocket {} -> failWith "The runtime socket option applies to a fresh Phase 1 run."
+        TestRun suiteName -> case lookupLocalSuite suiteName of
           Just NamedUnit -> runNamedUnitTests repoRoot command
           Just NamedEnvironment -> runNamedEnvironmentTests repoRoot command
           Just NamedCli -> runNamedCliTests repoRoot command
           Just NamedEvidence -> runNamedEvidenceTests repoRoot command
+          Just NamedMutations -> runSelectedMutationCatalog command
           Just NamedPhaseOne -> either failWith (const (runFreshPhase01Scenario repoRoot)) (validatePhaseOneOptions command)
           Nothing
             | suiteName == "all" || "phase-" `isPrefixOf` suiteName ->

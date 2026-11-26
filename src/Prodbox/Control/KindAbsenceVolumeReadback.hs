@@ -17,23 +17,47 @@ import Control.Exception (IOException, try)
 import Data.List (nub, sort)
 import Data.Text qualified as Text
 import Prodbox.Config.BootstrapProjection
-  (BootstrapProjection, bootstrapKindPlan, bootstrapRootGeneration, bootstrapRuntimeSocket)
+  ( BootstrapProjection
+  , bootstrapKindPlan
+  , bootstrapRootGeneration
+  , bootstrapRuntimeSocket
+  )
 import Prodbox.Config.KindPlan (kindNodeVarVolumeName)
 import Prodbox.Control.DockerConnectedInfo
-  ( DockerConnectedInfo (..), DockerConnectedInfoResult (..), DockerNodeVarCreateResult (..)
-  , DockerNodeVarVolumeObservation (..), inspectDockerSessionNodeVarVolume, withConnectedDockerInfo )
-import Prodbox.Control.DockerIdentity (DockerDaemonObservation (..), observeDockerDaemon, readDocker)
+  ( DockerConnectedInfo (..)
+  , DockerConnectedInfoResult (..)
+  , DockerNodeVarCreateResult (..)
+  , DockerNodeVarVolumeObservation (..)
+  , inspectDockerSessionNodeVarVolume
+  , withConnectedDockerInfo
+  )
+import Prodbox.Control.DockerIdentity
+  ( DockerDaemonObservation (..)
+  , observeDockerDaemon
+  , readDocker
+  )
 import Prodbox.Control.DockerPeer (DockerPeer (..), DockerPeerResult (..))
 import Prodbox.Control.ImageIdObservation (validImageId)
 import Prodbox.Control.KindLease (KindOperationOutcome, withRecoveredKindOperation)
 import Prodbox.Control.KindNodeCreateIntent
-  ( KindAbsencePlan, KindAbsenceStage (..), KindAbsenceObservation (..)
-  , KindAbsenceIdObservation (..), KindAbsenceFootprintObservation (..)
-  , kindAbsenceOperation, kindAbsenceDaemon, observeKindAbsenceStage
-  , recoverKindAbsenceControlId, recoverKindAbsenceFootprint )
+  ( KindAbsenceFootprintObservation (..)
+  , KindAbsenceIdObservation (..)
+  , KindAbsenceObservation (..)
+  , KindAbsencePlan
+  , KindAbsenceStage (..)
+  , kindAbsenceDaemon
+  , kindAbsenceOperation
+  , observeKindAbsenceStage
+  , recoverKindAbsenceControlId
+  , recoverKindAbsenceFootprint
+  )
 import Prodbox.Control.KindNodeVolumeIntent
-  ( KindNodeVolumeIntentObservation (..), KindNodeVolumeReceiptObservation (..)
-  , mkKindNodeVolumeIntent, observeKindNodeVolumeIntent, observeKindNodeVolumeReceipt )
+  ( KindNodeVolumeIntentObservation (..)
+  , KindNodeVolumeReceiptObservation (..)
+  , mkKindNodeVolumeIntent
+  , observeKindNodeVolumeIntent
+  , observeKindNodeVolumeReceipt
+  )
 import Prodbox.Control.KindNodeVolumeReadback (NodeVolumeInventory (..), parseNodeVolumeInventory)
 import System.Timeout (timeout)
 
@@ -59,35 +83,53 @@ data AbsenceVolumeReadback
 parseAbsenceVolumeSample
   :: String -> [String] -> String -> [(String, String)] -> Maybe AbsenceVolumeSample
 parseAbsenceVolumeSample positive targets volumeOutput filters = do
-  if length targets > 64 || targets /= sort targets || length targets /= length (nub targets)
-      || any (not . validImageId . ("sha256:" ++)) targets
-      || positive `elem` targets || map fst filters /= targets
-    then Nothing else pure ()
+  if length targets > 64
+    || targets /= sort targets
+    || length targets /= length (nub targets)
+    || any (not . validImageId . ("sha256:" ++)) targets
+    || positive `elem` targets
+    || map fst filters /= targets
+    then Nothing
+    else pure ()
   positiveInventory <- parseNodeVolumeInventory positive volumeOutput ""
-  inventories <- traverse (\(identifier, output) -> (,) identifier <$> parseNodeVolumeInventory identifier volumeOutput output) filters
+  inventories <-
+    traverse
+      (\(identifier, output) -> (,) identifier <$> parseNodeVolumeInventory identifier volumeOutput output)
+      filters
   pure (AbsenceVolumeSample (nodeVolumeListed positiveInventory) inventories)
 
 classifyAbsenceVolumeReadback
-  :: AbsenceVolumePhase -> String -> [String]
-  -> DockerDaemonObservation -> DockerDaemonObservation -> Bool
-  -> Maybe AbsenceVolumeSample -> Maybe AbsenceVolumeSample -> AbsenceVolumeReadback
+  :: AbsenceVolumePhase
+  -> String
+  -> [String]
+  -> DockerDaemonObservation
+  -> DockerDaemonObservation
+  -> Bool
+  -> Maybe AbsenceVolumeSample
+  -> Maybe AbsenceVolumeSample
+  -> AbsenceVolumeReadback
 classifyAbsenceVolumeReadback phase control targets before after stable first second =
   case (before, after, stable, first, second) of
     (DockerDaemonObserved _ _, DockerDaemonChanged, _, _, _) -> AbsenceVolumeChanged
     (DockerDaemonObserved _ _, DockerDaemonObserved _ _, True, Just a, Just b)
       | before /= after || a /= b -> AbsenceVolumeChanged
       | not (validImageId ("sha256:" ++ control)) -> AbsenceVolumeUnobservable
-      | not (absencePositiveVolumeListed a) || map fst (absenceControlVolumeInventories a) /= targets -> AbsenceVolumeUnobservable
+      | not (absencePositiveVolumeListed a) || map fst (absenceControlVolumeInventories a) /= targets ->
+          AbsenceVolumeUnobservable
       | otherwise -> classify a
     _ -> AbsenceVolumeUnobservable
  where
   classify sample = case phase of
     AbsenceVolumesBeforeRemoval ->
-      if all (\(_, inventory) -> nodeVolumeListed inventory && nodeVolumeContainerIds inventory == [control]) inventories
-        then AbsenceVolumeSampled sample else AbsenceVolumeUnobservable
+      if all
+        (\(_, inventory) -> nodeVolumeListed inventory && nodeVolumeContainerIds inventory == [control])
+        inventories
+        then AbsenceVolumeSampled sample
+        else AbsenceVolumeUnobservable
     AbsenceVolumesAfterRemoval ->
-      if any (not . null . nodeVolumeContainerIds . snd) inventories then AbsenceVolumeUnobservable else
-        case [identifier | (identifier, inventory) <- inventories, nodeVolumeListed inventory] of
+      if any (not . null . nodeVolumeContainerIds . snd) inventories
+        then AbsenceVolumeUnobservable
+        else case [identifier | (identifier, inventory) <- inventories, nodeVolumeListed inventory] of
           [] -> AbsenceVolumeSampled sample
           residual -> AbsenceVolumeResidual residual
    where
@@ -96,7 +138,10 @@ classifyAbsenceVolumeReadback phase control targets before after stable first se
 -- The supplied wrapper combines the held family retirement owner with this
 -- operation's lease. It must not retain the lease or establish new authority.
 observeAbsenceControlVolumes
-  :: BootstrapProjection -> KindAbsencePlan -> AbsenceVolumePhase -> (IO Bool -> IO Bool)
+  :: BootstrapProjection
+  -> KindAbsencePlan
+  -> AbsenceVolumePhase
+  -> (IO Bool -> IO Bool)
   -> IO (KindOperationOutcome AbsenceVolumeReadback)
 observeAbsenceControlVolumes bootstrap plan phase ownerStable =
   withRecoveredKindOperation bootstrap operation $ \lease -> do
@@ -130,20 +175,27 @@ observeAbsenceControlVolumesUnderLease bootstrap plan phase heldStable = do
       (AbsenceIdObserved identifier, AbsenceFootprintObserved volumes, Just positive) -> do
         let targets = sort (map snd volumes)
         required <- requiredRecords stable identifier volumes
-        if not required then pure AbsenceVolumeRecordsUnconfirmed else do
-          before <- observeDockerDaemon socket
-          firstPositive <- observePositiveVolume stable
-          first <- sample stable positive targets
-          second <- sample stable positive targets
-          secondPositive <- observePositiveVolume stable
-          after <- observeDockerDaemon socket
-          final <- try stable
-          let trusted = before == expectedDaemon && after == expectedDaemon && firstPositive && secondPositive
-                && either (const False) id (final :: Either IOException Bool)
-          pure (classifyAbsenceVolumeReadback phase identifier targets before after trusted first second)
+        if not required
+          then pure AbsenceVolumeRecordsUnconfirmed
+          else do
+            before <- observeDockerDaemon socket
+            firstPositive <- observePositiveVolume stable
+            first <- sample stable positive targets
+            second <- sample stable positive targets
+            secondPositive <- observePositiveVolume stable
+            after <- observeDockerDaemon socket
+            final <- try stable
+            let trusted =
+                  before == expectedDaemon
+                    && after == expectedDaemon
+                    && firstPositive
+                    && secondPositive
+                    && either (const False) id (final :: Either IOException Bool)
+            pure (classifyAbsenceVolumeReadback phase identifier targets before after trusted first second)
       _ -> pure AbsenceVolumeRecordsUnconfirmed
   requiredRecords stable identifier volumes = do
-    footprint <- observeKindAbsenceStage bootstrap plan (AbsenceFootprintRecorded identifier volumes) stable
+    footprint <-
+      observeKindAbsenceStage bootstrap plan (AbsenceFootprintRecorded identifier volumes) stable
     case phase of
       AbsenceVolumesBeforeRemoval -> pure (footprint == AbsenceMatches)
       AbsenceVolumesAfterRemoval -> do
@@ -156,20 +208,34 @@ observeAbsenceControlVolumesUnderLease bootstrap plan phase heldStable = do
       proposal <- observeKindNodeVolumeIntent bootstrap intent stable
       receipt <- observeKindNodeVolumeReceipt bootstrap intent stable
       if proposal /= NodeVolumeIntentMatches
-        || receipt /= NodeVolumeReceiptObserved (DockerNodeVarCreateReply 201 (Just DockerNodeVarVolumeMatching))
-        then pure False else do
+        || receipt
+          /= NodeVolumeReceiptObserved (DockerNodeVarCreateReply 201 (Just DockerNodeVarVolumeMatching))
+        then pure False
+        else do
           result <- withConnectedDockerInfo 5000000 socket $ \session (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable -> do
             before <- stable
             observed <- inspectDockerSessionNodeVarVolume session bootstrap operation
             after <- stable
             peer <- peerStable
-            pure (before && after && peer && DockerDaemonObserved identifier identity == expectedDaemon
-              && observed == Right DockerNodeVarVolumeMatching)
+            pure
+              ( before
+                  && after
+                  && peer
+                  && DockerDaemonObserved identifier identity == expectedDaemon
+                  && observed == Right DockerNodeVarVolumeMatching
+              )
           pure (result == DockerPeerCompleted (DockerConnectedInfoCompleted True))
   sample stable positive targets = do
     listing <- readStable stable ["volume", "ls", "--quiet"]
-    filters <- traverse (\identifier -> fmap (identifier,) <$> readStable stable
-      ["ps", "--all", "--no-trunc", "--filter", "volume=" ++ identifier, "--format", "{{.ID}}"]) targets
+    filters <-
+      traverse
+        ( \identifier ->
+            fmap (identifier,)
+              <$> readStable
+                stable
+                ["ps", "--all", "--no-trunc", "--filter", "volume=" ++ identifier, "--format", "{{.ID}}"]
+        )
+        targets
     pure $ do
       volumes <- listing
       observations <- sequence filters

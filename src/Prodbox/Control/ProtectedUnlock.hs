@@ -133,7 +133,5 @@ protectedUnlock bootstrap = do
             key
         pure $ case result of
           Right (0, _, _) -> ProtectedUnsealed "MinIO and its unlock object were not consulted."
-          Right (code, _, err) ->
-            ProtectedRefused
-              ("Vault refused the supplied key (exit " ++ show code ++ "): " ++ take 120 (filter (/= '\n') err))
-          Left failure -> ProtectedRefused failure
+          Right (code, _, _) -> ProtectedRefused ("Vault refused the supplied key (exit " ++ show code ++ ")")
+          Left _ -> ProtectedRefused "Vault unseal request could not be observed"

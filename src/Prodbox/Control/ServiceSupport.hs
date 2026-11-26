@@ -6,6 +6,10 @@ module Prodbox.Control.ServiceSupport
   , run
   , runWithEnvironment
   , importImageStep
+  , maxServiceAttempts
+  , serviceAttemptNamespace
+  , serviceAttemptRecordName
+  , serviceOperationRecordNames
   ) where
 
 import Control.Exception (IOException, try)
@@ -25,6 +29,32 @@ data ServiceStep = ServiceStep
   , serviceStepDetail :: !String
   }
   deriving (Eq, Show)
+
+maxServiceAttempts :: Int
+maxServiceAttempts = 64
+
+serviceAttemptNamespace :: String -> Int -> String
+serviceAttemptNamespace operation index = "prodbox-service-" ++ operation ++ "-" ++ show index
+
+serviceAttemptRecordName :: String -> Int -> String -> FilePath
+serviceAttemptRecordName operation index record =
+  "kind-services-" ++ operation ++ "-" ++ show index ++ "-" ++ record ++ ".json"
+
+-- Move these records only after the exact old node and its dependants retire.
+-- An incomplete service attempt remains evidence in the old operation history.
+serviceOperationRecordNames :: String -> [FilePath]
+serviceOperationRecordNames operation =
+  ["kind-services-attempt.json", "kind-services-result.json"]
+    ++ probeRecords "prodbox-services-gate"
+    ++ concatMap attemptRecords [1 .. maxServiceAttempts]
+ where
+  attemptRecords index =
+    map (serviceAttemptRecordName operation index) ["attempt", "result"]
+      ++ probeRecords (serviceAttemptNamespace operation index)
+  probeRecords namespace =
+    [ "kind-network-probe-" ++ namespace ++ "-" ++ record ++ ".json"
+    | record <- ["intent", "created", "removed"]
+    ]
 
 limits :: Int -> BoundedSubprocessLimits
 limits seconds = BoundedSubprocessLimits (1024 * 1048576) (4 * 1048576) (256 * 1024) (seconds * 1000000)
@@ -59,15 +89,20 @@ runWithEnvironment environment seconds program arguments input = do
         )
     Left failure -> Left (show failure)
 
-importImageStep :: String -> FilePath -> String -> String -> IO ServiceStep
-importImageStep name path reference node = do
+importImageStep
+  :: (Int -> [String] -> ByteString.ByteString -> IO (Either String (Int, String, String)))
+  -> String
+  -> FilePath
+  -> String
+  -> String
+  -> IO ServiceStep
+importImageStep docker name path reference node = do
   -- An image already registered under this exact reference is not imported
   -- again: re-importing under running Pods churns containerd and was observed
   -- to coincide with exec failures in the client Pod.
   present <-
-    run
+    docker
       60
-      "/usr/bin/docker"
       ["exec", node, "ctr", "--namespace", "k8s.io", "images", "ls", "-q"]
       ByteString.empty
   bytes <-
@@ -80,15 +115,13 @@ importImageStep name path reference node = do
     (_, Left failure) -> pure (ServiceStep name False ("archive unreadable: " ++ show failure))
     (_, Right archive) -> do
       imported <-
-        run
+        docker
           300
-          "/usr/bin/docker"
           ["exec", "-i", node, "ctr", "--namespace", "k8s.io", "images", "import", "--all-platforms", "-"]
           archive
       listed <-
-        run
+        docker
           60
-          "/usr/bin/docker"
           ["exec", node, "ctr", "--namespace", "k8s.io", "images", "ls", "-q"]
           ByteString.empty
       pure $ case (imported, listed) of

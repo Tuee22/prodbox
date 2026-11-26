@@ -10,6 +10,7 @@ module Prodbox.Config.BootstrapProjection
   , bootstrapKindPlan
   , bootstrapRootGeneration
   , bootstrapRuntimeSocket
+  , validSocketPath
   , bootstrapNodeArtifact
   , bootstrapKindTool
   , ArtifactDeclaration (..)
@@ -44,10 +45,10 @@ import Prodbox.Config.DeploymentScope
   , deploymentScope
   , observeScopeGeneration
   , prepareFreshScopeWithConfig
+  , scopeApiPort
+  , scopeEnvironment
   , scopeIdentifier
   , scopeProjectAnchor
-  , scopeEnvironment
-  , scopeApiPort
   , scopeRoot
   , validArtifactDeclaration
   , validRootGeneration
@@ -261,27 +262,34 @@ renderBootstrapProjection projection = do
       natural = fromIntegral
       environment = case scopeEnvironment scope of Production -> "production"; Test -> "test"
   if publicationListenAddress http /= publicationListenAddress https
-      || artifactMaximumBytes node <= 0 || artifactMaximumBytes tool <= 0
-    then Nothing else pure (renderBootstrapDraft BootstrapDraft
-      { draftProjectAnchor = Text.pack (scopeProjectAnchor scope)
-      , draftRuntimeSocket = Text.pack (bootstrapRuntimeSocket projection)
-      , draftEnvironment = environment
-      , draftDeploymentId = Text.pack (scopeIdentifier scope)
-      , draftRootGeneration = bootstrapRootGeneration projection
-      , draftApiPort = natural (scopeApiPort scope)
-      , draftNodeImage = Text.pack (kindPlanNodeImage plan)
-      , draftHttpHostPort = natural (publicationHostPort http)
-      , draftHttpNodePort = natural (publicationNodePort http)
-      , draftHttpsHostPort = natural (publicationHostPort https)
-      , draftHttpsNodePort = natural (publicationNodePort https)
-      , draftListenAddress = ipLiteralText (publicationListenAddress http)
-      , draftNodePath = Text.pack (artifactPath node)
-      , draftNodeDigest = Text.pack (artifactDigest node)
-      , draftNodeMaximumBytes = fromInteger (artifactMaximumBytes node)
-      , draftKindPath = Text.pack (artifactPath tool)
-      , draftKindDigest = Text.pack (artifactDigest tool)
-      , draftKindMaximumBytes = fromInteger (artifactMaximumBytes tool)
-      })
+    || artifactMaximumBytes node <= 0
+    || artifactMaximumBytes tool <= 0
+    then Nothing
+    else
+      pure
+        ( renderBootstrapDraft
+            BootstrapDraft
+              { draftProjectAnchor = Text.pack (scopeProjectAnchor scope)
+              , draftRuntimeSocket = Text.pack (bootstrapRuntimeSocket projection)
+              , draftEnvironment = environment
+              , draftDeploymentId = Text.pack (scopeIdentifier scope)
+              , draftRootGeneration = bootstrapRootGeneration projection
+              , draftApiPort = natural (scopeApiPort scope)
+              , draftNodeImage = Text.pack (kindPlanNodeImage plan)
+              , draftHttpHostPort = natural (publicationHostPort http)
+              , draftHttpNodePort = natural (publicationNodePort http)
+              , draftHttpsHostPort = natural (publicationHostPort https)
+              , draftHttpsNodePort = natural (publicationNodePort https)
+              , draftListenAddress = ipLiteralText (publicationListenAddress http)
+              , draftNodePath = Text.pack (artifactPath node)
+              , draftNodeDigest = Text.pack (artifactDigest node)
+              , draftNodeMaximumBytes = fromInteger (artifactMaximumBytes node)
+              , draftKindPath = Text.pack (artifactPath tool)
+              , draftKindDigest = Text.pack (artifactDigest tool)
+              , draftKindMaximumBytes = fromInteger (artifactMaximumBytes tool)
+              }
+        )
+
 data BootstrapProjectionError
   = BootstrapSourceError !SelectedDhallError
   | BootstrapDecodeError

@@ -14,7 +14,7 @@
 **Critical mutations**: M04, M05 in [mutation_cases.md](mutation_cases.md).
 **Owned removals**: L08, L09 in [legacy_tracking_for_deletion.md](legacy_tracking_for_deletion.md).
 **Inherited removals**: B018, B022, B029, B042, B049, B050, B051, B057, B058, B059, B060, B066, B074, B077 in [legacy_tracking_for_deletion.md](legacy_tracking_for_deletion.md).
-**Evidence**: No current implementation/completion evidence recorded. Historical results are regression inputs only.
+**Evidence**: A03-01 and A03-02 are qualified. Dated implementation and validation records below identify the operator builds, real observations, and cleanup. Native Authority operation recovery, audited ambiguous-init recovery, owned removals, and the current cumulative gate remain open.
 
 [Resume from the numerical queue](README.md#resume-here). Follow [development_plan_standards.md](development_plan_standards.md); this file owns its tasks and closure, not another queue.
 
@@ -33,6 +33,816 @@ Do not stop to ask about these; build to them and record any residual choice as 
 - **Unsealing.** Agents may unseal Vault only through the explicit test self-unseal policy in a test environment; production needs protected custody or input within the operation ([AGENTS.md](../AGENTS.md), [security_and_credentials.md](../documents/engineering/security_and_credentials.md)).
 
 ## Implementation tasks
+
+Entry (2026-11-25). Phase 2 closed after two clean local cycles, the current
+canonical gate, critical mutations and exact fixture settlement. The
+existing `test run phase-03` baseline is running against that operator
+in an explicitly enrolled fresh test scope. It revalidates the available
+public paths and will preserve any current failures. The existing
+historical observations below remain regression material. The installed
+help exposes `delete`, `control lifecycle-status` and
+`control authority-deploy`. Phase 3 still owns the public plan and
+operation resume gaps. See `.build/phase3-entry-authority-baseline-20261125.log`.
+
+The four existing reviewed Phase 3 source bindings match the current
+checkout. The bounded executor now exposes them through
+`test run mutations:phase-03` and by individual case. Their source-bound
+execution and independent cleanup remain to be verified.
+
+Decision (2026-11-25). The mounted read currently treats any path that
+passes a file-existence check as valid genesis. The identity-bound
+admission rule at line 25 of [lifecycle.md](../documents/engineering/lifecycle.md)
+requires a positive retained observation. The first journal repair will
+validate the genesis bytes and read the mounted records through bounded,
+non-following descriptors. Missing, substituted and unreadable records
+remain recovery observations. This slice does not yet settle a lost
+write-ahead guard or supply Authority backup and restore.
+
+The entry run exited 1 at 15:57 under test scope
+`run-cc0ef9a5365429d9f2ca95728a2a948a`. It reached the first kind
+operation and tore it down. The next bootstrap did not publish a
+readable Authority genesis and the existing test runner raised a
+filesystem exception when starting the missing-genesis control. The
+independent observer confirmed exact node, volume and network absence
+for operation `4a51f9e26e1fec3f493a6d3a9e34f835`. This run has no
+qualifying reports. Preserve the local adverse fixture and logs. The
+runner now preserves the replacement reconcile diagnostic, records
+failure if the genesis control cannot be set up, skips a readiness
+retry when bootstrap failed and proceeds to its supported cleanup.
+See `.build/phase3-entry-authority-baseline-20261125.log` and
+`.build/phase3-entry-authority-baseline-independent-20261125.log`.
+
+The pre-Authority case inserted its simulated journal into the same root
+that it later tried to recreate. The current kind archive uses the early
+fence's eligibility check, which requires the local journal path absent
+in `src/Prodbox/Control/AuthorityJournalClient.hs`. The runner now retires
+that exact private fixture after the adverse observations and before
+the next reconcile. It uses the existing checked fixture cleanup and
+records failure if custody changes. This fixture remains a regression
+probe. A03-03 and A03-04 still need the real Authority operation path.
+
+Decision (2026-11-25). The selected scope now supplies the expected kind
+identity to the authenticated journal reader, and the Authority includes
+its mounted role configuration's cluster identity in each reply. The CLI
+holds the existing generation-checked kubeconfig snapshot for the read.
+This follows the identity rule in [lifecycle.md](../documents/engineering/lifecycle.md#identity-intent-and-observations).
+The deployer reserves journal creation under the existing kind lease and
+records the retained directory's device and inode before deployment. The
+host refuses missing or replaced storage with surviving reservation data,
+and existing directories without a recorded binding require recovery.
+These records locate the mounted journal. Only its Authority supplies
+the deployed scope's admission verdict. This slice leaves recovery of an
+ambiguous creation or loss of the contents of an otherwise unchanged
+directory, and journal backup and restore, open. The changes affect
+`M01-authority-unobservable` and `M01-authority-fence`; their current
+bindings require fresh isolated evidence.
+
+Follow-up (2026-11-25). The fresh fixture run under
+`run-adfa06a18528b06dca2062660d7d746b` independently reached kind
+readiness, proved exact first-operation absence and reached readiness
+again for replacement operation `030dc468a84fb46f01b36b4b66a7d615`.
+The independent observer then saw the management services, Broker and
+Authority Pods. The earlier binary wrote journal members as UID 0
+under a UID 1000 retained directory, which the hardened record reader
+refuses. The updated deployment runs the Authority with the selected
+retained directory owner's UID/GID. The deployer binds both the journal
+and a separate custody directory to the same generation. The Authority
+durably consumes a genesis reservation in that custody directory
+before first initialization, so losing both journal files cannot
+authorize reinitialization. Missing or partially published custody
+requires recovery. The paired binding addresses loss of a named
+directory. The one-time reservation addresses loss of its contents.
+See `.build/phase3-authority-fixture-independent-20261125.log`.
+
+The earlier targeted unit run reported five failures. Four test setups
+supplied bare artifact digests, which the selected bootstrap decoder
+rejected, and the binding check ran after the mounted journal source had
+changed. The fixture now uses the digest-qualified form and the changed
+mutation sources are repinned. That earlier run is not validation.
+See `.build/phase3-retained-binding-build-and-unit-20261125.log`.
+
+The CLI exposes aggregate `status`, `plan delete` and `plan reconcile`
+in the new build. The deletion plan uses the same fresh read and
+decision as `delete --yes`. The reconcile planner uses the existing
+retained-kind operation observation shared with `control reconcile`.
+Status also reports independently observed kind/control facts and
+Kubernetes readiness. The live runner exercises these paths in the
+real Authority scope and both planners while Vault is sealed.
+General operation resume, backup and restore, and obligation-aware
+control removal remain open.
+
+Canary disposition (2026-11-25 16:26). The 16:07 run produced four
+reports. Case 1 passed. Case 2 used the public reader with a retained
+kubeconfig for the retired first node. The classifier exercise now reads
+its private fixture directly and separately asserts the public refusal
+when the real API cannot be observed. Cases 3 and 4 recorded the
+initialized journal but the reader rejected the UID 0 files. Both now
+share the measured cleanup result and timing. The same unmodified
+binary independently refused `control delete --yes` again at 16:22.
+
+Under the standing exact test-cleanup authorization, the failed canary's
+replacement runtime was then retired by hand under its original root
+lock. Retained creation receipts matched the selected generation,
+operation, daemon, socket, node, volume and network. The read-only
+inventory verified the bound Kubernetes API and absence of scoped jobs,
+workers and host units before stopping the node. Independent reads then
+returned HTTP 404 for the exact Docker node, volume and network with the
+original daemon and bridge still HTTP 200. Original scope, operation and
+journal records and management data remain available for diagnosis.
+The canary still has failed acceptance reports. See
+`.build/phase3-authority-fixture-hand-action-20261125.log`,
+SHA-256 `6cad807873a4c849267c07b8862f00fa49132d9b676a2afb135160c4acd6a33d`.
+
+The corrected parser catalog and targeted journal selection passed
+384 tests. The compiled CLI also regenerated its command reference,
+manpages, completions and goldens, and `dev docs check` passed.
+The 16:27 live status/plan run uses executable SHA-256
+`b45f8be9c3d8a40681fb8f8e598a492704575bd2ab4d31e2fe6498e3d3110bc3`.
+It observed first kind readiness and exact teardown before starting the
+replacement. The following code work is a different candidate.
+
+Decision (2026-11-25). A valid-looking but substituted journal could
+otherwise appear empty. Following the positive observation rule in
+[lifecycle.md](../documents/engineering/lifecycle.md#identity-intent-and-observations),
+the Authority now commits a digest of the non-secret mirror bytes in
+the separately bound custody directory under the existing write-ahead
+guard. Reads and restarts require matching bytes. Separately, the exact
+local removal admission now holds the same custody directory lease as
+Authority writes and publishes a durable fence before node effects.
+Only a fresh NeverAdmitted verdict can create this fence. Matching
+generation and kind operation allow replay while the API is gone.
+New Authority admission and deployment refuse while the fence survives.
+This follows the removal and recovery boundary in
+[control_plane.md](../documents/engineering/control_plane.md#recovery-and-local-removal).
+The existing pre-Authority test teardown fence remains separate.
+Archiving the exact original operation and releasing its removal fence for retained control
+recreation, and positive absence for scopes that admitted cloud effects,
+require their own recovery proof. Both remain open.
+
+Real scoped read (2026-11-25 16:42). The 16:27 status/plan canary exited
+0 with all four currently registered reports satisfied. On the same
+Authority, UID 1000 owned the three protected mounted records. Direct
+Vault health observations before and after `control lifecycle-status`,
+`plan delete` and `plan reconcile` reported initialized and sealed.
+The sealed reads used fresh Authority metadata, and the reconciliation
+plan named the actual replacement control operation
+`df6b4b2bd522870c0da50b6bcfe22eea`. Both exact kind runtimes reached
+independent readiness and Docker node, volume and network absence after
+supported removal. The four reports are in
+`.build/scenario-evidence/275e90631d77bd2dc0d509ac3c7057ae/`. See
+`.build/phase3-status-proof-real-20261125.log`,
+`.build/phase3-status-proof-independent-20261125.log` and
+`.build/phase3-status-proof-sealed-readback-20261125.log`. The result
+validates those paths. The acceptance rows still require their
+remaining controls, operation recovery, backup and advanced Vault work.
+
+The subsequent custody candidate was built with executable SHA-256
+`0933ee3b450f53d0b58024ab68c70ce6e5a4227fa7f5283c2875a7763798e265`.
+Its targeted 385 tests passed, including same-size mirror substitution
+and concurrent authority admission being refused during and after a
+retained control removal. The M04d source binding now targets the first
+of those regressions. Source-bound mutation evidence remains open.
+
+Local operation slice (2026-11-25). The public operation commands expose
+the selected kind operation, checked publication and result evidence,
+same-operation resume, and recorded cancellation when publication can
+be excluded. Resume shares the existing controller launcher and closes
+through the same independent completion observer as `control reconcile`.
+The launch routine checks the early removal fence under the same kind
+lease before recording a new publication. Possible sends require their
+original settlement path. The live runner exercises exact ID, wrong ID,
+terminal resume and cancellation refusal for a completed publication.
+General Authority operation recovery and cancellation after a possible
+send remain open.
+
+The 16:46 operation canary uses binary SHA-256
+`5c9738d6f029c73074b056e044caee594951435a5015ef87e8823e7a6e75515b`.
+Its independent process trace captured two successful ordinary deletes
+in the first kind operation `1295b7c93135bfa9c9a5ae66c63e1af6`. Each
+process tree made one IP connection attempt, to loopback. The exact
+Kubernetes node and operation remained present throughout, and Vault
+data and the management namespace were absent before and after. The
+public scenario then removed that node, volume and network. See
+`.build/phase3-operations-proof-noop-trace-20261125.log`, SHA-256
+`2f2879fee9584d083c009a42b833c816897cc3a32832d5e48e04bf2a1c5e82ef`.
+The full run exited 0 at 17:02. All four reports passed, stored under
+`.build/scenario-evidence/e4748959043315a8cd29c0b730e56a42/`. The
+replacement operation `1c5c48042f7f850558132ee5f3b5aabb` reached
+independent Kubernetes readiness, retained the same control ID through
+`operations resume` and removed its bound resources after publishing
+the Authority-backed fence. The public removal replay succeeded with
+the API gone, and exact Docker reads confirmed both runtimes absent.
+An independent read also matched the retained digest to the journal
+bytes while the Authority served its own fresh verdict. See
+`.build/phase3-operations-proof-real-20261125.log`,
+`.build/phase3-operations-proof-independent-20261125.log` and
+`.build/phase3-operations-proof-journal-readback-20261125.log`.
+
+Interruption proof (2026-11-25 16:55). A separately enrolled test
+operator was killed after recording control operation
+`e67fed2b5b6fe44bebb2de6719885442` and before any publication.
+The public operation observation saw no launch. Two cancellations
+returned the same durable disposition and resume refused the cancelled
+operation. Public control cleanup completed. The independent observer
+read the original scope and cancellation, found the exact candidate
+node, volume and network absent, and found no worker unit or job for
+the identity. See `.build/phase3-cold-cancel-20261125.log` and
+`.build/phase3-cold-cancel-independent-verified-20261125.log`.
+
+Interrupted resume proof (2026-11-25 17:07). A second explicit test scope
+`run-9634b6d9f310f7e8af34e08e3807266a` was interrupted before publication.
+Public `operations show` observed no launch and `operations resume`
+completed the original `d112f88dad06568b061b5a10ae581be5`. Independent
+Kubernetes readiness confirmed the resumed node. Supported control delete
+completed and an independent Docker observer verified the exact node,
+volume and network absent with positive daemon and bridge controls. See
+`.build/phase3-cold-resume-20261125.log` SHA-256
+`56f364931b992df718245c09ec182a83972d66fa5d5613bb91f1aff8a7d3f8eb` and
+`.build/phase3-cold-resume-independent-20261125.log` SHA-256
+`f45a9a1c3c3a1b52affc815b45e68254fe1115facaf8a636e31a7054a15fd34c`.
+This covers the pre-publication kind operation; mounted Authority
+operation concurrency remains open.
+
+The previous successful canary's disposable Vault and MinIO directories
+and scoped reader credential were retired under its original root lease
+after both supported runtime removals and independent absence. The
+Authority journal and operation records were verified unchanged. See
+`.build/phase3-status-proof-custody-hand-action-20261125.log`, SHA-256
+`93acbc5122f77c212ee35375151a7df29945b464ae969e52c4592e2b15edec79`.
+
+Storage slice (2026-11-25). Following
+[storage.md](../documents/engineering/storage.md#journal-checkpoints-and-backups),
+the scoped local backup adds the settled Authority journal and custody
+directories under the kind and journal leases. It checks the copied
+trees against quiesced source trees and publishes the bound format-3
+manifest only after they match. Format-2 backups retain their
+pre-Authority scope. Restoration verifies the closed directory set and
+scope/generation, requires the matching retained Authority state, stages
+and reads back the management data before the swap, and preserves
+original directories for recovery. A focused test caught a regression in
+the format-1 recovery guidance. The restore again checks that manifest
+before requiring a working kubeconfig. All 400 focused cases passed in
+`.build/phase3-storage-pki-restored-unit-direct-20261125.log`.
+
+Interrupted storage restore (2026-11-25 17:16). The durable intent binds
+the selected backup commitment, root generation and exact directory
+identities before stopping the management Pods. A replay observes the
+original and staged directories under the same kind lease before each
+move. Services restart only after the installed copy has been verified
+and the installed receipt is durable. The control removal and service
+reconciliation guards refuse an unresolved restore. Real mid-swap
+interruption and recovery, and restoration of missing current Authority
+journal members, still need their respective proof. The updated M03c and
+two affected M01 mutations require current isolated runs.
+
+Storage canary (2026-11-25 17:19). Scoped test
+`run-95fc0aa7ef68fd476cf8c0e349ab084d` verified a real format-3 backup,
+copied Authority records and unchanged Vault identity after backup and
+unseal. The supplemental driver omitted the `control restore --yes`
+confirmation, so the parser refused before restore and PKI was skipped.
+The refusal was reproduced offline. Supported control deletion completed,
+and exact node, volume and network absence was independently observed
+for `672a91983909a42160ba4fc3c47bc45e`. See
+`.build/phase3-storage-pki-real-20261125.log`,
+`.build/phase3-storage-pki-independent-20261125.log` and
+`.build/phase3-storage-pki-missing-confirmation-20261125.log`.
+The next driver uses the actual required flag and the interrupted-swap
+candidate. Its first build compiled, but the inherited mutation alignment
+check caught stale M03a and M03b digests after adding the unlock guard.
+Those bindings are updated and await the next coherent build and execution.
+
+Interrupted swap canary (2026-11-25 17:29). In
+`run-178c585f0d9e8ba80e400a51fa067291` the unmodified operator was killed
+after moving the original Vault directory and before installing its
+replacement. Both management Pods were independently absent and control
+removal, service reconciliation, and a second backup refused during the
+gap. Retrying `control restore` on `backup-5180d1729257` completed the
+swap, preserved both original directory inodes, and restarted the
+initialized Vault sealed. The actual Authority still reported its own
+journal state. The subsequent unseal refused at the next boundary, and
+the captured driver output did not distinguish its cause. Supported
+control removal completed and the exact node, volume, and network for
+`87522c8e13387a4d84413445407353f9` were independently absent. See
+`.build/phase3-interrupted-storage-real-20261125.log` and
+`.build/phase3-interrupted-storage-independent-20261125.log`. Full
+post-restore continuity and PKI stay open.
+
+PKI slice (2026-11-25). The selected `admin vault pki` leaves reuse
+the Broker's typed PKI route through the held scoped kubeconfig.
+Certificate issuance is limited to a test identity. The Broker reads the
+issued public certificate back from Vault by validated serial, verifies its
+DER bytes and serial against the issue response, and returns its SHA-256
+with the action commitment. The wire, Broker, CLI and admission selection
+passed 653 tests in `.build/phase3-pki-readback-fixed-build-and-unit-20261125.log`.
+The real canary (2026-11-25 17:39) in
+`run-bbeb9802b829b4d5b6e653011fa1e6c5` independently read the same issued
+leaf by serial from Vault, matched DER SHA-256
+`c98633873d91ac5e257e9b58ea520fd97e9a33d001f50dc6a2c6ffa3fa6f0d8c`,
+and verified the issuer and test hostname. The independent Authority read
+answered for the selected identity while Vault was sealed and refused
+both foreign and anonymous callers. Supported cleanup completed and exact
+runtime absence for `1e1661d8e34d487f39af88e7a01b27e9` was independently
+confirmed. See `.build/phase3-pki-and-sealed-authority-real-20261125.log`
+and `.build/phase3-pki-and-sealed-authority-independent-20261125.log`.
+
+The canary reproduced the post-restore unseal refusal after an initialized,
+sealed state was independently observed through the Broker. Comparing the
+backed `prodbox-objects` store with the exact original directory preserved
+by the swap showed three different stored records at the same names, one
+fence and two worker records. An unchanged mounted admission journal alone
+therefore cannot establish safe management restore. The private comparison
+is recorded in `.build/phase3-storage-history-counterexample-20261125.log`
+with public log SHA-256
+`51df160121a5ca7545ee243d90f10b701ccc10f0fe92924e707f2b87436a3332`.
+Format-3 restore now
+compares the backup against current Vault, the durable Broker and Authority
+buckets and MinIO configuration before admitting a fresh swap. The
+regression fixture models a different same-size fence and unrelated MinIO
+temporary files. Real matching-history restore and stale refusal remain
+open. The scenario also now includes a stale host projection comparison
+during the missing-genesis adverse control.
+
+Vault maintenance slice (2026-11-25 17:35). The scoped status and
+maintenance commands use the same selected Broker connection and its
+retained operation journal. Rotation and reset require an explicit original
+storage generation and operation ID. The reset also requires confirmation.
+Confirmed IDs reuse the Broker request identity on retry. The current
+ambiguous-init physical interpreter observes a PVC and scales a StatefulSet
+in `src/Prodbox/Bootstrap/Broker/KubernetesWorker.hs`. The implemented kind
+Vault uses a host-path Pod in `src/Prodbox/Control/Services.hs`. The local
+reset adapter and a real ambiguous-init recovery remain open. This is a
+Phase 3 implementation dependency within the selected substrate.
+The checked generation/operation parsers and Broker cases passed 661
+focused tests and generated reference validation.
+
+Rotation canary (2026-11-25 17:50). The real fixture in
+`run-d7862ba7426abe438dfeb631e0074097` refused the foreign generation, and
+the independent Transit key observation was unchanged after that refusal.
+The valid generation reached the actual secret worker, whose Pod then
+failed. The driver's next version check was skipped on the public error,
+so the valid request's physical effect is unconfirmed. Supported control
+removal completed. Docker independently confirmed all exact runtime
+resources absent for `a357185a3f9179535d167dcfce02372e`. See
+`.build/phase3-vault-rotation-real-20261125.log` and
+`.build/phase3-vault-rotation-independent-20261125.log`.
+
+Review of `src/Prodbox/Bootstrap/Broker/ProductionSecretWorker.hs` found
+that the path requires an accessor-free batch token and then tries
+`revoke-self`, even after a verified rotation. A Vault batch token has a
+fixed lifetime and cannot be manually revoked. This disagrees with the
+existing Broker batch-role contract. A candidate correction drops the
+impossible revoke for validated batch tokens and preserves unexpected
+service-token retirement. The next real observer must record physical
+version even if the public mutation returns an error. [Vault token types](https://developer.hashicorp.com/vault/docs/concepts/tokens#token-type-comparison)
+
+Transit receipt counterexample (2026-11-25 18:12). The batch-token candidate
+`07e4c7b0dee445b399a0beca8cc11965c420941a717077327aed7de045b06094`
+still failed on the valid public call in
+`run-93ec076225d0f7055e2f107c5671f468`. An independent Vault read
+confirmed version 2 after version 1. The retained Transit journal
+contains the completed version pair, while the worker result coordinate
+still contains the earlier baseline result. The production store and
+controller receipt checks both required an issued service-token accessor
+for that result. The worker instead validates Vault's accessor-free batch
+login before dispatch. The candidate correction binds the receipt to the
+accessor carried by the durable result and retains exact legacy accessor
+matching. The scope's supported control deletion passed and Docker read
+back the original node, volume and network as absent. See
+`.build/phase3-vault-rotation-batch-real-20261125.log` SHA-256
+`c84c706607a78eba897037ca2dd7c5906d38aa58ed7f624769b9e4495de72e36`
+and `.build/phase3-vault-rotation-batch-independent-20261125.log` SHA-256
+`aaaa4de28a138e333c8cb58626069a5f5851089a674a7f54f6455e20132ccd88`.
+Decoded retained MinIO records for both failed scopes contained the same
+typed completed version pair 1 to 2. Both fixed worker result objects
+predated the matching rotation attempt. The non-secret observation is
+`.build/phase3-transit-retained-counterexample-20261125.log` SHA-256
+`d91885d47e2a7c4c9f49af26df607e79844e8326e538f2e1c7fe6ca42313094e`.
+The public receipt and same-ID replay still need real acceptance.
+
+Management restore operation (2026-11-25 17:49). The scope's active
+restore exposes a stable, non-secret staging-derived ID through
+`operations list` and `operations show`. `operations resume` uses the same
+verified backup path. Reconcile's common assessment reports the restore
+blocker while the durable intent is active. The stale/no-change guard
+passed its 662-case focused gate before adding the operation commands.
+The matching-history storage canary (2026-11-25 18:01) passed on the
+earlier pre-operation-command binary
+`68407378860c0ce0d3b65d0026675d07366095bd180f123f1e63bb1ac98ab854`.
+In `run-bd737e4ddcbd15e17a5e5f6b8d98f793`, the operator was interrupted
+after the original Vault directory moved. Competing mutations refused;
+the original backup `backup-89c6f5004cd7` resumed and preserved both
+original directory identities. The initialized Vault returned sealed,
+unsealed to its original incarnation, and remained unsealed during the
+settled replay. The older separate backup `backup-a742d710c387` refused
+without moving either current directory. The fresh Authority records
+matched throughout. Supported cleanup completed and an independent
+Docker observer verified exact node, volume and network absence for
+`fbfeb9f67d454664fcc9ce69dc0c0b20`. Logs are
+`.build/phase3-verified-storage-restore-real-20261125.log` SHA-256
+`aaa6b9299314b2403fa89e76a49cae4d99604eda8ec2668f2a0c18b6ef8655f5` and
+`.build/phase3-verified-storage-restore-independent-20261125.log` SHA-256
+`f0d019a40ca6d34a5cdc335f892deaea57c2f596fffc70b0a14184afd1db12c4`.
+The new operation-ID resume path still needs its own real proof.
+
+M04d isolated outcome (2026-11-25 17:24). Campaign `1867284175735692`
+compiled the baseline and mutant and killed the candidate on the sole
+assertion `lifecycle.modified_mirror_requires_recovery`. Its source
+manifest SHA-256 is
+`7d1954e1332a17f9287b9d184ed9de6d2c3a9a00cdaefaf1fbb2a60f69a801cc`.
+Independent reads found all eight exact workers and the quota volume
+absent, with the same Docker daemon and bridge on both sides. Campaign
+and observer logs are `.build/phase3-M04d-mutation-20261125.log` SHA-256
+`ee91717d5c3f69caa04e999ea901b5890a03419ed21ab5417082b9315389f935` and
+`.build/phase3-M04d-mutation-independent-20261125.log` SHA-256
+`109d28e1958e88f948726f0c8e3ba28937a5f5386588b868607c79987ddbe326`.
+
+M04c isolated outcome (2026-11-25 18:02). Campaign `1869360179899150`
+killed the baseline-compiling candidate on the sole assertion
+`lifecycle.uninitialized_mirror_is_not_fresh`. Its source manifest SHA-256
+is `5b2fb541a5f71ad37847d1a1b30d7b3c67136b5821a62c5801748753ca0bd105`.
+All eight exact worker IDs and the quota volume were independently absent
+with positive daemon and bridge controls. Campaign and observer logs are
+`.build/phase3-M04c-mutation-20261125.log` SHA-256
+`e7944db38df56c69faad88700aab470edd98577d0137f1b35b7b820b688d2ec2` and
+`.build/phase3-M04c-mutation-independent-20261125.log` SHA-256
+`d20ceb98220879717b6b91174fcae5ca00439c632ef1d3bf9768abd1fc76a21a`.
+
+Decision (2026-11-25 18:03). Control recreation uses the existing exact
+kind retirement and archive transaction. Its Authority-backed input is
+the matched custody fence for the original operation. The host archives
+an exact copy of the decision with the original kind records, reopens the
+published archive, and only then moves the active fence under the same
+custody lease. A retry after archive publication requires that same proof.
+The retired fence stays in custody and the mounted journal remains in
+place for the replacement node. This follows the retained identity and
+resource observations in [Lifecycle](../documents/engineering/lifecycle.md#identity-intent-and-observations).
+The archive candidate
+`af868d71273873655ec364a14877fdb4a6eda08f3360c69eae794d9a5f6f2d39`
+passed 664 focused cases at 18:15. The checks cover wrong published
+archive identity, wrong original operation/value, retained fence inode,
+and rejection of cascade on the new public deletion routes. The affected
+bindings `M01-unknown-recreate` and `M01-authority-unobservable` are
+repinned. Real recreation is running under
+`run-b2b28da5064997f24935d3bbd5dee532` against the same candidate.
+The first canary ended at 18:21 before Authority deployment. The kind
+reconcile succeeded. The separate management network enforcement gate
+returned a settled `ok: false` service attempt, with its probe namespace
+removal recorded and no management Pods observed. The canary captured
+the command failure category but omitted the exact gate reason.
+Supported control deletion completed. The independent observer confirmed
+the original node, volume and network absent for
+`6a087e830d8ea0a83d147b7489e7ff06`. Primary evidence
+`.build/phase3-authority-recreate-real-20261125.log` SHA-256
+`b10a3b6d7335b24ede5264211c5d97bd5c1ff3393a0991ab2639e03f1ca1f878`
+and independent evidence
+`.build/phase3-authority-recreate-independent-20261125.log` SHA-256
+`f91bb6cf82cf37eb1dd3893aa7b34fff7736abacebd30c40d92a055dffb10ebd`.
+Recreation still needs real proof.
+
+M04a isolated outcome (2026-11-25 18:23). Campaign `1870490296166714`
+compiled the baseline and mutant and killed the candidate on
+`lifecycle.unknown_requires_recovery` alone. Source manifest SHA-256
+`2df5f427da475c7b825bd8bb9fe37371d52506d497fd308c5e60926f8aa89625`.
+The independent observer confirmed all eight exact worker IDs and the
+quota volume absent with positive Docker daemon and bridge checks.
+Campaign and observer logs are
+`.build/phase3-M04a-mutation-20261125.log` SHA-256
+`9b90a27e12752d3eb8753ee7ece3082cc90e9b1de6c6816d20e4e061f17106e4`
+and `.build/phase3-M04a-mutation-independent-20261125.log` SHA-256
+`dc154a9042709564c1ff4213bb8ad68f8a2c7b7060b60a4247e30f2e364fe165`.
+
+The Transit receipt correction passed the 164-case physical Broker and
+attested worker gate at 18:23. This includes exact private result
+publication/read-back for an accessor-free rotation and a refused
+foreign accessor. The real repeat uses immutable operator
+`2d9f917aac9c363ae6422f5554b9ea3ab32ce128479903be275fe43bb88e7056`.
+The canonical scenario also issues two concurrent public resumes of the
+same completed kind operation and compares the original durable result
+and independently queried Kubernetes node UID before and after. It still
+requires a separate live observation of duplicate admission while an
+Authority operation remains unresolved.
+
+Vault rotation canary (2026-11-25 18:33). Operator
+`2d9f917aac9c363ae6422f5554b9ea3ab32ce128479903be275fe43bb88e7056`
+refused a foreign generation, rotated the real Transit key, and returned
+success on same-ID replay. The independent Vault request observed
+version 1 before rotation and version 2 after both successful replies.
+The same scope returned success for unlock-bundle rotation and same-ID
+replay, and refused foreign confirmation and the obsolete password.
+The replacement password was tried before independently observing
+settlement of the failed obsolete-password worker and was refused.
+The existing Phase 2 adverse runner explicitly waits for that lease
+before another ingress (`src/Prodbox/Test/Phase02BrokerRunner.hs:200`).
+The next proof checks the selected Lease's duration and renewal time
+before trying the replacement. The failed combined run is retained.
+Supported cleanup and independent exact Docker absence passed for
+`43a18673dca3a7c16f0c85d573c6b1fa`. Primary and independent logs are
+`.build/phase3-vault-rotation-receipt-real-20261125.log` SHA-256
+`a647918dbfe422ebb17a1474ed261db349fd72b061c16658dd8e01ca460bb02e` and
+`.build/phase3-vault-rotation-receipt-independent-20261125.log` SHA-256
+`d04db0aedbd633519e2d07afef44271804117e5ed985b6539458f5ae23bf9d26`.
+
+Bound Vault maintenance canary (2026-11-25 18:52). The repeat using
+`b49bbba3b2a5c74f6dfeb5f47152ab7d5b1b9ec7c82eb5a9f57eeb7c2f000a91`
+again confirmed one real Transit increment and idempotent replay.
+The replacement password unsealed the original Vault incarnation and
+storage generation after independent expiry of the observed 300-second
+Broker lease. The obsolete-password request in this repeat was refused
+while the predecessor lease was still held. The preceding canary's
+actual failed obsolete-password worker supplies the adverse observation.
+The repeat also refused resetting the healthy initialized Vault and
+independently observed its unchanged identity before supported control
+removal. The original node, volume and network were exactly absent for
+`82acf2850fa300106750da30486fb3d2` using the same Docker daemon and bridge.
+Primary and independent evidence are
+`.build/phase3-vault-rotation-lease-real-20261125.log` SHA-256
+`9fc7b04f2f06410f2beadc87edb33c728abbff25a96b4a0288cf1326949da27f` and
+`.build/phase3-vault-rotation-lease-independent-20261125.log` SHA-256
+`bd974a6d17b309712fd6e239088a78b0561b874a48d6eea61e8de71f45dcc81c`.
+A positive recovery from a genuinely ambiguous initialization is still open.
+
+M04b isolated outcome (2026-11-25 18:35). Campaign `1871271215949209`
+compiled the baseline and mutant and killed the candidate on
+`lifecycle.missing_history_is_not_fresh` alone. Source manifest SHA-256
+`572c58c1eba9e7fe3df550f500cedbc6ecb88ad123e0abc80c9f6ee1c4383cdb`.
+Independent Docker checks observed the eight exact workers and quota
+volume absent under the original daemon and bridge. Campaign and
+observer logs are `.build/phase3-M04b-mutation-20261125.log` SHA-256
+`dc977ad23625e6ea1732375188b1d1152fa97c0c795a75ae8118643a6a847eca`
+and `.build/phase3-M04b-mutation-independent-20261125.log` SHA-256
+`e525e4847d79d6c9287c3e296961d312d42e2342e58b6bda8e2fe487e1909108`.
+
+Decision (2026-11-25 18:31). The test-run cleanup is separate from
+control removal, as specified by [the storage retention table](../documents/engineering/storage.md#retention-and-destruction).
+The registered Phase 3 scenario publishes its reports outside the test
+root and binds its terminal control operation to the exact root inode
+and generation. The public `test cleanup RUN_ID` revalidates that
+registration, repeats supported control removal and exact read-back,
+then records the original identity outside the root before moving it
+under the same scope lease. It verifies and retires the bounded,
+same-mount tree from the quarantine. A retry requires the same recorded
+root and preserves the external evidence reference. Build, adverse
+controls, interrupted replay and real cleanup evidence are pending.
+
+Decision (2026-11-25 18:45). Keep local restore progress distinct from
+the fresh Authority admission verdict. The common ordinary-delete
+assessment reports the retained restore operation as a blocker even
+when the Authority correctly reports no cloud admission. The executing
+command rechecks under the selected control lease. This applies the
+pending-operation rule in [the lifecycle contract](../documents/engineering/lifecycle.md#identity-intent-and-observations)
+without changing the Authority's recorded cloud history. The real
+interrupted-restore driver now requires both `plan delete` and
+`delete --yes` to report that blocker before same-ID resume.
+
+The first focused test-root build exposed the need to recognize the
+exact retired kind bridge FIFOs in a retained run. Its scenario tests
+also caught an unnecessary export change to the pinned M01 source.
+The current candidate recognizes only the recorded kind bridge pipe
+paths within the registered root and reuses the existing scope
+constructor for identifier validation. The original M01 preimage is
+unchanged. That first run is retained as diagnostic evidence and
+does not qualify the cleanup.
+
+Decision (2026-11-25 18:56). Keep the original restore operation ID
+usable after its active marker moves to the terminal receipt
+(`documents/engineering/lifecycle.md`, Identity, intent and observations).
+Before terminal rename, publish the exact operation lookup under the
+same scope and backup. `operations show ID` and `operations resume ID`
+replay the historical outcome only after the lookup, installed receipt
+and completed record agree. The live interrupted-restore proof will
+check same-ID replay after unsealing and observe the Vault incarnation
+again. The earlier 211-case test-root candidate passed its focused and
+generated-reference checks. Its real registered scenario is running.
+
+The cumulative development gate (2026-11-25 19:01) found a direct
+dependency from the operator entrypoint into the validation harness
+and three nested-case style violations. Test-root retirement now lives
+in `Prodbox.Control.TestRunCleanup`. The control layer owns the bounded
+tree inventory shared with the mutation harness. The mutation caller
+retains its original private-tree policy and evidence encoding.
+The operator dispatch uses named, scoped handlers. The current
+candidate is rebuilding for the same full gate.
+
+M05 isolated outcome (2026-11-25 18:55). Campaign `1872502208857401`
+compiled the baseline and mutant and killed the candidate on the sole
+assertion `lifecycle.pending_intent_blocks_noop`. Source manifest
+SHA-256 is `5d2f7835b5aefc9bf7be12bdd8e4fab5b1595ff73de9972637eac3307349b1aa`.
+Independent reads confirmed eight exact workers and the quota volume
+absent, with positive checks on the original Docker daemon and bridge.
+Campaign and observer logs are
+`.build/phase3-M05-mutation-20261125.log` SHA-256
+`cd1617e141f4d574cd34393771dff7fc7737785276816cf97d55068f5a65d96b`
+and `.build/phase3-M05-mutation-independent-20261125.log` SHA-256
+`71b4ad1c5c2f4b8d5f93c17bff9efd804787c012a028dbb2d06756b5eb3fd48f`.
+
+M01 Authority fence regression (2026-11-25 19:06). Campaign
+`1873259133427309` compiled and killed the current
+`M01-authority-fence` candidate on `delete.fences_authority_deployment`.
+The source manifest SHA-256 is
+`79b151c665fa142ac55137f63db8afbf9a0f9ef427e8b4217665030d78e2abd3`.
+Independent verification observed all eight exact worker IDs and the
+quota volume absent with the original Docker daemon and bridge.
+Campaign and observer logs are
+`.build/phase3-M01-authority-fence-mutation-20261125.log` SHA-256
+`7cb1371e25d8f37521abf3e4d2010104caaeb68733259aa7f70f175255f8cc8a`
+and `.build/phase3-M01-authority-fence-mutation-independent-20261125.log`
+SHA-256 `54ff12713fcff8ce8e0a85ed68db1d1e6e47400095d595e59eb35349789b5d36`.
+
+Registered scenario counterexample (2026-11-25 19:10). Operator
+`af218b33eabd2882a664e87ff1beba96b6954a61f73a48fd0976393508cd3633`
+passed cases 1 through 3 in
+`run-f6d6742623974f95e60221d60c6c71b2`. The real mounted Authority
+refused ordinary and control deletion when its genesis was withdrawn,
+despite the readable empty host projection. Two concurrent resumes
+returned the original kind operation and left its result and node UID
+unchanged. Case 4 still obtained the authenticated journal read,
+refused foreign and anonymous callers, and served the read after
+Authority restart and with the Broker down. The service attempt that
+was meant to restart Vault had a settled `ok: false` enforcement result
+with its probe namespace removed. The scenario never observed sealed
+Vault, so its aggregate proof and root registration stayed open.
+Both exact kind operations were removed independently
+(`80ac09bfb28e264a04bac4c831d3d76d`,
+`26d7e3bb2e63ad315f272afdc9e4afe2`). The next registered scenario uses
+the supported backup cycle for the deliberate seal and requires its
+successful result plus independent Vault health.
+Primary log `.build/phase3-run-retirement-real-20261125.log` SHA-256
+`71d256991d8c209cbc312f5c6d5a2f6f5d664974e02e622147fb46579021ee67`.
+Independent log `.build/phase3-run-retirement-independent-20261125.log`
+SHA-256 `b5ce1dd25e9a6f8dc735adfeef58bf02651446a764891fdb4d7082c2f1681344`.
+
+Formatter correspondence (2026-11-25 19:15). The canonical gate uses
+its pinned Fourmolu 0.19.0.1. Formatting changed five reviewed source
+bindings: `M01-unknown-recreate`, `M01-authority-unobservable`, and
+`M03a/b/c`. Every mutation site remained unique. The pinned formatter
+produced byte-identical normalized preimages and byte-identical
+normalized mutant bodies across each change. The current registry
+and [mutation manifest](mutation_cases.md) contain the refreshed
+digests. Campaigns launched before formatting retain their original
+source identities. The correspondence audit is
+`.build/phase3-mutation-format-bindings-20261125.log` SHA-256
+`3fa45d7b6c6946c8bfe30a334ebaacd4318727e29013b0dbc0a7f27657e06d1b`.
+
+Interrupted restore operation proof (2026-11-25 19:22). Operator
+`cfcbbb2ab394293815a0bf0f046489f097b00b191bb7373dc15e04c46034f75e`
+settled operation `125ee25fa5670a573b6a7774700125c6` in
+`run-edc286ba688ffd67412fbee4f2affbb8`. After an actual process kill
+at the first directory move, the scoped commands found the durable
+pending ID. The deletion plan named the blocker. Ordinary deletion,
+control removal, foreign resume and cancellation refused. A same-ID
+resume completed the original backup restore. The two originally
+bound inodes survived in their recorded retirement directories.
+The Authority's mounted records stayed equal. Vault restarted sealed
+and unsealed to incarnation `42d7e88c-8cc8-95fd-8567-918d59851a1e`.
+The terminal same-ID show and replay succeeded with that Vault still
+unsealed. The older backup was refused before any directory swap.
+The original kind operation `8b71648cdd57ae48d262053bf2caf0f9`
+completed supported removal and independent exact Docker read-back.
+Primary log `.build/phase3-terminal-restore-real-20261125.log` SHA-256
+`5a889f5d45d8708b5d592967b548d412c93965901c58b82ec9793050c64f5f90`.
+Independent log `.build/phase3-terminal-restore-independent-20261125.log`
+SHA-256 `7673317b3db2b32be538d583ff08041bf5c47e7d8baacf6422968dc65e99b0f7`.
+
+M03c regression (2026-11-25 19:28). Campaign `1874476381296207`
+compiled the pre-format backup baseline and mutant and killed it on
+`backup.rejects_same_size_corruption` alone. Source manifest SHA-256
+`60ee7d436358f67253ebea4f7b1881526225119707aaa9ae509a945e803a8123`.
+The same daemon and bridge bracketed independent absence of the eight
+exact worker IDs and quota volume. The 19:15 normalization audit binds
+that source and candidate to the current formatted trees.
+Campaign log `.build/phase3-M03c-mutation-20261125.log` SHA-256
+`fe8bdc6da33e6b680e0f56747c8c84d07ee5c9c7fe25944f3e955036f10f734b`.
+Observer log `.build/phase3-M03c-mutation-independent-20261125.log`
+SHA-256 `39014fc2099272fadacdcb3ae307ea3285ca0367593e0041bfc566f0da1f31de`.
+
+Cleanup adverse control (2026-11-25 19:31). Before registration,
+the immutable operator
+`10ae9c203b55d693c91651eb7835c2c55592ee94f2b8d862a0395ca2de3ebd6e`
+refused both a foreign run ID and the active selected run
+`run-2d6d0ad4ee40552e132aaab936ece72a`. Direct stat and record reads
+confirmed the original inode and kind intent survived both calls.
+Evidence `.build/phase3-active-cleanup-refusal-20261125.log` SHA-256
+`c4e769a05b7ec2e2c8ed6c84e9847a0c7b466bc7ce382170807a2a18cea1d3d8`.
+
+L09 command-surface check (2026-11-25 19:35). The current immutable
+operator's ordinary and control deletion help omit cascade. Both
+actual parsers rejected `--yes --cascade` before scoped dispatch.
+The generated references passed their matching check. The legacy
+ledger retains ownership of original-install cascade separately.
+Evidence `.build/phase3-L09-public-cascade-refusal-20261125.log`
+SHA-256 `99a42bd7b76fe5b5ef736295af96c48bdda61fff0c4e7b1be408395797d42c05`.
+
+Sealed Authority and registered test cleanup (2026-11-25 19:39).
+All four public `test run phase-03` cases passed with operator SHA-256
+`10ae9c203b55d693c91651eb7835c2c55592ee94f2b8d862a0395ca2de3ebd6e`,
+run `run-2d6d0ad4ee40552e132aaab936ece72a`, generation
+`d3681abe98cbcf34b20f8f329bcbda35`. Evidence run
+`68e8fe0ae5ad39c84136cb8fa3e7a961` retained all four reports. A supported
+management restart sealed Vault. The same Authority continued to serve the
+scoped authenticated journal read, including across Authority restart.
+Foreign and anonymous reads returned 403 and 401, full readiness refused
+while Vault was sealed, and unseal restored full readiness. Fresh journal
+loss refused both deletion paths while the exact running node remained.
+Concurrent public resume of the exact kind operation preserved its node UID
+and dispatch record. This settles A03-02 and the local kind adapter portion
+of recovery qualification.
+
+The public cleanup refused a foreign run ID. The first eligible cleanup
+was stopped just after moving the original root into its exact quarantine.
+Two default public retries succeeded. An independent observer confirmed
+absence of the original root and quarantine, equality of both receipts to
+the registration, unchanged case reports and Docker 404 for the two
+recorded kind runtimes `4c77fd6f4e1a367efa55bc57a7a68d10` and
+`cd8d28a7c7496d5b6d0a63059b1146fc` against the original daemon and bridge.
+The primary log `.build/phase3-registered-cleanup-real-20261125.log` hashes
+to `e1e2c048eef2f07d7b8060a6e55de424ca2735d77f13348095e55dcd3d95c947`.
+The observation log `.build/phase3-registered-cleanup-independent-20261125.log`
+hashes to `47cc9595416f860228cd2fde6af8d171607338c4edc8ab21a75dc25883a243ba`.
+
+Affecting regression `M01-authority-unobservable` (2026-11-25 19:39).
+Campaign `1875125470176424` killed the pre-format binding with the sole
+unchanged assertion `delete.requires_observed_admission`, baseline and
+mutant builds passed, and an independent observer verified exact cleanup.
+The evidence remains tied to its baseline. The current source binding
+requires its own run after the lint fix. Primary log
+`.build/phase3-M01-authority-unobservable-mutation-20261125.log` hashes
+to `08e59c2468d7e1498bfd25fcabb855fe0d4c973bd0aa11c0354b246a2f8da65a`.
+Independent log `.build/phase3-M01-authority-unobservable-independent-20261125.log`
+hashes to `7d7386f8b401d560a07cd98d34d80e0300945528c31a0469cbe87d139b5c3238`.
+
+Decision (2026-11-25 19:46). The existing write-ahead guard in
+`AdmissionJournalMirror.hs` retains recovery state after an ambiguous
+aggregate commit, but contains no evidence of the exact attempted aggregate.
+The recovery policy in [lifecycle.md](../documents/engineering/lifecycle.md#identity-intent-and-observations)
+and the bounded recovery rule in [development_plan_standards.md](development_plan_standards.md#resource-and-credential-lifecycle)
+require the original Authority to settle a positively observed, exact applied
+commit without another admission. Add a protected armed-commit binding under
+the same custody lease and check it against both the retained journal and the
+backing Authority read. An observed predecessor alone cannot settle an
+ambiguous write because a submitted compare-and-swap may still complete.
+Retain recovery-required status when the attempted commit cannot be proved.
+
+Implementation (2026-11-25 19:49). The retained Authority repository
+now checks the backing revision before arming a custody-bound commit.
+The bounded `OperationRecord` commits both the complete candidate
+aggregate and its restricted journal view by digest. The authenticated
+read refuses while the receipt is armed. Restart can settle an applied
+commit only after it confirms both digests under the original custody
+lease. It cannot manufacture a new admission from an observed predecessor,
+even when the predecessor projects the same operation labels. The old
+guard shape still fails closed if encountered. A focused regression
+exercises delayed visibility, competitor refusal and exact read-back.
+This addresses interrupted aggregate commits. The native operation
+resume and live qualification remain open.
+
+Decision (2026-11-25 19:56). Initializing the mounted journal is a local
+Authority operation with an effect and independent read-back. Use this
+operation to exercise restart, pending disposition and duplicate admission
+in A03-03 and A03-04. Record the operation before publishing genesis, bind
+it to the exact retained custody and backing Authority state, and permit
+only same-ID recovery against those observations. Phase 3 has no remote
+backup or cloud adapter prerequisite. The existing cloud-admission gate
+in `Lifecycle/Authority/Genesis.hs` remains closed until its own required
+receipts are available. This follows the phase's mounted journal design
+and [control_plane.md](../documents/engineering/control_plane.md#recovery-and-local-removal).
+
+Authority-backed kind recreation (2026-11-25 19:57). Operator
+`10ae9c203b55d693c91651eb7835c2c55592ee94f2b8d862a0395ca2de3ebd6e`
+completed both public removal cycles for `run-19f7c790d053e18e861325ef63ec6c1a`
+at generation `9031d05e5125e9cd3aae8d6275ca4333`. The original kind
+operation `c3faaeab3ad4cb08825315a703279518` left its scope-bound
+Authority removal fence. `control reconcile` published and reopened the
+exact archive, retired the active fence and created replacement operation
+`d28dbdfdf2c718ff46104e3347351161`. The replacement observed the same Vault
+incarnation and the original Authority's exact genesis, mirror and custody
+commitment. Fresh `plan delete` read the eligible verdict from that Authority.
+Final `control delete --yes` settled. Independent Docker reads confirmed
+exact node, volume and network absence for both operations against the
+original daemon and each operation's bridge binding. The primary log
+`.build/phase3-authority-recreate-repeat-real-20261125.log` hashes to
+`8cdffd4e48a24a041217bdce212ee9d6f660302ac75017bccd4e73aed13b98ed`.
+The observer log `.build/phase3-authority-recreate-repeat-independent-20261125.log`
+hashes to `385a6e442e527ac0728d9d4682d3b9feae1535d791ccf7826909f10072d5fa9b`.
+The pending native Authority case for A03-05 remains open.
+
+Affecting regression `M03a` (2026-11-25 20:02). Campaign
+`1876475724968585` killed the current unlock source binding via the sole
+unchanged assertion `bootstrap.production_rejects_test_unlock`. Both
+builds passed and the observer verified exact absence for the workers
+and quota volume. The logs `.build/phase3-M03a-mutation-20261125.log`
+and `.build/phase3-M03a-mutation-independent-20261125.log` hash to
+`ef59f782cf90dd6708b4aa31fba79441002bfb7d742ec6592c474c3c474f662c`
+and `f015f2e2e1ed5e4e1fead7f6bb6404a56a2f2eca73e71d991a3291cbcd5ceab5`.
+
+Focused verification (2026-11-25 20:00). The candidate
+`caa93da8bca9237b1e7e7a527bacec2c9da1be86f633797fe0a02b4c8f9c5354`
+built with no reported GHC warnings and passed `dev docs check`. The
+admission-history group passed all 25 cases, including exact interrupted
+commit read-back. Two test-run retirement regressions also passed. The
+focused log `.build/phase3-armed-admission-focused-20261125.log` hashes to
+`ff50b374fca1d75c9237af295b1946cc6970cf86b0a36c4b673884609e690073`.
+The cumulative gate and the subsequent native-genesis candidate remain
+separate qualification work.
 
 First slice (2026-11-21), the admission verdict rule. A survey of the code found
 that no never-admitted classifier exists anywhere in `src` (the term appears only
@@ -503,8 +1313,8 @@ After implementing the active slice, run the built operator against explicit own
 
 The linked catalog defines the exact real workflow and observer for each case:
 
-- [ ] **A03-01** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result.
-- [ ] **A03-02** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result.
+- [x] **A03-01** — the 16:46 operation canary's two traced no-op deletes, retained live kind identity, independently absent Vault and exact supported first-runtime cleanup are recorded above.
+- [x] **A03-02** — sealed-Vault read, restart, adverse identities and exact cleanup qualified in the 19:39 evidence above.
 - [ ] **A03-03** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result.
 - [ ] **A03-04** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result.
 - [ ] **A03-05** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result.

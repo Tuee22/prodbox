@@ -144,7 +144,6 @@ import Prodbox.Bootstrap.Broker.SecretWorker
   , secretWorkerRequestSessionAccessor
   , secretWorkerRequestSessionId
   , secretWorkerRequestStorageGeneration
-  , workerSessionAccessorIssued
   , workerSessionNotIssued
   )
 import Prodbox.Bootstrap.Broker.Settings qualified as Settings
@@ -725,12 +724,6 @@ validWorkerResult value =
         && secretWorkerRequestSessionAccessor request == workerSessionNotIssued
         && rawWorkerReceiptSessionAccessor receipt
           == durableWorkerSessionAccessor result
-        && case operation of
-          SecretWorkerRotateTransitKey ->
-            case workerSessionAccessorIssued (rawWorkerReceiptSessionAccessor receipt) of
-              Just _ -> True
-              Nothing -> False
-          _ -> rawWorkerReceiptSessionAccessor receipt == workerSessionNotIssued
         && rawWorkerReceiptRequestDigest receipt == secretWorkerRequestDigest request
         && rawWorkerReceiptStorageGeneration receipt
           == secretWorkerRequestStorageGeneration request

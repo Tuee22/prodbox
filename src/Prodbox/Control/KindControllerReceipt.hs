@@ -15,6 +15,7 @@ module Prodbox.Control.KindControllerReceipt
   , FamilyResultWrite (..)
   , FamilyResultObservation (..)
   , recordFamilyResult
+  , recordFamilyResultUntil
   , observeFamilyResult
   , observeFamilyResultStatus
   , FamilyLaunchWrite (..)
@@ -95,7 +96,6 @@ import Control.Exception (IOException, bracket, mask, try)
 import Control.Monad (unless)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT)
-import GHC.Clock (getMonotonicTimeNSec)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Types (parseEither, (.:))
 import Data.Bits ((.&.))
@@ -105,12 +105,11 @@ import Data.ByteString.Char8 qualified as ByteString8
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (stripPrefix)
-import Data.Word (Word32)
-import Text.Read (readMaybe)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Data.Word (Word32, Word64)
+import GHC.Clock (getMonotonicTimeNSec)
 import Prodbox.Aws.SigV4 (hexSha256)
-import Prodbox.Control.KindControllerRequest qualified as Request
 import Prodbox.Config.BootstrapProjection
   ( BootstrapProjection
   , bootstrapRootGeneration
@@ -126,9 +125,18 @@ import Prodbox.Config.DeploymentScope
   , withScopeRootDescriptor
   )
 import Prodbox.Control.ImageIdObservation (validImageId)
-import Prodbox.Control.KindIntent (KindIntentObservation (..), observeKindFamilyIntent, observeKindIntent)
+import Prodbox.Control.KindControllerRequest qualified as Request
+import Prodbox.Control.KindIntent
+  ( KindIntentObservation (..)
+  , observeKindFamilyIntent
+  , observeKindIntent
+  )
 import Prodbox.Control.KindKubeconfigYaml (KindKubeconfigDecodeError, decodeBoundedYamlValue)
-import Prodbox.Control.KindLease (KindOperationOutcome (KindOperationCallbackReturned), withRecoveredKindOperation)
+import Prodbox.Control.KindLease
+  ( KindOperationOutcome (KindOperationCallbackReturned)
+  , withRecoveredKindOperation
+  , withRecoveredKindOperationUntil
+  )
 import Prodbox.Subprocess.SystemdBus qualified as Bus
 import Prodbox.Subprocess.SystemdIdentity qualified as Identity
 import Prodbox.Subprocess.SystemdProvider qualified as Provider
@@ -140,6 +148,7 @@ import System.Posix.Types (Fd, UserID)
 import System.Posix.Unistd (fileSynchronise)
 import System.Posix.User (getEffectiveUserID)
 import System.Timeout (timeout)
+import Text.Read (readMaybe)
 
 data ControllerSubmissionWrite
   = ControllerSubmissionRecorded
@@ -163,24 +172,38 @@ data RetainedControllerSubmission
   deriving (Eq, Show)
 
 data ControllerJobWrite
-  = ControllerJobRecorded | ControllerJobAlreadyExists | ControllerJobRefused | ControllerJobIncomplete
+  = ControllerJobRecorded
+  | ControllerJobAlreadyExists
+  | ControllerJobRefused
+  | ControllerJobIncomplete
   deriving (Eq, Show)
 
 data ControllerJobObservation
-  = ControllerJobMissing | ControllerJobMatches | ControllerJobConflict | ControllerJobUnobservable
+  = ControllerJobMissing
+  | ControllerJobMatches
+  | ControllerJobConflict
+  | ControllerJobUnobservable
   deriving (Eq, Show)
 
 data RetainedControllerJob
-  = RetainedControllerJobMissing | RetainedControllerJobObserved !String
-  | RetainedControllerJobConflict | RetainedControllerJobUnobservable
+  = RetainedControllerJobMissing
+  | RetainedControllerJobObserved !String
+  | RetainedControllerJobConflict
+  | RetainedControllerJobUnobservable
   deriving (Eq, Show)
 
 data ControllerDomainWrite
-  = ControllerDomainRecorded | ControllerDomainAlreadyExists | ControllerDomainRefused | ControllerDomainIncomplete
+  = ControllerDomainRecorded
+  | ControllerDomainAlreadyExists
+  | ControllerDomainRefused
+  | ControllerDomainIncomplete
   deriving (Eq, Show)
 
 data ControllerDomainObservation
-  = ControllerDomainMissing | ControllerDomainMatches | ControllerDomainConflict | ControllerDomainUnobservable
+  = ControllerDomainMissing
+  | ControllerDomainMatches
+  | ControllerDomainConflict
+  | ControllerDomainUnobservable
   deriving (Eq, Show)
 
 data RetainedControllerDomain
@@ -191,17 +214,24 @@ data RetainedControllerDomain
   deriving (Eq, Show)
 
 data ControllerProviderWrite
-  = ControllerProviderRecorded | ControllerProviderAlreadyExists | ControllerProviderRefused | ControllerProviderIncomplete
+  = ControllerProviderRecorded
+  | ControllerProviderAlreadyExists
+  | ControllerProviderRefused
+  | ControllerProviderIncomplete
   deriving (Eq, Show)
 
 data RetainedControllerProvider
-  = RetainedControllerProviderMissing | RetainedControllerProviderObserved !String
-  | RetainedControllerProviderConflict | RetainedControllerProviderUnobservable
+  = RetainedControllerProviderMissing
+  | RetainedControllerProviderObserved !String
+  | RetainedControllerProviderConflict
+  | RetainedControllerProviderUnobservable
   deriving (Eq, Show)
 
 data ControllerProviderMaterialWrite
-  = ControllerProviderMaterialRecorded | ControllerProviderMaterialAlreadyExists
-  | ControllerProviderMaterialRefused | ControllerProviderMaterialIncomplete
+  = ControllerProviderMaterialRecorded
+  | ControllerProviderMaterialAlreadyExists
+  | ControllerProviderMaterialRefused
+  | ControllerProviderMaterialIncomplete
   deriving (Eq, Show)
 
 data RetainedControllerProviderMaterial
@@ -229,34 +259,52 @@ data ControllerFreshProvider
 -- This comparison is data only. Qualification, lease and retirement remain
 -- independent, and callers must not treat a match as permission for an effect.
 compareControllerProviderBinding
-  :: Identity.HostManagerDomain -> Provider.RecordedProviderBinding
-  -> Identity.HostManagerDomain -> Provider.RecordedProviderBinding -> Bool
+  :: Identity.HostManagerDomain
+  -> Provider.RecordedProviderBinding
+  -> Identity.HostManagerDomain
+  -> Provider.RecordedProviderBinding
+  -> Bool
 compareControllerProviderBinding recordedDomain recordedBinding currentDomain currentBinding =
   recordedDomain == currentDomain && recordedBinding == currentBinding
 
 data ControllerSenderWrite
-  = ControllerSenderRecorded | ControllerSenderAlreadyExists | ControllerSenderRefused | ControllerSenderIncomplete
+  = ControllerSenderRecorded
+  | ControllerSenderAlreadyExists
+  | ControllerSenderRefused
+  | ControllerSenderIncomplete
   deriving (Eq, Show)
 
 data RetainedControllerSender
-  = RetainedControllerSenderMissing | RetainedControllerSenderObserved !Identity.HostBusUniqueName
-  | RetainedControllerSenderConflict | RetainedControllerSenderUnobservable
+  = RetainedControllerSenderMissing
+  | RetainedControllerSenderObserved !Identity.HostBusUniqueName
+  | RetainedControllerSenderConflict
+  | RetainedControllerSenderUnobservable
   deriving (Eq, Show)
 
-data ControllerSenderPresence = ControllerSenderPresent | ControllerSenderAbsent | ControllerSenderPresenceUnobservable
+data ControllerSenderPresence
+  = ControllerSenderPresent
+  | ControllerSenderAbsent
+  | ControllerSenderPresenceUnobservable
   deriving (Eq, Show)
 
 data ControllerFreshSender
-  = ControllerFreshSenderPresent | ControllerFreshSenderAbsent
-  | ControllerFreshSenderDifferentDomain | ControllerFreshSenderRecordUnavailable | ControllerFreshSenderUnobservable
+  = ControllerFreshSenderPresent
+  | ControllerFreshSenderAbsent
+  | ControllerFreshSenderDifferentDomain
+  | ControllerFreshSenderRecordUnavailable
+  | ControllerFreshSenderUnobservable
   deriving (Eq, Show)
 
 data ControllerUnitRead = ControllerUnitPresent | ControllerUnitAbsent | ControllerUnitUnobservable
   deriving (Eq, Show)
 
 data ControllerManagerRead
-  = ControllerManagerSenderPresent | ControllerManagerUnitPresent | ControllerManagerUnitAbsent
-  | ControllerManagerDifferentDomain | ControllerManagerRecordUnavailable | ControllerManagerReadUnobservable
+  = ControllerManagerSenderPresent
+  | ControllerManagerUnitPresent
+  | ControllerManagerUnitAbsent
+  | ControllerManagerDifferentDomain
+  | ControllerManagerRecordUnavailable
+  | ControllerManagerReadUnobservable
   deriving (Eq, Show)
 
 controllerUnitName :: String
@@ -265,51 +313,99 @@ controllerUnitName = "prodbox-kind-controller.service"
 -- Bounded, non-secret summary. Resource-specific journals remain the source
 -- for detailed create/start and cleanup observations; this is not retirement.
 data FamilyPrimary
-  = FamilyPreparationRefused | FamilyParentRefused | FamilyWorkerNotObserved
-  | FamilyWorkerUnconfirmed | FamilyWorkerConfirmed
+  = FamilyPreparationRefused
+  | FamilyParentRefused
+  | FamilyWorkerNotObserved
+  | FamilyWorkerUnconfirmed
+  | FamilyWorkerConfirmed
   deriving (Eq, Read, Show)
 
-data FamilyWorkerClosing = FamilyWorkerNotStarted | FamilyWorkerUnobserved | FamilyWorkerComplete | FamilyWorkerIoUnconfirmed | FamilyWorkerDescriptorRefused
+data FamilyWorkerClosing
+  = FamilyWorkerNotStarted
+  | FamilyWorkerUnobserved
+  | FamilyWorkerComplete
+  | FamilyWorkerIoUnconfirmed
+  | FamilyWorkerDescriptorRefused
   deriving (Eq, Read, Show)
 
-data FamilyParentClosing = FamilyParentNotStarted | FamilyParentComplete | FamilyParentUnconfirmed
-  | FamilyParentKernelUnconfirmed | FamilyParentProviderUnconfirmed | FamilyParentProgramUnconfirmed
+data FamilyParentClosing
+  = FamilyParentNotStarted
+  | FamilyParentComplete
+  | FamilyParentUnconfirmed
+  | FamilyParentKernelUnconfirmed
+  | FamilyParentProviderUnconfirmed
+  | FamilyParentProgramUnconfirmed
   deriving (Eq, Read, Show)
 
-data FamilyInputClosing = FamilyInputComplete | FamilyInputUnconfirmed
-  | FamilyInputExpired | FamilyInputChanged | FamilyInputIoUnconfirmed
+data FamilyInputClosing
+  = FamilyInputComplete
+  | FamilyInputUnconfirmed
+  | FamilyInputExpired
+  | FamilyInputChanged
+  | FamilyInputIoUnconfirmed
   deriving (Eq, Read, Show)
 
 data FamilyPostDisposition
-  = FamilyPostNotAttempted | FamilyPostPreconditionFailed | FamilyPostInstallFailed
-  | FamilyPostImageAttemptFailed | FamilyPostImageObservationFailed
-  | FamilyPostImageResultUnconfirmed | FamilyPostImageReadbackUnconfirmed
-  | FamilyPostImageTransportUnconfirmed | FamilyPostImageClosingUnconfirmed
-  | FamilyPostNetworkFailed | FamilyPostVolumeFailed | FamilyPostNodeIntentFailed
-  | FamilyPostReceiptFailed | FamilyPostReceiptComplete | FamilyPostProbeFailed | FamilyPostProbeComplete
-  | FamilyPostProbeSnapshotRefused | FamilyPostProbeIntentRefused | FamilyPostProbeBindingRefused
+  = FamilyPostNotAttempted
+  | FamilyPostPreconditionFailed
+  | FamilyPostInstallFailed
+  | FamilyPostImageAttemptFailed
+  | FamilyPostImageObservationFailed
+  | FamilyPostImageResultUnconfirmed
+  | FamilyPostImageReadbackUnconfirmed
+  | FamilyPostImageTransportUnconfirmed
+  | FamilyPostImageClosingUnconfirmed
+  | FamilyPostNetworkFailed
+  | FamilyPostVolumeFailed
+  | FamilyPostNodeIntentFailed
+  | FamilyPostReceiptFailed
+  | FamilyPostReceiptComplete
+  | FamilyPostProbeFailed
+  | FamilyPostProbeComplete
+  | FamilyPostProbeSnapshotRefused
+  | FamilyPostProbeIntentRefused
+  | FamilyPostProbeBindingRefused
   deriving (Eq, Read, Show)
 
 data FamilyPostClosing = FamilyPostNotStarted | FamilyPostLeaseComplete | FamilyPostLeaseUnconfirmed
   deriving (Eq, Read, Show)
 
-data FamilyResult = FamilyResult !FamilyPrimary !FamilyWorkerClosing !FamilyParentClosing !FamilyInputClosing !FamilyPostDisposition !FamilyPostClosing
+data FamilyResult
+  = FamilyResult
+      !FamilyPrimary
+      !FamilyWorkerClosing
+      !FamilyParentClosing
+      !FamilyInputClosing
+      !FamilyPostDisposition
+      !FamilyPostClosing
   deriving (Eq, Show)
 
-data FamilyResultWrite = FamilyResultRecorded | FamilyResultAlreadyExists | FamilyResultRefused | FamilyResultIncomplete
+data FamilyResultWrite
+  = FamilyResultRecorded
+  | FamilyResultAlreadyExists
+  | FamilyResultRefused
+  | FamilyResultIncomplete
   deriving (Eq, Show)
 
 data FamilyResultObservation
-  = FamilyResultMissing | FamilyResultObserved !String !FamilyResult
-  | FamilyResultConflict | FamilyResultUnobservable
+  = FamilyResultMissing
+  | FamilyResultObserved !String !FamilyResult
+  | FamilyResultConflict
+  | FamilyResultUnobservable
   deriving (Eq, Show)
 
-data FamilyLaunchWrite = FamilyLaunchRecorded | FamilyLaunchAlreadyExists | FamilyLaunchRefused | FamilyLaunchIncomplete
+data FamilyLaunchWrite
+  = FamilyLaunchRecorded
+  | FamilyLaunchAlreadyExists
+  | FamilyLaunchRefused
+  | FamilyLaunchIncomplete
   deriving (Eq, Show)
 
 data FamilyLaunchObservation
-  = FamilyLaunchMissing | FamilyLaunchObserved !Request.KindControllerRequest
-  | FamilyLaunchConflict | FamilyLaunchUnobservable
+  = FamilyLaunchMissing
+  | FamilyLaunchObserved !Request.KindControllerRequest
+  | FamilyLaunchConflict
+  | FamilyLaunchUnobservable
   deriving (Eq, Show)
 
 data ControllerReceiptWrite
@@ -337,17 +433,18 @@ submissionName :: FilePath
 submissionName = "kind-controller-submission-intent.json"
 
 submissionValue :: BootstrapProjection -> String -> String -> Files.FileStatus -> Aeson.Value
-submissionValue bootstrap operation requestDigest root = Aeson.object
-  [ "schema_version" Aeson..= (1 :: Int)
-  , "kind" Aeson..= ("kind-controller-submission-intent" :: String)
-  , "deployment_id" Aeson..= scopeIdentifier (bootstrapScope bootstrap)
-  , "root_generation" Aeson..= bootstrapRootGeneration bootstrap
-  , "operation_id" Aeson..= operation
-  , "unit" Aeson..= controllerUnitName
-  , "request_sha256" Aeson..= requestDigest
-  , "root_device" Aeson..= toInteger (Files.deviceID root)
-  , "root_inode" Aeson..= toInteger (Files.fileID root)
-  ]
+submissionValue bootstrap operation requestDigest root =
+  Aeson.object
+    [ "schema_version" Aeson..= (1 :: Int)
+    , "kind" Aeson..= ("kind-controller-submission-intent" :: String)
+    , "deployment_id" Aeson..= scopeIdentifier (bootstrapScope bootstrap)
+    , "root_generation" Aeson..= bootstrapRootGeneration bootstrap
+    , "operation_id" Aeson..= operation
+    , "unit" Aeson..= controllerUnitName
+    , "request_sha256" Aeson..= requestDigest
+    , "root_device" Aeson..= toInteger (Files.deviceID root)
+    , "root_inode" Aeson..= toInteger (Files.fileID root)
+    ]
 
 -- Durable local write-ahead identity. It is not proof of submission, manager
 -- identity, job completion or worker retirement. Existing records never admit
@@ -355,7 +452,8 @@ submissionValue bootstrap operation requestDigest root = Aeson.object
 recordControllerSubmissionIntent
   :: BootstrapProjection -> String -> String -> IO Bool -> IO ControllerSubmissionWrite
 recordControllerSubmissionIntent bootstrap operation requestDigest stable
-  | not (validInput bootstrap operation) || not (validImageId ("sha256:" ++ requestDigest)) = pure ControllerSubmissionRefused
+  | not (validInput bootstrap operation) || not (validImageId ("sha256:" ++ requestDigest)) =
+      pure ControllerSubmissionRefused
   | otherwise = do
       touched <- newIORef False
       let operationStable = do
@@ -369,23 +467,39 @@ recordControllerSubmissionIntent bootstrap operation requestDigest stable
           protocol <- observeKindFamilyIntent bootstrap
           family <- observeFamilyLaunch bootstrap operation operationStable
           rootStatus <- Files.getFdStatus root
-          if not admitted || protocol /= KindIntentConflict || family /= FamilyLaunchMissing then pure ControllerSubmissionRefused else mask $ \restore -> do
-            opened <- try (Posix.openFdAt (Just root) submissionName Posix.WriteOnly createFlags)
-            case opened of
-              Left failure | isAlreadyExistsError failure -> pure ControllerSubmissionAlreadyExists
-              Left (_ :: IOException) -> pure ControllerSubmissionRefused
-              Right file -> do
-                writeIORef touched True
-                written <- try $ bracket (pure file) Posix.closeFd $ \held -> restore $ do
-                  writeAll held (LazyByteString.toStrict (Aeson.encode (submissionValue bootstrap operation requestDigest rootStatus)))
-                  fileSynchronise held
-                  fileSynchronise root
-                case written of
-                  Left (_ :: IOException) -> pure ControllerSubmissionIncomplete
-                  Right () -> do
-                    observed <- restore (observeControllerSubmissionIntent bootstrap operation requestDigest operationStable)
-                    pure (if observed == ControllerSubmissionMatches then ControllerSubmissionRecorded else ControllerSubmissionIncomplete)
-        pure (either (const ControllerSubmissionRefused) id (attempted :: Either IOException ControllerSubmissionWrite))
+          if not admitted || protocol /= KindIntentConflict || family /= FamilyLaunchMissing
+            then pure ControllerSubmissionRefused
+            else mask $ \restore -> do
+              opened <- try (Posix.openFdAt (Just root) submissionName Posix.WriteOnly createFlags)
+              case opened of
+                Left failure | isAlreadyExistsError failure -> pure ControllerSubmissionAlreadyExists
+                Left (_ :: IOException) -> pure ControllerSubmissionRefused
+                Right file -> do
+                  writeIORef touched True
+                  written <- try $ bracket (pure file) Posix.closeFd $ \held -> restore $ do
+                    writeAll
+                      held
+                      ( LazyByteString.toStrict
+                          (Aeson.encode (submissionValue bootstrap operation requestDigest rootStatus))
+                      )
+                    fileSynchronise held
+                    fileSynchronise root
+                  case written of
+                    Left (_ :: IOException) -> pure ControllerSubmissionIncomplete
+                    Right () -> do
+                      observed <-
+                        restore (observeControllerSubmissionIntent bootstrap operation requestDigest operationStable)
+                      pure
+                        ( if observed == ControllerSubmissionMatches
+                            then ControllerSubmissionRecorded
+                            else ControllerSubmissionIncomplete
+                        )
+        pure
+          ( either
+              (const ControllerSubmissionRefused)
+              id
+              (attempted :: Either IOException ControllerSubmissionWrite)
+          )
       changed <- readIORef touched
       pure $ case result of
         Just (Right outcome) | outcome /= ControllerSubmissionRefused -> outcome
@@ -396,7 +510,11 @@ recordControllerSubmissionIntent bootstrap operation requestDigest stable
 -- current operation recheck. The caller holds the matching lease and must
 -- preserve any unconfirmed external outcome for recovery.
 withControllerSubmissionIntent
-  :: BootstrapProjection -> String -> String -> IO Bool -> IO a
+  :: BootstrapProjection
+  -> String
+  -> String
+  -> IO Bool
+  -> IO a
   -> IO (Either ControllerSubmissionWrite a)
 withControllerSubmissionIntent bootstrap operation requestDigest stable action = do
   recorded <- recordControllerSubmissionIntent bootstrap operation requestDigest stable
@@ -436,32 +554,48 @@ observeRetainedControllerSubmission bootstrap operation stable
         attempted <- try $ do
           admitted <- ready bootstrap stable sameRoot
           rootStatus <- Files.getFdStatus root
-          if not admitted then pure RetainedControllerSubmissionUnobservable else do
-            owner <- getEffectiveUserID
-            opened <- try (Posix.openFdAt (Just root) submissionName Posix.ReadOnly readFlags)
-            case opened of
-              Left failure | isDoesNotExistError failure -> do
-                still <- ready bootstrap stable sameRoot
-                pure (if still then RetainedControllerSubmissionMissing else RetainedControllerSubmissionUnobservable)
-              Left (_ :: IOException) -> pure RetainedControllerSubmissionUnobservable
-              Right file -> bracket (pure file) Posix.closeFd $ \held -> do
-                before <- Files.getFdStatus held
-                if not (safeFile owner before) then pure RetainedControllerSubmissionUnobservable else do
-                  bytes <- readBounded held
-                  checked <- decodeBoundedYamlValue bytes
-                  after <- Files.getFdStatus held
-                  named <- bracket (Posix.openFdAt (Just root) submissionName Posix.ReadOnly readFlags) Posix.closeFd Files.getFdStatus
+          if not admitted
+            then pure RetainedControllerSubmissionUnobservable
+            else do
+              owner <- getEffectiveUserID
+              opened <- try (Posix.openFdAt (Just root) submissionName Posix.ReadOnly readFlags)
+              case opened of
+                Left failure | isDoesNotExistError failure -> do
                   still <- ready bootstrap stable sameRoot
-                  pure $ if not (still && sameVersion before after && sameVersion after named)
-                    then RetainedControllerSubmissionUnobservable
-                    else case (Aeson.eitherDecodeStrict' bytes, checked) of
-                      (Right value, Right checkedValue) | value == checkedValue ->
-                        case parseEither (Aeson.withObject "controller submission" (.: "request_sha256")) value of
-                          Right digest | validImageId ("sha256:" ++ digest) && value == submissionValue bootstrap operation digest rootStatus ->
-                            RetainedControllerSubmissionObserved digest
-                          _ -> RetainedControllerSubmissionConflict
-                      _ -> RetainedControllerSubmissionConflict
-        pure (either (const RetainedControllerSubmissionUnobservable) id (attempted :: Either IOException RetainedControllerSubmission))
+                  pure
+                    (if still then RetainedControllerSubmissionMissing else RetainedControllerSubmissionUnobservable)
+                Left (_ :: IOException) -> pure RetainedControllerSubmissionUnobservable
+                Right file -> bracket (pure file) Posix.closeFd $ \held -> do
+                  before <- Files.getFdStatus held
+                  if not (safeFile owner before)
+                    then pure RetainedControllerSubmissionUnobservable
+                    else do
+                      bytes <- readBounded held
+                      checked <- decodeBoundedYamlValue bytes
+                      after <- Files.getFdStatus held
+                      named <-
+                        bracket
+                          (Posix.openFdAt (Just root) submissionName Posix.ReadOnly readFlags)
+                          Posix.closeFd
+                          Files.getFdStatus
+                      still <- ready bootstrap stable sameRoot
+                      pure $
+                        if not (still && sameVersion before after && sameVersion after named)
+                          then RetainedControllerSubmissionUnobservable
+                          else case (Aeson.eitherDecodeStrict' bytes, checked) of
+                            (Right value, Right checkedValue) | value == checkedValue ->
+                              case parseEither (Aeson.withObject "controller submission" (.: "request_sha256")) value of
+                                Right digest
+                                  | validImageId ("sha256:" ++ digest) && value == submissionValue bootstrap operation digest rootStatus ->
+                                      RetainedControllerSubmissionObserved digest
+                                _ -> RetainedControllerSubmissionConflict
+                            _ -> RetainedControllerSubmissionConflict
+        pure
+          ( either
+              (const RetainedControllerSubmissionUnobservable)
+              id
+              (attempted :: Either IOException RetainedControllerSubmission)
+          )
       pure $ case result of Just (Right observed) -> observed; _ -> RetainedControllerSubmissionUnobservable
 
 -- Status does not authorize a retry, deletion, or inference that an older
@@ -483,17 +617,38 @@ observeControllerSubmissionStatus bootstrap = do
             pure (Just domain, Just provider, Just material, Just sender, Just job)
           _ -> pure (Nothing, Nothing, Nothing, Nothing, Nothing)
         pure (submission, domain, provider, material, sender, job)
-      pure $ "Kind controller submission " ++ operation ++ ": " ++ case result of
-        KindOperationCallbackReturned (submission, domain, provider, material, sender, job) -> show submission ++ "; manager domain record " ++ show domain ++ "; provider binding record " ++ show provider ++ "; provider material " ++ show material ++ "; sender record " ++ show sender ++ "; returned job record " ++ show job ++ "; local records only; manager state and worker settlement not observed.\n"
-        _ -> "operation lease or records unconfirmed; manager state and worker settlement not observed.\n"
-    _ -> pure "Kind controller submission: operation identity unavailable; manager state and worker settlement not observed.\n"
+      pure $
+        "Kind controller submission " ++ operation ++ ": " ++ case result of
+          KindOperationCallbackReturned (submission, domain, provider, material, sender, job) ->
+            show submission
+              ++ "; manager domain record "
+              ++ show domain
+              ++ "; provider binding record "
+              ++ show provider
+              ++ "; provider material "
+              ++ show material
+              ++ "; sender record "
+              ++ show sender
+              ++ "; returned job record "
+              ++ show job
+              ++ "; local records only; manager state and worker settlement not observed.\n"
+          _ -> "operation lease or records unconfirmed; manager state and worker settlement not observed.\n"
+    _ ->
+      pure
+        "Kind controller submission: operation identity unavailable; manager state and worker settlement not observed.\n"
 
 -- Read-only provider acquisition for a bounded local observation. The
 -- callback receives recorded identity data and a live verification action;
 -- neither is permission to submit, delete, or infer worker retirement.
 withCurrentControllerProvider
-  :: (Identity.HostManagerDomain -> Provider.RecordedProviderBinding -> Identity.HostBusUniqueName
-      -> (Identity.HostBusUniqueName -> IO ControllerSenderPresence) -> IO ControllerUnitRead -> IO Bool -> IO a)
+  :: ( Identity.HostManagerDomain
+       -> Provider.RecordedProviderBinding
+       -> Identity.HostBusUniqueName
+       -> (Identity.HostBusUniqueName -> IO ControllerSenderPresence)
+       -> IO ControllerUnitRead
+       -> IO Bool
+       -> IO a
+     )
   -> IO (Either String a)
 withCurrentControllerProvider action = do
   owner <- getEffectiveUserID
@@ -504,13 +659,17 @@ withCurrentControllerProvider action = do
       Left failure -> pure (Left (show failure))
       Right name -> do
         result <- Provider.withQualifiedProvider connection $ \provider ->
-          action (Provider.qualifiedProviderDomain provider) (Provider.qualifiedProviderBinding provider) name
-            (\target -> do
-              observed <- runExceptT (Bus.observeBusNamePresence connection target)
-              pure $ case observed of
-                Right Bus.BusNamePresent -> ControllerSenderPresent
-                Right Bus.BusNameAbsent -> ControllerSenderAbsent
-                _ -> ControllerSenderPresenceUnobservable)
+          action
+            (Provider.qualifiedProviderDomain provider)
+            (Provider.qualifiedProviderBinding provider)
+            name
+            ( \target -> do
+                observed <- runExceptT (Bus.observeBusNamePresence connection target)
+                pure $ case observed of
+                  Right Bus.BusNamePresent -> ControllerSenderPresent
+                  Right Bus.BusNameAbsent -> ControllerSenderAbsent
+                  _ -> ControllerSenderPresenceUnobservable
+            )
             (readControllerUnit connection)
             ((== Right ()) <$> Provider.verifyQualifiedProvider provider)
         pure (either (Left . show) Right result)
@@ -520,15 +679,28 @@ withCurrentControllerProvider action = do
 -- property is checked for a present result; errors are never absence.
 readControllerUnit :: Bus.BusConnection -> IO ControllerUnitRead
 readControllerUnit connection = do
-  result <- runExceptT (Bus.callManager connection Bus.GetUnit (\message -> Bus.appendString message controllerUnitName) (`Bus.readString` 'o'))
+  result <-
+    runExceptT
+      ( Bus.callManager
+          connection
+          Bus.GetUnit
+          (\message -> Bus.appendString message controllerUnitName)
+          (`Bus.readString` 'o')
+      )
   case result of
     Left (Bus.BusMethodRefused 2) -> pure ControllerUnitAbsent
     Left _ -> pure ControllerUnitUnobservable
     Right path -> do
-      identity <- runExceptT $ Bus.callManager connection (Bus.ReadUnitProperty path)
-        (\message -> Bus.appendString message "org.freedesktop.systemd1.Unit" >> Bus.appendString message "Id")
-        Bus.readVariantString
-      pure (if identity == Right controllerUnitName then ControllerUnitPresent else ControllerUnitUnobservable)
+      identity <-
+        runExceptT $
+          Bus.callManager
+            connection
+            (Bus.ReadUnitProperty path)
+            ( \message -> Bus.appendString message "org.freedesktop.systemd1.Unit" >> Bus.appendString message "Id"
+            )
+            Bus.readVariantString
+      pure
+        (if identity == Right controllerUnitName then ControllerUnitPresent else ControllerUnitUnobservable)
 
 controllerProviderDigest :: Provider.RecordedProviderBinding -> String
 controllerProviderDigest = ByteString8.unpack . hexSha256 . Provider.encodeProviderBinding
@@ -548,28 +720,38 @@ observeControllerFreshProvider bootstrap = do
             domain <- observeRetainedControllerDomain bootstrap operation digest stable
             material <- observeControllerProviderMaterial bootstrap operation digest stable
             case (domain, material) of
-              (RetainedControllerDomainObserved recordedDomain _, RetainedControllerProviderMaterialObserved recordedBinding) -> do
-                owner <- getEffectiveUserID
-                boot <- currentBootId
-                if boot == Nothing
-                  then pure ControllerFreshProviderUnobservable
-                  else if boot /= Just (Identity.hostManagerBootId recordedDomain)
-                      || fromIntegral owner /= Identity.hostManagerUserId recordedDomain
-                    then pure ControllerFreshProviderDifferentDomain
-                    else do
-                      result <- withCurrentControllerProvider $ \freshDomain freshBinding _ _ _ verify -> do
-                        before <- verify
-                        currentDomain <- observeRetainedControllerDomain bootstrap operation digest stable
-                        currentMaterial <- observeControllerProviderMaterial bootstrap operation digest stable
-                        still <- stable
-                        after <- verify
-                        finalStable <- stable
-                        pure $
-                          if not before || not after || not still || not finalStable || currentDomain /= domain || currentMaterial /= material
-                            then ControllerFreshProviderUnobservable
-                            else if compareControllerProviderBinding recordedDomain recordedBinding freshDomain freshBinding
-                              then ControllerFreshProviderMatches else ControllerFreshProviderDifferent
-                      pure (either (const ControllerFreshProviderUnobservable) id result)
+              ( RetainedControllerDomainObserved recordedDomain _
+                , RetainedControllerProviderMaterialObserved recordedBinding
+                ) -> do
+                  owner <- getEffectiveUserID
+                  boot <- currentBootId
+                  if boot == Nothing
+                    then pure ControllerFreshProviderUnobservable
+                    else
+                      if boot /= Just (Identity.hostManagerBootId recordedDomain)
+                        || fromIntegral owner /= Identity.hostManagerUserId recordedDomain
+                        then pure ControllerFreshProviderDifferentDomain
+                        else do
+                          result <- withCurrentControllerProvider $ \freshDomain freshBinding _ _ _ verify -> do
+                            before <- verify
+                            currentDomain <- observeRetainedControllerDomain bootstrap operation digest stable
+                            currentMaterial <- observeControllerProviderMaterial bootstrap operation digest stable
+                            still <- stable
+                            after <- verify
+                            finalStable <- stable
+                            pure $
+                              if not before
+                                || not after
+                                || not still
+                                || not finalStable
+                                || currentDomain /= domain
+                                || currentMaterial /= material
+                                then ControllerFreshProviderUnobservable
+                                else
+                                  if compareControllerProviderBinding recordedDomain recordedBinding freshDomain freshBinding
+                                    then ControllerFreshProviderMatches
+                                    else ControllerFreshProviderDifferent
+                          pure (either (const ControllerFreshProviderUnobservable) id result)
               _ -> pure ControllerFreshProviderRecordUnavailable
           _ -> pure ControllerFreshProviderRecordUnavailable
       pure $ case outcome of
@@ -593,31 +775,43 @@ observeControllerFreshSender bootstrap = do
             material <- observeControllerProviderMaterial bootstrap operation digest stable
             sender <- observeRetainedControllerSender bootstrap operation digest stable
             case (domain, material, sender) of
-              (RetainedControllerDomainObserved recordedDomain _, RetainedControllerProviderMaterialObserved recordedBinding, RetainedControllerSenderObserved recordedSender) -> do
-                owner <- getEffectiveUserID
-                boot <- currentBootId
-                if boot == Nothing then pure ControllerFreshSenderUnobservable
-                  else if boot /= Just (Identity.hostManagerBootId recordedDomain) || fromIntegral owner /= Identity.hostManagerUserId recordedDomain
-                    then pure ControllerFreshSenderDifferentDomain
-                    else do
-                      result <- withCurrentControllerProvider $ \freshDomain freshBinding _ observePresence _ verify -> do
-                        before <- verify
-                        first <- observePresence recordedSender
-                        currentDomain <- observeRetainedControllerDomain bootstrap operation digest stable
-                        currentMaterial <- observeControllerProviderMaterial bootstrap operation digest stable
-                        currentSender <- observeRetainedControllerSender bootstrap operation digest stable
-                        second <- observePresence recordedSender
-                        after <- verify
-                        finalStable <- stable
-                        pure $
-                          if not before || not after || not finalStable || currentDomain /= domain || currentMaterial /= material || currentSender /= sender
-                            || not (compareControllerProviderBinding recordedDomain recordedBinding freshDomain freshBinding) || first /= second
-                            then ControllerFreshSenderUnobservable
-                            else case first of
-                              ControllerSenderPresent -> ControllerFreshSenderPresent
-                              ControllerSenderAbsent -> ControllerFreshSenderAbsent
-                              ControllerSenderPresenceUnobservable -> ControllerFreshSenderUnobservable
-                      pure (either (const ControllerFreshSenderUnobservable) id result)
+              ( RetainedControllerDomainObserved recordedDomain _
+                , RetainedControllerProviderMaterialObserved recordedBinding
+                , RetainedControllerSenderObserved recordedSender
+                ) -> do
+                  owner <- getEffectiveUserID
+                  boot <- currentBootId
+                  if boot == Nothing
+                    then pure ControllerFreshSenderUnobservable
+                    else
+                      if boot /= Just (Identity.hostManagerBootId recordedDomain)
+                        || fromIntegral owner /= Identity.hostManagerUserId recordedDomain
+                        then pure ControllerFreshSenderDifferentDomain
+                        else do
+                          result <- withCurrentControllerProvider $ \freshDomain freshBinding _ observePresence _ verify -> do
+                            before <- verify
+                            first <- observePresence recordedSender
+                            currentDomain <- observeRetainedControllerDomain bootstrap operation digest stable
+                            currentMaterial <- observeControllerProviderMaterial bootstrap operation digest stable
+                            currentSender <- observeRetainedControllerSender bootstrap operation digest stable
+                            second <- observePresence recordedSender
+                            after <- verify
+                            finalStable <- stable
+                            pure $
+                              if not before
+                                || not after
+                                || not finalStable
+                                || currentDomain /= domain
+                                || currentMaterial /= material
+                                || currentSender /= sender
+                                || not (compareControllerProviderBinding recordedDomain recordedBinding freshDomain freshBinding)
+                                || first /= second
+                                then ControllerFreshSenderUnobservable
+                                else case first of
+                                  ControllerSenderPresent -> ControllerFreshSenderPresent
+                                  ControllerSenderAbsent -> ControllerFreshSenderAbsent
+                                  ControllerSenderPresenceUnobservable -> ControllerFreshSenderUnobservable
+                          pure (either (const ControllerFreshSenderUnobservable) id result)
               _ -> pure ControllerFreshSenderRecordUnavailable
           _ -> pure ControllerFreshSenderRecordUnavailable
       pure $ case outcome of
@@ -641,33 +835,45 @@ observeControllerManagerRead bootstrap = do
             material <- observeControllerProviderMaterial bootstrap operation digest stable
             sender <- observeRetainedControllerSender bootstrap operation digest stable
             case (domain, material, sender) of
-              (RetainedControllerDomainObserved recordedDomain _, RetainedControllerProviderMaterialObserved recordedBinding, RetainedControllerSenderObserved recordedSender) -> do
-                owner <- getEffectiveUserID
-                boot <- currentBootId
-                if boot == Nothing then pure ControllerManagerReadUnobservable
-                  else if boot /= Just (Identity.hostManagerBootId recordedDomain) || fromIntegral owner /= Identity.hostManagerUserId recordedDomain
-                    then pure ControllerManagerDifferentDomain
-                    else do
-                      result <- withCurrentControllerProvider $ \freshDomain freshBinding _ observePresence readUnit verify -> do
-                        before <- verify
-                        first <- observePresence recordedSender
-                        unit <- if first == ControllerSenderAbsent then readUnit else pure ControllerUnitUnobservable
-                        currentDomain <- observeRetainedControllerDomain bootstrap operation digest stable
-                        currentMaterial <- observeControllerProviderMaterial bootstrap operation digest stable
-                        currentSender <- observeRetainedControllerSender bootstrap operation digest stable
-                        second <- observePresence recordedSender
-                        after <- verify
-                        finalStable <- stable
-                        pure $
-                          if not before || not after || not finalStable || currentDomain /= domain || currentMaterial /= material || currentSender /= sender
-                            || not (compareControllerProviderBinding recordedDomain recordedBinding freshDomain freshBinding) || first /= second
-                            then ControllerManagerReadUnobservable
-                            else case (first, unit) of
-                              (ControllerSenderPresent, _) -> ControllerManagerSenderPresent
-                              (ControllerSenderAbsent, ControllerUnitPresent) -> ControllerManagerUnitPresent
-                              (ControllerSenderAbsent, ControllerUnitAbsent) -> ControllerManagerUnitAbsent
-                              _ -> ControllerManagerReadUnobservable
-                      pure (either (const ControllerManagerReadUnobservable) id result)
+              ( RetainedControllerDomainObserved recordedDomain _
+                , RetainedControllerProviderMaterialObserved recordedBinding
+                , RetainedControllerSenderObserved recordedSender
+                ) -> do
+                  owner <- getEffectiveUserID
+                  boot <- currentBootId
+                  if boot == Nothing
+                    then pure ControllerManagerReadUnobservable
+                    else
+                      if boot /= Just (Identity.hostManagerBootId recordedDomain)
+                        || fromIntegral owner /= Identity.hostManagerUserId recordedDomain
+                        then pure ControllerManagerDifferentDomain
+                        else do
+                          result <- withCurrentControllerProvider $ \freshDomain freshBinding _ observePresence readUnit verify -> do
+                            before <- verify
+                            first <- observePresence recordedSender
+                            unit <- if first == ControllerSenderAbsent then readUnit else pure ControllerUnitUnobservable
+                            currentDomain <- observeRetainedControllerDomain bootstrap operation digest stable
+                            currentMaterial <- observeControllerProviderMaterial bootstrap operation digest stable
+                            currentSender <- observeRetainedControllerSender bootstrap operation digest stable
+                            second <- observePresence recordedSender
+                            after <- verify
+                            finalStable <- stable
+                            pure $
+                              if not before
+                                || not after
+                                || not finalStable
+                                || currentDomain /= domain
+                                || currentMaterial /= material
+                                || currentSender /= sender
+                                || not (compareControllerProviderBinding recordedDomain recordedBinding freshDomain freshBinding)
+                                || first /= second
+                                then ControllerManagerReadUnobservable
+                                else case (first, unit) of
+                                  (ControllerSenderPresent, _) -> ControllerManagerSenderPresent
+                                  (ControllerSenderAbsent, ControllerUnitPresent) -> ControllerManagerUnitPresent
+                                  (ControllerSenderAbsent, ControllerUnitAbsent) -> ControllerManagerUnitAbsent
+                                  _ -> ControllerManagerReadUnobservable
+                          pure (either (const ControllerManagerReadUnobservable) id result)
               _ -> pure ControllerManagerRecordUnavailable
           _ -> pure ControllerManagerRecordUnavailable
       pure $ case outcome of
@@ -686,9 +892,10 @@ withControllerRecoverySettlement _ =
 
 currentBootId :: IO (Maybe String)
 currentBootId = do
-  observed <- timeout 2000000 $ try $
-    bracket (Posix.openFd "/proc/sys/kernel/random/boot_id" Posix.ReadOnly readFlags) Posix.closeFd $ \file ->
-      PosixBytes.fdRead file 65
+  observed <- timeout 2000000 $
+    try $
+      bracket (Posix.openFd "/proc/sys/kernel/random/boot_id" Posix.ReadOnly readFlags) Posix.closeFd $ \file ->
+        PosixBytes.fdRead file 65
   pure $ case observed of
     Just (Right bytes) -> case ByteString8.unpack bytes of
       value | length value == 37 && last value == '\n' -> Just (init value)
@@ -700,30 +907,45 @@ currentBootId = do
 controllerDomainName :: FilePath
 controllerDomainName = "kind-controller-manager-domain.json"
 
-domainValue :: BootstrapProjection -> String -> String -> Identity.HostManagerDomain -> Identity.HostExecutionWindow -> Files.FileStatus -> Aeson.Value
-domainValue bootstrap operation requestDigest domain window root = Aeson.object
-  [ "schema_version" Aeson..= (1 :: Int)
-  , "kind" Aeson..= ("kind-controller-manager-domain" :: String)
-  , "intent" Aeson..= submissionValue bootstrap operation requestDigest root
-  , "boot_id" Aeson..= Identity.hostManagerBootId domain
-  , "bus_id" Aeson..= Identity.hostManagerBusId domain
-  , "manager_name" Aeson..= Identity.hostManagerUniqueName domain
-  , "manager_uid" Aeson..= Identity.hostManagerUserId domain
-  , "manager_pid" Aeson..= Identity.hostManagerProcessId domain
-  , "manager_start_ticks" Aeson..= Identity.hostManagerStartTicks domain
-  , "outer_ns" Aeson..= Identity.hostExecutionOuterEnd window
-  , "work_ns" Aeson..= Identity.hostExecutionWorkEnd window
-  , "hard_ns" Aeson..= Identity.hostExecutionHardEnd window
-  , "stop_ns" Aeson..= Identity.hostExecutionStopEnd window
-  , "finish_ns" Aeson..= Identity.hostExecutionFinishEnd window
-  ]
+domainValue
+  :: BootstrapProjection
+  -> String
+  -> String
+  -> Identity.HostManagerDomain
+  -> Identity.HostExecutionWindow
+  -> Files.FileStatus
+  -> Aeson.Value
+domainValue bootstrap operation requestDigest domain window root =
+  Aeson.object
+    [ "schema_version" Aeson..= (1 :: Int)
+    , "kind" Aeson..= ("kind-controller-manager-domain" :: String)
+    , "intent" Aeson..= submissionValue bootstrap operation requestDigest root
+    , "boot_id" Aeson..= Identity.hostManagerBootId domain
+    , "bus_id" Aeson..= Identity.hostManagerBusId domain
+    , "manager_name" Aeson..= Identity.hostManagerUniqueName domain
+    , "manager_uid" Aeson..= Identity.hostManagerUserId domain
+    , "manager_pid" Aeson..= Identity.hostManagerProcessId domain
+    , "manager_start_ticks" Aeson..= Identity.hostManagerStartTicks domain
+    , "outer_ns" Aeson..= Identity.hostExecutionOuterEnd window
+    , "work_ns" Aeson..= Identity.hostExecutionWorkEnd window
+    , "hard_ns" Aeson..= Identity.hostExecutionHardEnd window
+    , "stop_ns" Aeson..= Identity.hostExecutionStopEnd window
+    , "finish_ns" Aeson..= Identity.hostExecutionFinishEnd window
+    ]
 
 -- A retained manager observation binds the original clock and manager domain;
 -- the record is not a provider qualification or a live manager observation.
 recordControllerDomain
-  :: BootstrapProjection -> String -> String -> Identity.HostManagerDomain -> Identity.HostExecutionWindow -> IO Bool -> IO ControllerDomainWrite
+  :: BootstrapProjection
+  -> String
+  -> String
+  -> Identity.HostManagerDomain
+  -> Identity.HostExecutionWindow
+  -> IO Bool
+  -> IO ControllerDomainWrite
 recordControllerDomain bootstrap operation requestDigest domain window stable
-  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest)) = pure ControllerDomainRefused
+  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest)) =
+      pure ControllerDomainRefused
   | otherwise = do
       touched <- newIORef False
       let operationStable = do
@@ -736,23 +958,32 @@ recordControllerDomain bootstrap operation requestDigest domain window stable
           admitted <- ready bootstrap operationStable sameRoot
           intent <- observeControllerSubmissionIntent bootstrap operation requestDigest operationStable
           rootStatus <- Files.getFdStatus root
-          if not admitted || intent /= ControllerSubmissionMatches then pure ControllerDomainRefused else mask $ \restore -> do
-            opened <- try (Posix.openFdAt (Just root) controllerDomainName Posix.WriteOnly createFlags)
-            case opened of
-              Left failure | isAlreadyExistsError failure -> pure ControllerDomainAlreadyExists
-              Left (_ :: IOException) -> pure ControllerDomainRefused
-              Right file -> do
-                writeIORef touched True
-                written <- try $ bracket (pure file) Posix.closeFd $ \held -> restore $ do
-                  writeAll held (LazyByteString.toStrict (Aeson.encode (domainValue bootstrap operation requestDigest domain window rootStatus)))
-                  fileSynchronise held
-                  fileSynchronise root
-                case written of
-                  Left (_ :: IOException) -> pure ControllerDomainIncomplete
-                  Right () -> do
-                    observed <- restore (observeControllerDomain bootstrap operation requestDigest domain window operationStable)
-                    pure (if observed == ControllerDomainMatches then ControllerDomainRecorded else ControllerDomainIncomplete)
-        pure (either (const ControllerDomainRefused) id (attempted :: Either IOException ControllerDomainWrite))
+          if not admitted || intent /= ControllerSubmissionMatches
+            then pure ControllerDomainRefused
+            else mask $ \restore -> do
+              opened <- try (Posix.openFdAt (Just root) controllerDomainName Posix.WriteOnly createFlags)
+              case opened of
+                Left failure | isAlreadyExistsError failure -> pure ControllerDomainAlreadyExists
+                Left (_ :: IOException) -> pure ControllerDomainRefused
+                Right file -> do
+                  writeIORef touched True
+                  written <- try $ bracket (pure file) Posix.closeFd $ \held -> restore $ do
+                    writeAll
+                      held
+                      ( LazyByteString.toStrict
+                          (Aeson.encode (domainValue bootstrap operation requestDigest domain window rootStatus))
+                      )
+                    fileSynchronise held
+                    fileSynchronise root
+                  case written of
+                    Left (_ :: IOException) -> pure ControllerDomainIncomplete
+                    Right () -> do
+                      observed <-
+                        restore (observeControllerDomain bootstrap operation requestDigest domain window operationStable)
+                      pure
+                        (if observed == ControllerDomainMatches then ControllerDomainRecorded else ControllerDomainIncomplete)
+        pure
+          (either (const ControllerDomainRefused) id (attempted :: Either IOException ControllerDomainWrite))
       changed <- readIORef touched
       pure $ case result of
         Just (Right outcome) | outcome /= ControllerDomainRefused -> outcome
@@ -760,7 +991,13 @@ recordControllerDomain bootstrap operation requestDigest domain window stable
         _ -> ControllerDomainRefused
 
 observeControllerDomain
-  :: BootstrapProjection -> String -> String -> Identity.HostManagerDomain -> Identity.HostExecutionWindow -> IO Bool -> IO ControllerDomainObservation
+  :: BootstrapProjection
+  -> String
+  -> String
+  -> Identity.HostManagerDomain
+  -> Identity.HostExecutionWindow
+  -> IO Bool
+  -> IO ControllerDomainObservation
 observeControllerDomain bootstrap operation requestDigest domain window stable = do
   observed <- observeRetainedControllerDomain bootstrap operation requestDigest stable
   pure $ case observed of
@@ -774,41 +1011,62 @@ observeControllerDomain bootstrap operation requestDigest domain window stable =
 observeRetainedControllerDomain
   :: BootstrapProjection -> String -> String -> IO Bool -> IO RetainedControllerDomain
 observeRetainedControllerDomain bootstrap operation requestDigest stable
-  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest)) = pure RetainedControllerDomainUnobservable
+  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest)) =
+      pure RetainedControllerDomainUnobservable
   | otherwise = do
       result <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
         attempted <- try $ do
           admitted <- ready bootstrap stable sameRoot
           intent <- observeControllerSubmissionIntent bootstrap operation requestDigest stable
           rootStatus <- Files.getFdStatus root
-          if not admitted || intent /= ControllerSubmissionMatches then pure RetainedControllerDomainUnobservable else do
-            owner <- getEffectiveUserID
-            opened <- try (Posix.openFdAt (Just root) controllerDomainName Posix.ReadOnly readFlags)
-            case opened of
-              Left failure | isDoesNotExistError failure -> do
-                still <- ready bootstrap stable sameRoot
-                pure (if still then RetainedControllerDomainMissing else RetainedControllerDomainUnobservable)
-              Left (_ :: IOException) -> pure RetainedControllerDomainUnobservable
-              Right file -> bracket (pure file) Posix.closeFd $ \held -> do
-                before <- Files.getFdStatus held
-                if not (safeFile owner before) then pure RetainedControllerDomainUnobservable else do
-                  bytes <- readBounded held
-                  checked <- decodeBoundedYamlValue bytes
-                  after <- Files.getFdStatus held
-                  named <- bracket (Posix.openFdAt (Just root) controllerDomainName Posix.ReadOnly readFlags) Posix.closeFd Files.getFdStatus
+          if not admitted || intent /= ControllerSubmissionMatches
+            then pure RetainedControllerDomainUnobservable
+            else do
+              owner <- getEffectiveUserID
+              opened <- try (Posix.openFdAt (Just root) controllerDomainName Posix.ReadOnly readFlags)
+              case opened of
+                Left failure | isDoesNotExistError failure -> do
                   still <- ready bootstrap stable sameRoot
-                  currentIntent <- observeControllerSubmissionIntent bootstrap operation requestDigest stable
-                  pure $ if not (still && currentIntent == ControllerSubmissionMatches && sameVersion before after && sameVersion after named)
-                    then RetainedControllerDomainUnobservable
-                    else case (Aeson.eitherDecodeStrict' bytes, checked) of
-                      (Right value, Right checkedValue) | value == checkedValue ->
-                        case parseEither parseDomain value of
-                          Right (Just (domain, window)) | value == domainValue bootstrap operation requestDigest domain window rootStatus -> RetainedControllerDomainObserved domain window
-                          _ -> RetainedControllerDomainConflict
-                      _ -> RetainedControllerDomainConflict
-        pure (either (const RetainedControllerDomainUnobservable) id (attempted :: Either IOException RetainedControllerDomain))
+                  pure (if still then RetainedControllerDomainMissing else RetainedControllerDomainUnobservable)
+                Left (_ :: IOException) -> pure RetainedControllerDomainUnobservable
+                Right file -> bracket (pure file) Posix.closeFd $ \held -> do
+                  before <- Files.getFdStatus held
+                  if not (safeFile owner before)
+                    then pure RetainedControllerDomainUnobservable
+                    else do
+                      bytes <- readBounded held
+                      checked <- decodeBoundedYamlValue bytes
+                      after <- Files.getFdStatus held
+                      named <-
+                        bracket
+                          (Posix.openFdAt (Just root) controllerDomainName Posix.ReadOnly readFlags)
+                          Posix.closeFd
+                          Files.getFdStatus
+                      still <- ready bootstrap stable sameRoot
+                      currentIntent <- observeControllerSubmissionIntent bootstrap operation requestDigest stable
+                      pure $
+                        if not
+                          ( still
+                              && currentIntent == ControllerSubmissionMatches
+                              && sameVersion before after
+                              && sameVersion after named
+                          )
+                          then RetainedControllerDomainUnobservable
+                          else case (Aeson.eitherDecodeStrict' bytes, checked) of
+                            (Right value, Right checkedValue) | value == checkedValue ->
+                              case parseEither parseDomain value of
+                                Right (Just (domain, window))
+                                  | value == domainValue bootstrap operation requestDigest domain window rootStatus ->
+                                      RetainedControllerDomainObserved domain window
+                                _ -> RetainedControllerDomainConflict
+                            _ -> RetainedControllerDomainConflict
+        pure
+          ( either
+              (const RetainedControllerDomainUnobservable)
+              id
+              (attempted :: Either IOException RetainedControllerDomain)
+          )
       pure $ case result of Just (Right observed) -> observed; _ -> RetainedControllerDomainUnobservable
-
  where
   parseDomain = Aeson.withObject "controller manager domain" $ \object -> do
     boot <- object .: "boot_id"
@@ -822,25 +1080,43 @@ observeRetainedControllerDomain bootstrap operation requestDigest stable
     hard <- object .: "hard_ns"
     stop <- object .: "stop_ns"
     finish <- object .: "finish_ns"
-    pure ((,) <$> Identity.hostManagerDomain boot bus name uid pid ticks <*> Identity.hostExecutionWindow outer work hard stop finish)
+    pure
+      ( (,)
+          <$> Identity.hostManagerDomain boot bus name uid pid ticks
+          <*> Identity.hostExecutionWindow outer work hard stop finish
+      )
 
 controllerProviderName :: FilePath
 controllerProviderName = "kind-controller-provider-binding.json"
 
-providerValue :: BootstrapProjection -> String -> String -> Identity.HostManagerDomain -> Identity.HostExecutionWindow -> String -> Files.FileStatus -> Aeson.Value
-providerValue bootstrap operation requestDigest domain window providerDigest root = Aeson.object
-  [ "schema_version" Aeson..= (1 :: Int)
-  , "kind" Aeson..= ("kind-controller-provider-binding" :: String)
-  , "manager_domain" Aeson..= domainValue bootstrap operation requestDigest domain window root
-  , "provider_sha256" Aeson..= providerDigest
-  ]
+providerValue
+  :: BootstrapProjection
+  -> String
+  -> String
+  -> Identity.HostManagerDomain
+  -> Identity.HostExecutionWindow
+  -> String
+  -> Files.FileStatus
+  -> Aeson.Value
+providerValue bootstrap operation requestDigest domain window providerDigest root =
+  Aeson.object
+    [ "schema_version" Aeson..= (1 :: Int)
+    , "kind" Aeson..= ("kind-controller-provider-binding" :: String)
+    , "manager_domain" Aeson..= domainValue bootstrap operation requestDigest domain window root
+    , "provider_sha256" Aeson..= providerDigest
+    ]
 
 -- The digest is non-authorizing historical data. A future recovery must
 -- freshly qualify the provider and compare its encoded binding.
 recordControllerProvider
   :: BootstrapProjection -> String -> String -> String -> IO Bool -> IO ControllerProviderWrite
 recordControllerProvider bootstrap operation requestDigest providerDigest stable
-  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest) && validImageId ("sha256:" ++ providerDigest)) = pure ControllerProviderRefused
+  | not
+      ( validInput bootstrap operation
+          && validImageId ("sha256:" ++ requestDigest)
+          && validImageId ("sha256:" ++ providerDigest)
+      ) =
+      pure ControllerProviderRefused
   | otherwise = do
       touched <- newIORef False
       let operationStable = do
@@ -862,16 +1138,32 @@ recordControllerProvider bootstrap operation requestDigest providerDigest stable
                 Right file -> do
                   writeIORef touched True
                   written <- try $ bracket (pure file) Posix.closeFd $ \held -> restore $ do
-                    writeAll held (LazyByteString.toStrict (Aeson.encode (providerValue bootstrap operation requestDigest manager window providerDigest rootStatus)))
+                    writeAll
+                      held
+                      ( LazyByteString.toStrict
+                          ( Aeson.encode
+                              (providerValue bootstrap operation requestDigest manager window providerDigest rootStatus)
+                          )
+                      )
                     fileSynchronise held
                     fileSynchronise root
                   case written of
                     Left (_ :: IOException) -> pure ControllerProviderIncomplete
                     Right () -> do
-                      observed <- restore (observeRetainedControllerProvider bootstrap operation requestDigest operationStable)
-                      pure (if observed == RetainedControllerProviderObserved providerDigest then ControllerProviderRecorded else ControllerProviderIncomplete)
+                      observed <-
+                        restore (observeRetainedControllerProvider bootstrap operation requestDigest operationStable)
+                      pure
+                        ( if observed == RetainedControllerProviderObserved providerDigest
+                            then ControllerProviderRecorded
+                            else ControllerProviderIncomplete
+                        )
             _ -> pure ControllerProviderRefused
-        pure (either (const ControllerProviderRefused) id (attempted :: Either IOException ControllerProviderWrite))
+        pure
+          ( either
+              (const ControllerProviderRefused)
+              id
+              (attempted :: Either IOException ControllerProviderWrite)
+          )
       changed <- readIORef touched
       pure $ case result of
         Just (Right outcome) | outcome /= ControllerProviderRefused -> outcome
@@ -881,7 +1173,8 @@ recordControllerProvider bootstrap operation requestDigest providerDigest stable
 observeRetainedControllerProvider
   :: BootstrapProjection -> String -> String -> IO Bool -> IO RetainedControllerProvider
 observeRetainedControllerProvider bootstrap operation requestDigest stable
-  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest)) = pure RetainedControllerProviderUnobservable
+  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest)) =
+      pure RetainedControllerProviderUnobservable
   | otherwise = do
       result <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
         attempted <- try $ do
@@ -899,44 +1192,74 @@ observeRetainedControllerProvider bootstrap operation requestDigest stable
                 Left (_ :: IOException) -> pure RetainedControllerProviderUnobservable
                 Right file -> bracket (pure file) Posix.closeFd $ \held -> do
                   before <- Files.getFdStatus held
-                  if not (safeFile owner before) then pure RetainedControllerProviderUnobservable else do
-                    bytes <- readBounded held
-                    checked <- decodeBoundedYamlValue bytes
-                    after <- Files.getFdStatus held
-                    named <- bracket (Posix.openFdAt (Just root) controllerProviderName Posix.ReadOnly readFlags) Posix.closeFd Files.getFdStatus
-                    still <- ready bootstrap stable sameRoot
-                    finalDomain <- observeRetainedControllerDomain bootstrap operation requestDigest stable
-                    pure $ if not (still && finalDomain == domain && sameVersion before after && sameVersion after named)
-                      then RetainedControllerProviderUnobservable
-                      else case (Aeson.eitherDecodeStrict' bytes, checked) of
-                        (Right value, Right checkedValue) | value == checkedValue ->
-                          case parseEither (Aeson.withObject "controller provider" (.: "provider_sha256")) value of
-                            Right digest | validImageId ("sha256:" ++ digest) && value == providerValue bootstrap operation requestDigest manager window digest rootStatus -> RetainedControllerProviderObserved digest
+                  if not (safeFile owner before)
+                    then pure RetainedControllerProviderUnobservable
+                    else do
+                      bytes <- readBounded held
+                      checked <- decodeBoundedYamlValue bytes
+                      after <- Files.getFdStatus held
+                      named <-
+                        bracket
+                          (Posix.openFdAt (Just root) controllerProviderName Posix.ReadOnly readFlags)
+                          Posix.closeFd
+                          Files.getFdStatus
+                      still <- ready bootstrap stable sameRoot
+                      finalDomain <- observeRetainedControllerDomain bootstrap operation requestDigest stable
+                      pure $
+                        if not (still && finalDomain == domain && sameVersion before after && sameVersion after named)
+                          then RetainedControllerProviderUnobservable
+                          else case (Aeson.eitherDecodeStrict' bytes, checked) of
+                            (Right value, Right checkedValue) | value == checkedValue ->
+                              case parseEither (Aeson.withObject "controller provider" (.: "provider_sha256")) value of
+                                Right digest
+                                  | validImageId ("sha256:" ++ digest)
+                                      && value == providerValue bootstrap operation requestDigest manager window digest rootStatus ->
+                                      RetainedControllerProviderObserved digest
+                                _ -> RetainedControllerProviderConflict
                             _ -> RetainedControllerProviderConflict
-                        _ -> RetainedControllerProviderConflict
             _ -> pure RetainedControllerProviderUnobservable
-        pure (either (const RetainedControllerProviderUnobservable) id (attempted :: Either IOException RetainedControllerProvider))
+        pure
+          ( either
+              (const RetainedControllerProviderUnobservable)
+              id
+              (attempted :: Either IOException RetainedControllerProvider)
+          )
       pure $ case result of Just (Right observed) -> observed; _ -> RetainedControllerProviderUnobservable
 
 providerMaterialName :: FilePath
 providerMaterialName = "kind-controller-provider-material.json"
 
-providerMaterialValue :: BootstrapProjection -> String -> String -> Identity.HostManagerDomain -> Identity.HostExecutionWindow -> Provider.RecordedProviderBinding -> Files.FileStatus -> Aeson.Value
-providerMaterialValue bootstrap operation requestDigest domain window binding root = Aeson.object
-  [ "schema_version" Aeson..= (1 :: Int)
-  , "kind" Aeson..= ("kind-controller-provider-material" :: String)
-  , "provider" Aeson..= providerValue bootstrap operation requestDigest domain window digest root
-  , "binding_base64" Aeson..= TextEncoding.decodeUtf8 (Base64.encode encoded)
-  ]
+providerMaterialValue
+  :: BootstrapProjection
+  -> String
+  -> String
+  -> Identity.HostManagerDomain
+  -> Identity.HostExecutionWindow
+  -> Provider.RecordedProviderBinding
+  -> Files.FileStatus
+  -> Aeson.Value
+providerMaterialValue bootstrap operation requestDigest domain window binding root =
+  Aeson.object
+    [ "schema_version" Aeson..= (1 :: Int)
+    , "kind" Aeson..= ("kind-controller-provider-material" :: String)
+    , "provider" Aeson..= providerValue bootstrap operation requestDigest domain window digest root
+    , "binding_base64" Aeson..= TextEncoding.decodeUtf8 (Base64.encode encoded)
+    ]
  where
   encoded = Provider.encodeProviderBinding binding
   digest = ByteString8.unpack (hexSha256 encoded)
 
 -- The decoded binding is retained data, not a live provider qualification.
 recordControllerProviderMaterial
-  :: BootstrapProjection -> String -> String -> Provider.RecordedProviderBinding -> IO Bool -> IO ControllerProviderMaterialWrite
+  :: BootstrapProjection
+  -> String
+  -> String
+  -> Provider.RecordedProviderBinding
+  -> IO Bool
+  -> IO ControllerProviderMaterialWrite
 recordControllerProviderMaterial bootstrap operation requestDigest binding stable
-  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest)) = pure ControllerProviderMaterialRefused
+  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest)) =
+      pure ControllerProviderMaterialRefused
   | otherwise = do
       touched <- newIORef False
       let operationStable = do
@@ -960,16 +1283,32 @@ recordControllerProviderMaterial bootstrap operation requestDigest binding stabl
                 Right file -> do
                   writeIORef touched True
                   written <- try $ bracket (pure file) Posix.closeFd $ \held -> restore $ do
-                    writeAll held (LazyByteString.toStrict (Aeson.encode (providerMaterialValue bootstrap operation requestDigest manager window binding rootStatus)))
+                    writeAll
+                      held
+                      ( LazyByteString.toStrict
+                          ( Aeson.encode
+                              (providerMaterialValue bootstrap operation requestDigest manager window binding rootStatus)
+                          )
+                      )
                     fileSynchronise held
                     fileSynchronise root
                   case written of
                     Left (_ :: IOException) -> pure ControllerProviderMaterialIncomplete
                     Right () -> do
-                      observed <- restore (observeControllerProviderMaterial bootstrap operation requestDigest operationStable)
-                      pure (if observed == RetainedControllerProviderMaterialObserved binding then ControllerProviderMaterialRecorded else ControllerProviderMaterialIncomplete)
+                      observed <-
+                        restore (observeControllerProviderMaterial bootstrap operation requestDigest operationStable)
+                      pure
+                        ( if observed == RetainedControllerProviderMaterialObserved binding
+                            then ControllerProviderMaterialRecorded
+                            else ControllerProviderMaterialIncomplete
+                        )
             _ -> pure ControllerProviderMaterialRefused
-        pure (either (const ControllerProviderMaterialRefused) id (attempted :: Either IOException ControllerProviderMaterialWrite))
+        pure
+          ( either
+              (const ControllerProviderMaterialRefused)
+              id
+              (attempted :: Either IOException ControllerProviderMaterialWrite)
+          )
       changed <- readIORef touched
       pure $ case result of
         Just (Right outcome) | outcome /= ControllerProviderMaterialRefused -> outcome
@@ -979,7 +1318,8 @@ recordControllerProviderMaterial bootstrap operation requestDigest binding stabl
 observeControllerProviderMaterial
   :: BootstrapProjection -> String -> String -> IO Bool -> IO RetainedControllerProviderMaterial
 observeControllerProviderMaterial bootstrap operation requestDigest stable
-  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest)) = pure RetainedControllerProviderMaterialUnobservable
+  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest)) =
+      pure RetainedControllerProviderMaterialUnobservable
   | otherwise = do
       result <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
         attempted <- try $ do
@@ -994,52 +1334,97 @@ observeControllerProviderMaterial bootstrap operation requestDigest stable
               case opened of
                 Left failure | isDoesNotExistError failure -> do
                   still <- ready bootstrap stable sameRoot
-                  pure (if still then RetainedControllerProviderMaterialMissing else RetainedControllerProviderMaterialUnobservable)
+                  pure
+                    ( if still
+                        then RetainedControllerProviderMaterialMissing
+                        else RetainedControllerProviderMaterialUnobservable
+                    )
                 Left (_ :: IOException) -> pure RetainedControllerProviderMaterialUnobservable
                 Right file -> bracket (pure file) Posix.closeFd $ \held -> do
                   before <- Files.getFdStatus held
-                  if not (safeFile owner before) then pure RetainedControllerProviderMaterialUnobservable else do
-                    bytes <- readBounded held
-                    checked <- decodeBoundedYamlValue bytes
-                    after <- Files.getFdStatus held
-                    named <- bracket (Posix.openFdAt (Just root) providerMaterialName Posix.ReadOnly readFlags) Posix.closeFd Files.getFdStatus
-                    still <- ready bootstrap stable sameRoot
-                    finalDomain <- observeRetainedControllerDomain bootstrap operation requestDigest stable
-                    finalProvider <- observeRetainedControllerProvider bootstrap operation requestDigest stable
-                    pure $ if not (still && finalDomain == domain && finalProvider == provider && sameVersion before after && sameVersion after named)
-                      then RetainedControllerProviderMaterialUnobservable
-                      else case (Aeson.eitherDecodeStrict' bytes, checked) of
-                        (Right value, Right checkedValue) | value == checkedValue ->
-                          case parseEither (Aeson.withObject "controller provider material" (.: "binding_base64")) value of
-                            Right encodedText -> case Base64.decode (TextEncoding.encodeUtf8 encodedText) of
-                              Right encoded | Base64.encode encoded == TextEncoding.encodeUtf8 encodedText && ByteString8.unpack (hexSha256 encoded) == digest ->
-                                case Provider.decodeProviderBinding encoded of
-                                  Right binding | value == providerMaterialValue bootstrap operation requestDigest manager window binding rootStatus -> RetainedControllerProviderMaterialObserved binding
+                  if not (safeFile owner before)
+                    then pure RetainedControllerProviderMaterialUnobservable
+                    else do
+                      bytes <- readBounded held
+                      checked <- decodeBoundedYamlValue bytes
+                      after <- Files.getFdStatus held
+                      named <-
+                        bracket
+                          (Posix.openFdAt (Just root) providerMaterialName Posix.ReadOnly readFlags)
+                          Posix.closeFd
+                          Files.getFdStatus
+                      still <- ready bootstrap stable sameRoot
+                      finalDomain <- observeRetainedControllerDomain bootstrap operation requestDigest stable
+                      finalProvider <- observeRetainedControllerProvider bootstrap operation requestDigest stable
+                      pure $
+                        if not
+                          ( still
+                              && finalDomain == domain
+                              && finalProvider == provider
+                              && sameVersion before after
+                              && sameVersion after named
+                          )
+                          then RetainedControllerProviderMaterialUnobservable
+                          else case (Aeson.eitherDecodeStrict' bytes, checked) of
+                            (Right value, Right checkedValue) | value == checkedValue ->
+                              case parseEither (Aeson.withObject "controller provider material" (.: "binding_base64")) value of
+                                Right encodedText -> case Base64.decode (TextEncoding.encodeUtf8 encodedText) of
+                                  Right encoded
+                                    | Base64.encode encoded == TextEncoding.encodeUtf8 encodedText
+                                        && ByteString8.unpack (hexSha256 encoded) == digest ->
+                                        case Provider.decodeProviderBinding encoded of
+                                          Right binding
+                                            | value == providerMaterialValue bootstrap operation requestDigest manager window binding rootStatus ->
+                                                RetainedControllerProviderMaterialObserved binding
+                                          _ -> RetainedControllerProviderMaterialConflict
                                   _ -> RetainedControllerProviderMaterialConflict
-                              _ -> RetainedControllerProviderMaterialConflict
+                                _ -> RetainedControllerProviderMaterialConflict
                             _ -> RetainedControllerProviderMaterialConflict
-                        _ -> RetainedControllerProviderMaterialConflict
             _ -> pure RetainedControllerProviderMaterialUnobservable
-        pure (either (const RetainedControllerProviderMaterialUnobservable) id (attempted :: Either IOException RetainedControllerProviderMaterial))
-      pure $ case result of Just (Right observed) -> observed; _ -> RetainedControllerProviderMaterialUnobservable
+        pure
+          ( either
+              (const RetainedControllerProviderMaterialUnobservable)
+              id
+              (attempted :: Either IOException RetainedControllerProviderMaterial)
+          )
+      pure $ case result of
+        Just (Right observed) -> observed
+        _ -> RetainedControllerProviderMaterialUnobservable
 
 controllerSenderName :: FilePath
 controllerSenderName = "kind-controller-sender.json"
 
-senderValue :: BootstrapProjection -> String -> String -> Identity.HostManagerDomain -> Identity.HostExecutionWindow -> Provider.RecordedProviderBinding -> Identity.HostBusUniqueName -> Files.FileStatus -> Aeson.Value
-senderValue bootstrap operation requestDigest domain window binding sender root = Aeson.object
-  [ "schema_version" Aeson..= (1 :: Int)
-  , "kind" Aeson..= ("kind-controller-sender" :: String)
-  , "provider_material" Aeson..= providerMaterialValue bootstrap operation requestDigest domain window binding root
-  , "sender" Aeson..= Identity.hostBusUniqueNameText sender
-  ]
+senderValue
+  :: BootstrapProjection
+  -> String
+  -> String
+  -> Identity.HostManagerDomain
+  -> Identity.HostExecutionWindow
+  -> Provider.RecordedProviderBinding
+  -> Identity.HostBusUniqueName
+  -> Files.FileStatus
+  -> Aeson.Value
+senderValue bootstrap operation requestDigest domain window binding sender root =
+  Aeson.object
+    [ "schema_version" Aeson..= (1 :: Int)
+    , "kind" Aeson..= ("kind-controller-sender" :: String)
+    , "provider_material"
+        Aeson..= providerMaterialValue bootstrap operation requestDigest domain window binding root
+    , "sender" Aeson..= Identity.hostBusUniqueNameText sender
+    ]
 
 -- The retained sender is non-authorizing data. Later recovery must establish
 -- that the original sender is gone under the same freshly qualified provider.
 recordControllerSender
-  :: BootstrapProjection -> String -> String -> Identity.HostBusUniqueName -> IO Bool -> IO ControllerSenderWrite
+  :: BootstrapProjection
+  -> String
+  -> String
+  -> Identity.HostBusUniqueName
+  -> IO Bool
+  -> IO ControllerSenderWrite
 recordControllerSender bootstrap operation requestDigest sender stable
-  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest)) = pure ControllerSenderRefused
+  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest)) =
+      pure ControllerSenderRefused
   | otherwise = do
       touched <- newIORef False
       let operationStable = do
@@ -1054,24 +1439,38 @@ recordControllerSender bootstrap operation requestDigest sender stable
           material <- observeControllerProviderMaterial bootstrap operation requestDigest operationStable
           rootStatus <- Files.getFdStatus root
           case (domain, material) of
-            (RetainedControllerDomainObserved manager window, RetainedControllerProviderMaterialObserved binding) | admitted -> mask $ \restore -> do
-              opened <- try (Posix.openFdAt (Just root) controllerSenderName Posix.WriteOnly createFlags)
-              case opened of
-                Left failure | isAlreadyExistsError failure -> pure ControllerSenderAlreadyExists
-                Left (_ :: IOException) -> pure ControllerSenderRefused
-                Right file -> do
-                  writeIORef touched True
-                  written <- try $ bracket (pure file) Posix.closeFd $ \held -> restore $ do
-                    writeAll held (LazyByteString.toStrict (Aeson.encode (senderValue bootstrap operation requestDigest manager window binding sender rootStatus)))
-                    fileSynchronise held
-                    fileSynchronise root
-                  case written of
-                    Left (_ :: IOException) -> pure ControllerSenderIncomplete
-                    Right () -> do
-                      observed <- restore (observeRetainedControllerSender bootstrap operation requestDigest operationStable)
-                      pure (if observed == RetainedControllerSenderObserved sender then ControllerSenderRecorded else ControllerSenderIncomplete)
+            ( RetainedControllerDomainObserved manager window
+              , RetainedControllerProviderMaterialObserved binding
+              ) | admitted -> mask $ \restore -> do
+                opened <- try (Posix.openFdAt (Just root) controllerSenderName Posix.WriteOnly createFlags)
+                case opened of
+                  Left failure | isAlreadyExistsError failure -> pure ControllerSenderAlreadyExists
+                  Left (_ :: IOException) -> pure ControllerSenderRefused
+                  Right file -> do
+                    writeIORef touched True
+                    written <- try $ bracket (pure file) Posix.closeFd $ \held -> restore $ do
+                      writeAll
+                        held
+                        ( LazyByteString.toStrict
+                            ( Aeson.encode
+                                (senderValue bootstrap operation requestDigest manager window binding sender rootStatus)
+                            )
+                        )
+                      fileSynchronise held
+                      fileSynchronise root
+                    case written of
+                      Left (_ :: IOException) -> pure ControllerSenderIncomplete
+                      Right () -> do
+                        observed <-
+                          restore (observeRetainedControllerSender bootstrap operation requestDigest operationStable)
+                        pure
+                          ( if observed == RetainedControllerSenderObserved sender
+                              then ControllerSenderRecorded
+                              else ControllerSenderIncomplete
+                          )
             _ -> pure ControllerSenderRefused
-        pure (either (const ControllerSenderRefused) id (attempted :: Either IOException ControllerSenderWrite))
+        pure
+          (either (const ControllerSenderRefused) id (attempted :: Either IOException ControllerSenderWrite))
       changed <- readIORef touched
       pure $ case result of
         Just (Right outcome) | outcome /= ControllerSenderRefused -> outcome
@@ -1081,7 +1480,8 @@ recordControllerSender bootstrap operation requestDigest sender stable
 observeRetainedControllerSender
   :: BootstrapProjection -> String -> String -> IO Bool -> IO RetainedControllerSender
 observeRetainedControllerSender bootstrap operation requestDigest stable
-  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest)) = pure RetainedControllerSenderUnobservable
+  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest)) =
+      pure RetainedControllerSenderUnobservable
   | otherwise = do
       result <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
         attempted <- try $ do
@@ -1090,34 +1490,57 @@ observeRetainedControllerSender bootstrap operation requestDigest stable
           material <- observeControllerProviderMaterial bootstrap operation requestDigest stable
           rootStatus <- Files.getFdStatus root
           case (domain, material) of
-            (RetainedControllerDomainObserved manager window, RetainedControllerProviderMaterialObserved binding) | admitted -> do
-              owner <- getEffectiveUserID
-              opened <- try (Posix.openFdAt (Just root) controllerSenderName Posix.ReadOnly readFlags)
-              case opened of
-                Left failure | isDoesNotExistError failure -> do
-                  still <- ready bootstrap stable sameRoot
-                  pure (if still then RetainedControllerSenderMissing else RetainedControllerSenderUnobservable)
-                Left (_ :: IOException) -> pure RetainedControllerSenderUnobservable
-                Right file -> bracket (pure file) Posix.closeFd $ \held -> do
-                  before <- Files.getFdStatus held
-                  if not (safeFile owner before) then pure RetainedControllerSenderUnobservable else do
-                    bytes <- readBounded held
-                    checked <- decodeBoundedYamlValue bytes
-                    after <- Files.getFdStatus held
-                    named <- bracket (Posix.openFdAt (Just root) controllerSenderName Posix.ReadOnly readFlags) Posix.closeFd Files.getFdStatus
+            ( RetainedControllerDomainObserved manager window
+              , RetainedControllerProviderMaterialObserved binding
+              ) | admitted -> do
+                owner <- getEffectiveUserID
+                opened <- try (Posix.openFdAt (Just root) controllerSenderName Posix.ReadOnly readFlags)
+                case opened of
+                  Left failure | isDoesNotExistError failure -> do
                     still <- ready bootstrap stable sameRoot
-                    finalDomain <- observeRetainedControllerDomain bootstrap operation requestDigest stable
-                    finalMaterial <- observeControllerProviderMaterial bootstrap operation requestDigest stable
-                    pure $ if not (still && finalDomain == domain && finalMaterial == material && sameVersion before after && sameVersion after named)
-                      then RetainedControllerSenderUnobservable
-                      else case (Aeson.eitherDecodeStrict' bytes, checked) of
-                        (Right value, Right checkedValue) | value == checkedValue ->
-                          case parseEither (Aeson.withObject "controller sender" (.: "sender")) value of
-                            Right name | Just sender <- Identity.hostBusUniqueName name, value == senderValue bootstrap operation requestDigest manager window binding sender rootStatus -> RetainedControllerSenderObserved sender
-                            _ -> RetainedControllerSenderConflict
-                        _ -> RetainedControllerSenderConflict
+                    pure (if still then RetainedControllerSenderMissing else RetainedControllerSenderUnobservable)
+                  Left (_ :: IOException) -> pure RetainedControllerSenderUnobservable
+                  Right file -> bracket (pure file) Posix.closeFd $ \held -> do
+                    before <- Files.getFdStatus held
+                    if not (safeFile owner before)
+                      then pure RetainedControllerSenderUnobservable
+                      else do
+                        bytes <- readBounded held
+                        checked <- decodeBoundedYamlValue bytes
+                        after <- Files.getFdStatus held
+                        named <-
+                          bracket
+                            (Posix.openFdAt (Just root) controllerSenderName Posix.ReadOnly readFlags)
+                            Posix.closeFd
+                            Files.getFdStatus
+                        still <- ready bootstrap stable sameRoot
+                        finalDomain <- observeRetainedControllerDomain bootstrap operation requestDigest stable
+                        finalMaterial <- observeControllerProviderMaterial bootstrap operation requestDigest stable
+                        pure $
+                          if not
+                            ( still
+                                && finalDomain == domain
+                                && finalMaterial == material
+                                && sameVersion before after
+                                && sameVersion after named
+                            )
+                            then RetainedControllerSenderUnobservable
+                            else case (Aeson.eitherDecodeStrict' bytes, checked) of
+                              (Right value, Right checkedValue) | value == checkedValue ->
+                                case parseEither (Aeson.withObject "controller sender" (.: "sender")) value of
+                                  Right name
+                                    | Just sender <- Identity.hostBusUniqueName name
+                                    , value == senderValue bootstrap operation requestDigest manager window binding sender rootStatus ->
+                                        RetainedControllerSenderObserved sender
+                                  _ -> RetainedControllerSenderConflict
+                              _ -> RetainedControllerSenderConflict
             _ -> pure RetainedControllerSenderUnobservable
-        pure (either (const RetainedControllerSenderUnobservable) id (attempted :: Either IOException RetainedControllerSender))
+        pure
+          ( either
+              (const RetainedControllerSenderUnobservable)
+              id
+              (attempted :: Either IOException RetainedControllerSender)
+          )
       pure $ case result of Just (Right observed) -> observed; _ -> RetainedControllerSenderUnobservable
 
 controllerJobName :: FilePath
@@ -1131,19 +1554,25 @@ validControllerJob path = case stripPrefix "/org/freedesktop/systemd1/job/" path
   Nothing -> False
 
 jobValue :: BootstrapProjection -> String -> String -> String -> Files.FileStatus -> Aeson.Value
-jobValue bootstrap operation requestDigest job root = Aeson.object
-  [ "schema_version" Aeson..= (1 :: Int)
-  , "kind" Aeson..= ("kind-controller-submission-job" :: String)
-  , "intent" Aeson..= submissionValue bootstrap operation requestDigest root
-  , "job_path" Aeson..= job
-  ]
+jobValue bootstrap operation requestDigest job root =
+  Aeson.object
+    [ "schema_version" Aeson..= (1 :: Int)
+    , "kind" Aeson..= ("kind-controller-submission-job" :: String)
+    , "intent" Aeson..= submissionValue bootstrap operation requestDigest root
+    , "job_path" Aeson..= job
+    ]
 
 -- This records a returned manager job path only. It is not authenticated job
 -- identity, manager acceptance proof, job completion, or worker retirement.
 recordControllerJob
   :: BootstrapProjection -> String -> String -> String -> IO Bool -> IO ControllerJobWrite
 recordControllerJob bootstrap operation requestDigest job stable
-  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest) && validControllerJob job) = pure ControllerJobRefused
+  | not
+      ( validInput bootstrap operation
+          && validImageId ("sha256:" ++ requestDigest)
+          && validControllerJob job
+      ) =
+      pure ControllerJobRefused
   | otherwise = do
       touched <- newIORef False
       let operationStable = do
@@ -1156,22 +1585,26 @@ recordControllerJob bootstrap operation requestDigest job stable
           admitted <- ready bootstrap operationStable sameRoot
           intent <- observeControllerSubmissionIntent bootstrap operation requestDigest operationStable
           rootStatus <- Files.getFdStatus root
-          if not admitted || intent /= ControllerSubmissionMatches then pure ControllerJobRefused else mask $ \restore -> do
-            opened <- try (Posix.openFdAt (Just root) controllerJobName Posix.WriteOnly createFlags)
-            case opened of
-              Left failure | isAlreadyExistsError failure -> pure ControllerJobAlreadyExists
-              Left (_ :: IOException) -> pure ControllerJobRefused
-              Right file -> do
-                writeIORef touched True
-                written <- try $ bracket (pure file) Posix.closeFd $ \held -> restore $ do
-                  writeAll held (LazyByteString.toStrict (Aeson.encode (jobValue bootstrap operation requestDigest job rootStatus)))
-                  fileSynchronise held
-                  fileSynchronise root
-                case written of
-                  Left (_ :: IOException) -> pure ControllerJobIncomplete
-                  Right () -> do
-                    observed <- restore (observeControllerJob bootstrap operation requestDigest job operationStable)
-                    pure (if observed == ControllerJobMatches then ControllerJobRecorded else ControllerJobIncomplete)
+          if not admitted || intent /= ControllerSubmissionMatches
+            then pure ControllerJobRefused
+            else mask $ \restore -> do
+              opened <- try (Posix.openFdAt (Just root) controllerJobName Posix.WriteOnly createFlags)
+              case opened of
+                Left failure | isAlreadyExistsError failure -> pure ControllerJobAlreadyExists
+                Left (_ :: IOException) -> pure ControllerJobRefused
+                Right file -> do
+                  writeIORef touched True
+                  written <- try $ bracket (pure file) Posix.closeFd $ \held -> restore $ do
+                    writeAll
+                      held
+                      (LazyByteString.toStrict (Aeson.encode (jobValue bootstrap operation requestDigest job rootStatus)))
+                    fileSynchronise held
+                    fileSynchronise root
+                  case written of
+                    Left (_ :: IOException) -> pure ControllerJobIncomplete
+                    Right () -> do
+                      observed <- restore (observeControllerJob bootstrap operation requestDigest job operationStable)
+                      pure (if observed == ControllerJobMatches then ControllerJobRecorded else ControllerJobIncomplete)
         pure (either (const ControllerJobRefused) id (attempted :: Either IOException ControllerJobWrite))
       changed <- readIORef touched
       pure $ case result of
@@ -1195,39 +1628,61 @@ observeControllerJob bootstrap operation requestDigest job stable
 observeRetainedControllerJob
   :: BootstrapProjection -> String -> String -> IO Bool -> IO RetainedControllerJob
 observeRetainedControllerJob bootstrap operation requestDigest stable
-  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest)) = pure RetainedControllerJobUnobservable
+  | not (validInput bootstrap operation && validImageId ("sha256:" ++ requestDigest)) =
+      pure RetainedControllerJobUnobservable
   | otherwise = do
       result <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
         attempted <- try $ do
           admitted <- ready bootstrap stable sameRoot
           intent <- observeControllerSubmissionIntent bootstrap operation requestDigest stable
           rootStatus <- Files.getFdStatus root
-          if not admitted || intent /= ControllerSubmissionMatches then pure RetainedControllerJobUnobservable else do
-            owner <- getEffectiveUserID
-            opened <- try (Posix.openFdAt (Just root) controllerJobName Posix.ReadOnly readFlags)
-            case opened of
-              Left failure | isDoesNotExistError failure -> do
-                still <- ready bootstrap stable sameRoot
-                pure (if still then RetainedControllerJobMissing else RetainedControllerJobUnobservable)
-              Left (_ :: IOException) -> pure RetainedControllerJobUnobservable
-              Right file -> bracket (pure file) Posix.closeFd $ \held -> do
-                before <- Files.getFdStatus held
-                if not (safeFile owner before) then pure RetainedControllerJobUnobservable else do
-                  bytes <- readBounded held
-                  checked <- decodeBoundedYamlValue bytes
-                  after <- Files.getFdStatus held
-                  named <- bracket (Posix.openFdAt (Just root) controllerJobName Posix.ReadOnly readFlags) Posix.closeFd Files.getFdStatus
+          if not admitted || intent /= ControllerSubmissionMatches
+            then pure RetainedControllerJobUnobservable
+            else do
+              owner <- getEffectiveUserID
+              opened <- try (Posix.openFdAt (Just root) controllerJobName Posix.ReadOnly readFlags)
+              case opened of
+                Left failure | isDoesNotExistError failure -> do
                   still <- ready bootstrap stable sameRoot
-                  currentIntent <- observeControllerSubmissionIntent bootstrap operation requestDigest stable
-                  pure $ if not (still && currentIntent == ControllerSubmissionMatches && sameVersion before after && sameVersion after named)
-                    then RetainedControllerJobUnobservable
-                    else case (Aeson.eitherDecodeStrict' bytes, checked) of
-                      (Right value, Right checkedValue) | value == checkedValue ->
-                        case parseEither (Aeson.withObject "controller job" (.: "job_path")) value of
-                          Right path | validControllerJob path && value == jobValue bootstrap operation requestDigest path rootStatus -> RetainedControllerJobObserved path
-                          _ -> RetainedControllerJobConflict
-                      _ -> RetainedControllerJobConflict
-        pure (either (const RetainedControllerJobUnobservable) id (attempted :: Either IOException RetainedControllerJob))
+                  pure (if still then RetainedControllerJobMissing else RetainedControllerJobUnobservable)
+                Left (_ :: IOException) -> pure RetainedControllerJobUnobservable
+                Right file -> bracket (pure file) Posix.closeFd $ \held -> do
+                  before <- Files.getFdStatus held
+                  if not (safeFile owner before)
+                    then pure RetainedControllerJobUnobservable
+                    else do
+                      bytes <- readBounded held
+                      checked <- decodeBoundedYamlValue bytes
+                      after <- Files.getFdStatus held
+                      named <-
+                        bracket
+                          (Posix.openFdAt (Just root) controllerJobName Posix.ReadOnly readFlags)
+                          Posix.closeFd
+                          Files.getFdStatus
+                      still <- ready bootstrap stable sameRoot
+                      currentIntent <- observeControllerSubmissionIntent bootstrap operation requestDigest stable
+                      pure $
+                        if not
+                          ( still
+                              && currentIntent == ControllerSubmissionMatches
+                              && sameVersion before after
+                              && sameVersion after named
+                          )
+                          then RetainedControllerJobUnobservable
+                          else case (Aeson.eitherDecodeStrict' bytes, checked) of
+                            (Right value, Right checkedValue) | value == checkedValue ->
+                              case parseEither (Aeson.withObject "controller job" (.: "job_path")) value of
+                                Right path
+                                  | validControllerJob path && value == jobValue bootstrap operation requestDigest path rootStatus ->
+                                      RetainedControllerJobObserved path
+                                _ -> RetainedControllerJobConflict
+                            _ -> RetainedControllerJobConflict
+        pure
+          ( either
+              (const RetainedControllerJobUnobservable)
+              id
+              (attempted :: Either IOException RetainedControllerJob)
+          )
       pure $ case result of Just (Right observed) -> observed; _ -> RetainedControllerJobUnobservable
 
 receiptName :: FilePath
@@ -1296,32 +1751,53 @@ familyPublicationName = "kind-family-publication-attempt.json"
 familyCancellationName :: FilePath
 familyCancellationName = "kind-family-pre-publication-cancel.json"
 
-familyLaunchValue :: FilePath -> BootstrapProjection -> String -> Request.KindControllerRequest -> Files.FileStatus -> Aeson.Value
-familyLaunchValue name bootstrap operation request root = Aeson.object
-  [ "schema_version" Aeson..= (1 :: Int)
-  , "kind" Aeson..= (if name == familyLaunchName then "kind-family-launch-request" else if name == familyPublicationName then "kind-family-publication-attempt" else "kind-family-pre-publication-cancel" :: String)
-  , "publication_protocol" Aeson..= (1 :: Int)
-  , "deployment_id" Aeson..= scopeIdentifier (bootstrapScope bootstrap)
-  , "root_generation" Aeson..= bootstrapRootGeneration bootstrap
-  , "operation_id" Aeson..= operation
-  , "root_device" Aeson..= toInteger (Files.deviceID root)
-  , "root_inode" Aeson..= toInteger (Files.fileID root)
-  , "request_base64" Aeson..= TextEncoding.decodeUtf8 (Base64.encode (Request.encodeKindControllerRequest request))
-  ]
+familyLaunchValue
+  :: FilePath
+  -> BootstrapProjection
+  -> String
+  -> Request.KindControllerRequest
+  -> Files.FileStatus
+  -> Aeson.Value
+familyLaunchValue name bootstrap operation request root =
+  Aeson.object
+    [ "schema_version" Aeson..= (1 :: Int)
+    , "kind"
+        Aeson..= ( if name == familyLaunchName
+                     then "kind-family-launch-request"
+                     else
+                       if name == familyPublicationName
+                         then "kind-family-publication-attempt"
+                         else "kind-family-pre-publication-cancel" :: String
+                 )
+    , "publication_protocol" Aeson..= (1 :: Int)
+    , "deployment_id" Aeson..= scopeIdentifier (bootstrapScope bootstrap)
+    , "root_generation" Aeson..= bootstrapRootGeneration bootstrap
+    , "operation_id" Aeson..= operation
+    , "root_device" Aeson..= toInteger (Files.deviceID root)
+    , "root_inode" Aeson..= toInteger (Files.fileID root)
+    , "request_base64"
+        Aeson..= TextEncoding.decodeUtf8 (Base64.encode (Request.encodeKindControllerRequest request))
+    ]
 
 -- This write-ahead record is a recovery locator, not evidence of submission.
-recordFamilyLaunch :: BootstrapProjection -> Request.KindControllerRequest -> IO Bool -> IO FamilyLaunchWrite
+recordFamilyLaunch
+  :: BootstrapProjection -> Request.KindControllerRequest -> IO Bool -> IO FamilyLaunchWrite
 recordFamilyLaunch = recordFamilyLaunchAt familyLaunchName
 
-recordFamilyPublicationAttempt :: BootstrapProjection -> Request.KindControllerRequest -> IO Bool -> IO FamilyLaunchWrite
+recordFamilyPublicationAttempt
+  :: BootstrapProjection -> Request.KindControllerRequest -> IO Bool -> IO FamilyLaunchWrite
 recordFamilyPublicationAttempt = recordFamilyLaunchAt familyPublicationName
 
-recordFamilyPrePublicationCancellation :: BootstrapProjection -> Request.KindControllerRequest -> IO Bool -> IO FamilyLaunchWrite
+recordFamilyPrePublicationCancellation
+  :: BootstrapProjection -> Request.KindControllerRequest -> IO Bool -> IO FamilyLaunchWrite
 recordFamilyPrePublicationCancellation = recordFamilyLaunchAt familyCancellationName
 
-recordFamilyLaunchAt :: FilePath -> BootstrapProjection -> Request.KindControllerRequest -> IO Bool -> IO FamilyLaunchWrite
+recordFamilyLaunchAt
+  :: FilePath -> BootstrapProjection -> Request.KindControllerRequest -> IO Bool -> IO FamilyLaunchWrite
 recordFamilyLaunchAt name bootstrap request stable
-  | not (validInput bootstrap operation) || Request.decodeRetainedKindControllerRequest bootstrap operation bytes /= Right request = pure FamilyLaunchRefused
+  | not (validInput bootstrap operation)
+      || Request.decodeRetainedKindControllerRequest bootstrap operation bytes /= Right request =
+      pure FamilyLaunchRefused
   | otherwise = do
       touched <- newIORef False
       let operationStable = do
@@ -1334,30 +1810,43 @@ recordFamilyLaunchAt name bootstrap request stable
           admitted <- ready bootstrap operationStable sameRoot
           protocol <- observeKindFamilyIntent bootstrap
           legacy <- observeRetainedControllerSubmission bootstrap operation operationStable
-          previous <- if name == familyLaunchName then pure True else do
-            matching <- matchesRetainedFamilyRequest bootstrap request operationStable
-            opposite <- if name == familyPublicationName
-              then observeFamilyPrePublicationCancellation bootstrap operation operationStable
-              else observeFamilyPublicationAttempt bootstrap operation operationStable
-            pure (matching && opposite == FamilyLaunchMissing)
+          previous <-
+            if name == familyLaunchName
+              then pure True
+              else do
+                matching <- matchesRetainedFamilyRequest bootstrap request operationStable
+                opposite <-
+                  if name == familyPublicationName
+                    then observeFamilyPrePublicationCancellation bootstrap operation operationStable
+                    else observeFamilyPublicationAttempt bootstrap operation operationStable
+                pure (matching && opposite == FamilyLaunchMissing)
           rootStatus <- Files.getFdStatus root
-          let encoded = LazyByteString.toStrict (Aeson.encode (familyLaunchValue name bootstrap operation request rootStatus))
-          if not admitted || not previous || protocol /= KindIntentMatches operation || legacy /= RetainedControllerSubmissionMissing || ByteString.length encoded > 4096 then pure FamilyLaunchRefused else mask $ \restore -> do
-            opened <- try (Posix.openFdAt (Just root) name Posix.WriteOnly createFlags)
-            case opened of
-              Left failure | isAlreadyExistsError failure -> pure FamilyLaunchAlreadyExists
-              Left (_ :: IOException) -> pure FamilyLaunchRefused
-              Right file -> do
-                writeIORef touched True
-                written <- try $ bracket (pure file) Posix.closeFd $ \held -> restore $ do
-                  writeAll held encoded
-                  fileSynchronise held
-                  fileSynchronise root
-                case written of
-                  Left (_ :: IOException) -> pure FamilyLaunchIncomplete
-                  Right () -> do
-                    observed <- restore (observeFamilyLaunchAt name bootstrap operation operationStable)
-                    pure (if observed == FamilyLaunchObserved request then FamilyLaunchRecorded else FamilyLaunchIncomplete)
+          let encoded =
+                LazyByteString.toStrict
+                  (Aeson.encode (familyLaunchValue name bootstrap operation request rootStatus))
+          if not admitted
+            || not previous
+            || protocol /= KindIntentMatches operation
+            || legacy /= RetainedControllerSubmissionMissing
+            || ByteString.length encoded > 4096
+            then pure FamilyLaunchRefused
+            else mask $ \restore -> do
+              opened <- try (Posix.openFdAt (Just root) name Posix.WriteOnly createFlags)
+              case opened of
+                Left failure | isAlreadyExistsError failure -> pure FamilyLaunchAlreadyExists
+                Left (_ :: IOException) -> pure FamilyLaunchRefused
+                Right file -> do
+                  writeIORef touched True
+                  written <- try $ bracket (pure file) Posix.closeFd $ \held -> restore $ do
+                    writeAll held encoded
+                    fileSynchronise held
+                    fileSynchronise root
+                  case written of
+                    Left (_ :: IOException) -> pure FamilyLaunchIncomplete
+                    Right () -> do
+                      observed <- restore (observeFamilyLaunchAt name bootstrap operation operationStable)
+                      pure
+                        (if observed == FamilyLaunchObserved request then FamilyLaunchRecorded else FamilyLaunchIncomplete)
         pure (either (const FamilyLaunchRefused) id (attempted :: Either IOException FamilyLaunchWrite))
       changed <- readIORef touched
       pure $ case outcome of
@@ -1370,25 +1859,33 @@ recordFamilyLaunchAt name bootstrap request stable
 
 -- Call under the operation lease. Neither a matching request nor this check
 -- proves that a controller was submitted or that its family has retired.
-matchesRetainedFamilyRequest :: BootstrapProjection -> Request.KindControllerRequest -> IO Bool -> IO Bool
+matchesRetainedFamilyRequest
+  :: BootstrapProjection -> Request.KindControllerRequest -> IO Bool -> IO Bool
 matchesRetainedFamilyRequest bootstrap request stable = do
   before <- stable
   protocol <- observeKindFamilyIntent bootstrap
   retained <- observeFamilyLaunch bootstrap (Request.kindRequestOperation request) stable
   after <- stable
-  pure (before && after && protocol == KindIntentMatches (Request.kindRequestOperation request)
-    && retained == FamilyLaunchObserved request)
+  pure
+    ( before
+        && after
+        && protocol == KindIntentMatches (Request.kindRequestOperation request)
+        && retained == FamilyLaunchObserved request
+    )
 
 observeFamilyLaunch :: BootstrapProjection -> String -> IO Bool -> IO FamilyLaunchObservation
 observeFamilyLaunch = observeFamilyLaunchAt familyLaunchName
 
-observeFamilyPublicationAttempt :: BootstrapProjection -> String -> IO Bool -> IO FamilyLaunchObservation
+observeFamilyPublicationAttempt
+  :: BootstrapProjection -> String -> IO Bool -> IO FamilyLaunchObservation
 observeFamilyPublicationAttempt = observeFamilyLaunchAt familyPublicationName
 
-observeFamilyPrePublicationCancellation :: BootstrapProjection -> String -> IO Bool -> IO FamilyLaunchObservation
+observeFamilyPrePublicationCancellation
+  :: BootstrapProjection -> String -> IO Bool -> IO FamilyLaunchObservation
 observeFamilyPrePublicationCancellation = observeFamilyLaunchAt familyCancellationName
 
-observeFamilyLaunchAt :: FilePath -> BootstrapProjection -> String -> IO Bool -> IO FamilyLaunchObservation
+observeFamilyLaunchAt
+  :: FilePath -> BootstrapProjection -> String -> IO Bool -> IO FamilyLaunchObservation
 observeFamilyLaunchAt name bootstrap operation stable
   | not (validInput bootstrap operation) = pure FamilyLaunchUnobservable
   | otherwise = do
@@ -1396,28 +1893,43 @@ observeFamilyLaunchAt name bootstrap operation stable
         attempted <- try $ do
           admitted <- ready bootstrap stable sameRoot
           rootStatus <- Files.getFdStatus root
-          if not admitted then pure FamilyLaunchUnobservable else do
-            owner <- getEffectiveUserID
-            opened <- try (Posix.openFdAt (Just root) name Posix.ReadOnly readFlags)
-            case opened of
-              Left failure | isDoesNotExistError failure -> do
-                still <- ready bootstrap stable sameRoot
-                pure (if still then FamilyLaunchMissing else FamilyLaunchUnobservable)
-              Left (_ :: IOException) -> pure FamilyLaunchUnobservable
-              Right file -> bracket (pure file) Posix.closeFd $ \held -> do
-                before <- Files.getFdStatus held
-                if not (safeFile owner before) then pure FamilyLaunchUnobservable else do
-                  bytes <- readBounded held
-                  checked <- decodeBoundedYamlValue bytes
-                  after <- Files.getFdStatus held
-                  named <- bracket (Posix.openFdAt (Just root) name Posix.ReadOnly readFlags) Posix.closeFd Files.getFdStatus
+          if not admitted
+            then pure FamilyLaunchUnobservable
+            else do
+              owner <- getEffectiveUserID
+              opened <- try (Posix.openFdAt (Just root) name Posix.ReadOnly readFlags)
+              case opened of
+                Left failure | isDoesNotExistError failure -> do
                   still <- ready bootstrap stable sameRoot
-                  pure $ if not (still && sameVersion before after && sameVersion after named)
-                    then FamilyLaunchUnobservable else decodeFamilyLaunch name bootstrap operation rootStatus bytes checked
-        pure (either (const FamilyLaunchUnobservable) id (attempted :: Either IOException FamilyLaunchObservation))
+                  pure (if still then FamilyLaunchMissing else FamilyLaunchUnobservable)
+                Left (_ :: IOException) -> pure FamilyLaunchUnobservable
+                Right file -> bracket (pure file) Posix.closeFd $ \held -> do
+                  before <- Files.getFdStatus held
+                  if not (safeFile owner before)
+                    then pure FamilyLaunchUnobservable
+                    else do
+                      bytes <- readBounded held
+                      checked <- decodeBoundedYamlValue bytes
+                      after <- Files.getFdStatus held
+                      named <-
+                        bracket (Posix.openFdAt (Just root) name Posix.ReadOnly readFlags) Posix.closeFd Files.getFdStatus
+                      still <- ready bootstrap stable sameRoot
+                      pure $
+                        if not (still && sameVersion before after && sameVersion after named)
+                          then FamilyLaunchUnobservable
+                          else decodeFamilyLaunch name bootstrap operation rootStatus bytes checked
+        pure
+          (either (const FamilyLaunchUnobservable) id (attempted :: Either IOException FamilyLaunchObservation))
       pure $ case outcome of Just (Right value) -> value; _ -> FamilyLaunchUnobservable
 
-decodeFamilyLaunch :: FilePath -> BootstrapProjection -> String -> Files.FileStatus -> ByteString.ByteString -> Either KindKubeconfigDecodeError Aeson.Value -> FamilyLaunchObservation
+decodeFamilyLaunch
+  :: FilePath
+  -> BootstrapProjection
+  -> String
+  -> Files.FileStatus
+  -> ByteString.ByteString
+  -> Either KindKubeconfigDecodeError Aeson.Value
+  -> FamilyLaunchObservation
 decodeFamilyLaunch name bootstrap operation root bytes checked = case (Aeson.eitherDecodeStrict' bytes, checked) of
   (Right value, Right checkedValue) | value == checkedValue -> case parseEither (Aeson.withObject "kind family launch" (.: "request_base64")) value of
     Right encoded -> case Base64.decode (TextEncoding.encodeUtf8 encoded) of
@@ -1428,29 +1940,33 @@ decodeFamilyLaunch name bootstrap operation root bytes checked = case (Aeson.eit
     _ -> FamilyLaunchConflict
   _ -> FamilyLaunchConflict
 
-familyResultValue :: BootstrapProjection -> String -> String -> FamilyResult -> Files.FileStatus -> Aeson.Value
-familyResultValue bootstrap operation digest (FamilyResult primary worker parent input post postClosing) root = Aeson.object
-  [ "schema_version" Aeson..= (1 :: Int)
-  , "kind" Aeson..= ("kind-family-dispatch-result" :: String)
-  , "deployment_id" Aeson..= scopeIdentifier (bootstrapScope bootstrap)
-  , "root_generation" Aeson..= bootstrapRootGeneration bootstrap
-  , "operation_id" Aeson..= operation
-  , "request_sha256" Aeson..= digest
-  , "root_device" Aeson..= toInteger (Files.deviceID root)
-  , "root_inode" Aeson..= toInteger (Files.fileID root)
-  , "primary" Aeson..= show primary
-  , "worker_closing" Aeson..= show worker
-  , "parent_closing" Aeson..= show parent
-  , "input_closing" Aeson..= show input
-  , "post" Aeson..= show post
-  , "post_closing" Aeson..= show postClosing
-  ]
+familyResultValue
+  :: BootstrapProjection -> String -> String -> FamilyResult -> Files.FileStatus -> Aeson.Value
+familyResultValue bootstrap operation digest (FamilyResult primary worker parent input post postClosing) root =
+  Aeson.object
+    [ "schema_version" Aeson..= (1 :: Int)
+    , "kind" Aeson..= ("kind-family-dispatch-result" :: String)
+    , "deployment_id" Aeson..= scopeIdentifier (bootstrapScope bootstrap)
+    , "root_generation" Aeson..= bootstrapRootGeneration bootstrap
+    , "operation_id" Aeson..= operation
+    , "request_sha256" Aeson..= digest
+    , "root_device" Aeson..= toInteger (Files.deviceID root)
+    , "root_inode" Aeson..= toInteger (Files.fileID root)
+    , "primary" Aeson..= show primary
+    , "worker_closing" Aeson..= show worker
+    , "parent_closing" Aeson..= show parent
+    , "input_closing" Aeson..= show input
+    , "post" Aeson..= show post
+    , "post_closing" Aeson..= show postClosing
+    ]
 
 -- The exclusive write and independent read-back are bounded by the recovered
 -- operation lease. It records only a summary, never a retirement observation.
-recordFamilyResult :: BootstrapProjection -> String -> String -> FamilyResult -> IO Bool -> IO FamilyResultWrite
+recordFamilyResult
+  :: BootstrapProjection -> String -> String -> FamilyResult -> IO Bool -> IO FamilyResultWrite
 recordFamilyResult bootstrap operation digest result stable
-  | not (validInput bootstrap operation && validImageId ("sha256:" ++ digest)) = pure FamilyResultRefused
+  | not (validInput bootstrap operation && validImageId ("sha256:" ++ digest)) =
+      pure FamilyResultRefused
   | otherwise = do
       touched <- newIORef False
       let operationStable = do
@@ -1462,28 +1978,54 @@ recordFamilyResult bootstrap operation digest result stable
         attempted <- try $ do
           admitted <- ready bootstrap operationStable sameRoot
           rootStatus <- Files.getFdStatus root
-          if not admitted then pure FamilyResultRefused else mask $ \restore -> do
-            opened <- try (Posix.openFdAt (Just root) familyResultName Posix.WriteOnly createFlags)
-            case opened of
-              Left failure | isAlreadyExistsError failure -> pure FamilyResultAlreadyExists
-              Left (_ :: IOException) -> pure FamilyResultRefused
-              Right file -> do
-                writeIORef touched True
-                written <- try $ bracket (pure file) Posix.closeFd $ \held -> restore $ do
-                  writeAll held (LazyByteString.toStrict (Aeson.encode (familyResultValue bootstrap operation digest result rootStatus)))
-                  fileSynchronise held
-                  fileSynchronise root
-                case written of
-                  Left (_ :: IOException) -> pure FamilyResultIncomplete
-                  Right () -> do
-                    observed <- restore (observeFamilyResult bootstrap operation operationStable)
-                    pure (if observed == FamilyResultObserved digest result then FamilyResultRecorded else FamilyResultIncomplete)
+          if not admitted
+            then pure FamilyResultRefused
+            else mask $ \restore -> do
+              opened <- try (Posix.openFdAt (Just root) familyResultName Posix.WriteOnly createFlags)
+              case opened of
+                Left failure | isAlreadyExistsError failure -> pure FamilyResultAlreadyExists
+                Left (_ :: IOException) -> pure FamilyResultRefused
+                Right file -> do
+                  writeIORef touched True
+                  written <- try $ bracket (pure file) Posix.closeFd $ \held -> restore $ do
+                    writeAll
+                      held
+                      ( LazyByteString.toStrict
+                          (Aeson.encode (familyResultValue bootstrap operation digest result rootStatus))
+                      )
+                    fileSynchronise held
+                    fileSynchronise root
+                  case written of
+                    Left (_ :: IOException) -> pure FamilyResultIncomplete
+                    Right () -> do
+                      observed <- restore (observeFamilyResult bootstrap operation operationStable)
+                      pure
+                        ( if observed == FamilyResultObserved digest result
+                            then FamilyResultRecorded
+                            else FamilyResultIncomplete
+                        )
         pure (either (const FamilyResultRefused) id (attempted :: Either IOException FamilyResultWrite))
       changed <- readIORef touched
       pure $ case outcome of
         Just (Right value) | value /= FamilyResultRefused -> value
         _ | changed -> FamilyResultIncomplete
         _ -> FamilyResultRefused
+
+-- A retirement observer can briefly hold the same lease. Retry only before
+-- entering the result writer, within the dispatcher deadline.
+recordFamilyResultUntil
+  :: Word64
+  -> BootstrapProjection
+  -> String
+  -> String
+  -> FamilyResult
+  -> IO (KindOperationOutcome FamilyResultWrite)
+recordFamilyResultUntil ending bootstrap operation digest summary =
+  withRecoveredKindOperationUntil
+    ending
+    bootstrap
+    operation
+    (recordFamilyResult bootstrap operation digest summary)
 
 observeFamilyResult :: BootstrapProjection -> String -> IO Bool -> IO FamilyResultObservation
 observeFamilyResult bootstrap operation stable
@@ -1493,29 +2035,45 @@ observeFamilyResult bootstrap operation stable
         attempted <- try $ do
           admitted <- ready bootstrap stable sameRoot
           rootStatus <- Files.getFdStatus root
-          if not admitted then pure FamilyResultUnobservable else do
-            owner <- getEffectiveUserID
-            opened <- try (Posix.openFdAt (Just root) familyResultName Posix.ReadOnly readFlags)
-            case opened of
-              Left failure | isDoesNotExistError failure -> do
-                still <- ready bootstrap stable sameRoot
-                pure (if still then FamilyResultMissing else FamilyResultUnobservable)
-              Left (_ :: IOException) -> pure FamilyResultUnobservable
-              Right file -> bracket (pure file) Posix.closeFd $ \held -> do
-                before <- Files.getFdStatus held
-                if not (safeFile owner before) then pure FamilyResultUnobservable else do
-                  bytes <- readBounded held
-                  checked <- decodeBoundedYamlValue bytes
-                  after <- Files.getFdStatus held
-                  named <- bracket (Posix.openFdAt (Just root) familyResultName Posix.ReadOnly readFlags) Posix.closeFd Files.getFdStatus
+          if not admitted
+            then pure FamilyResultUnobservable
+            else do
+              owner <- getEffectiveUserID
+              opened <- try (Posix.openFdAt (Just root) familyResultName Posix.ReadOnly readFlags)
+              case opened of
+                Left failure | isDoesNotExistError failure -> do
                   still <- ready bootstrap stable sameRoot
-                  pure $ if not (still && sameVersion before after && sameVersion after named)
-                    then FamilyResultUnobservable
-                    else decodeFamilyResult bootstrap operation rootStatus bytes checked
-        pure (either (const FamilyResultUnobservable) id (attempted :: Either IOException FamilyResultObservation))
+                  pure (if still then FamilyResultMissing else FamilyResultUnobservable)
+                Left (_ :: IOException) -> pure FamilyResultUnobservable
+                Right file -> bracket (pure file) Posix.closeFd $ \held -> do
+                  before <- Files.getFdStatus held
+                  if not (safeFile owner before)
+                    then pure FamilyResultUnobservable
+                    else do
+                      bytes <- readBounded held
+                      checked <- decodeBoundedYamlValue bytes
+                      after <- Files.getFdStatus held
+                      named <-
+                        bracket
+                          (Posix.openFdAt (Just root) familyResultName Posix.ReadOnly readFlags)
+                          Posix.closeFd
+                          Files.getFdStatus
+                      still <- ready bootstrap stable sameRoot
+                      pure $
+                        if not (still && sameVersion before after && sameVersion after named)
+                          then FamilyResultUnobservable
+                          else decodeFamilyResult bootstrap operation rootStatus bytes checked
+        pure
+          (either (const FamilyResultUnobservable) id (attempted :: Either IOException FamilyResultObservation))
       pure $ case outcome of Just (Right value) -> value; _ -> FamilyResultUnobservable
 
-decodeFamilyResult :: BootstrapProjection -> String -> Files.FileStatus -> ByteString.ByteString -> Either KindKubeconfigDecodeError Aeson.Value -> FamilyResultObservation
+decodeFamilyResult
+  :: BootstrapProjection
+  -> String
+  -> Files.FileStatus
+  -> ByteString.ByteString
+  -> Either KindKubeconfigDecodeError Aeson.Value
+  -> FamilyResultObservation
 decodeFamilyResult bootstrap operation root bytes checked = case (Aeson.eitherDecodeStrict' bytes, checked) of
   (Right value, Right checkedValue) | value == checkedValue -> case parseEither fields value of
     Right (digest, primaryText, workerText, parentText, inputText, postText, postClosingText)
@@ -1527,13 +2085,20 @@ decodeFamilyResult bootstrap operation root bytes checked = case (Aeson.eitherDe
       , Just post <- readMaybe postText
       , Just postClosing <- readMaybe postClosingText
       , let result = FamilyResult primary worker parent input post postClosing
-      , value == familyResultValue bootstrap operation digest result root -> FamilyResultObserved digest result
+      , value == familyResultValue bootstrap operation digest result root ->
+          FamilyResultObserved digest result
     _ -> FamilyResultConflict
   _ -> FamilyResultConflict
  where
   fields = Aeson.withObject "kind family result" $ \o ->
-    (,,,,,,) <$> o .: "request_sha256" <*> o .: "primary" <*> o .: "worker_closing"
-      <*> o .: "parent_closing" <*> o .: "input_closing" <*> o .: "post" <*> o .: "post_closing"
+    (,,,,,,)
+      <$> o .: "request_sha256"
+      <*> o .: "primary"
+      <*> o .: "worker_closing"
+      <*> o .: "parent_closing"
+      <*> o .: "input_closing"
+      <*> o .: "post"
+      <*> o .: "post_closing"
 
 observeFamilyResultStatus :: BootstrapProjection -> IO String
 observeFamilyResultStatus bootstrap = do
@@ -1541,9 +2106,10 @@ observeFamilyResultStatus bootstrap = do
   case intent of
     KindIntentMatches operation -> do
       observed <- withRecoveredKindOperation bootstrap operation (observeFamilyResult bootstrap operation)
-      pure $ "Kind family result " ++ operation ++ ": " ++ case observed of
-        KindOperationCallbackReturned value -> show value ++ "; local summary only, retirement not observed.\n"
-        _ -> "operation lease or result unconfirmed; retirement not observed.\n"
+      pure $
+        "Kind family result " ++ operation ++ ": " ++ case observed of
+          KindOperationCallbackReturned value -> show value ++ "; local summary only, retirement not observed.\n"
+          _ -> "operation lease or result unconfirmed; retirement not observed.\n"
     _ -> pure "Kind family result: operation identity unavailable; retirement not observed.\n"
 
 -- The caller supplies the recovered operation lease and its stability check.

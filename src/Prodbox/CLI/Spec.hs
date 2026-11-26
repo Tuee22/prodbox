@@ -76,6 +76,7 @@ import Prodbox.CLI.Command
   , LintCommand (..)
   , NativeCommand (..)
   , NukeOptions (..)
+  , OperationCommand (..)
   , PerRunPruneTarget (..)
   , PlanOptions (..)
   , PolicyTier (..)
@@ -86,6 +87,9 @@ import Prodbox.CLI.Command
   , UsersCommand (..)
   , UsersListStatus (..)
   , VaultCommand (..)
+  , VaultMaintenanceCommand (..)
+  , VaultOperationConfirmation (..)
+  , VaultPkiCommand (..)
   , WorkloadCommand (..)
   , WorkloadOptions (..)
   , parseNukeLocalDataDisposition
@@ -210,7 +214,8 @@ commandRegistry =
     , summary = "Home Kubernetes operator"
     , description = "Typed command registry for the supported prodbox command surface."
     , children =
-        [ adminActionGroup
+        [ adminGroup
+        , adminActionGroup
         , awsGroup
         , bootstrapBrokerGroup
         , credentialProvisionerGroup
@@ -224,6 +229,9 @@ commandRegistry =
         , commandsLeaf
         , controlGroup
         , ordinaryDeleteLeaf
+        , lifecycleStatusLeaf
+        , lifecyclePlanGroup
+        , operationsGroup
         , configGroup
         , devGroup
         , dnsGroup
@@ -302,6 +310,29 @@ parserForPath :: [String] -> Maybe (Parser CommandRequest)
 parserForPath path =
   case path of
     ["control", "status"] -> Just (pure RunControlStatus)
+    ["status"] -> Just (pure RunLifecycleStatus)
+    ["plan", "delete"] -> Just (pure RunPlanDelete)
+    ["plan", "reconcile"] -> Just (pure RunPlanReconcile)
+    ["operations", "list"] -> Just (pure (RunOperations ListOperations))
+    ["operations", "show"] -> Just (RunOperations . ShowOperation <$> strArgument (metavar "ID"))
+    ["operations", "resume"] -> Just (RunOperations . ResumeOperation <$> strArgument (metavar "ID"))
+    ["operations", "cancel"] -> Just (RunOperations . CancelOperation <$> strArgument (metavar "ID"))
+    ["admin", "vault", "pki", "status"] -> Just (pure (RunScopedVaultPki ObserveVaultPki))
+    ["admin", "vault", "pki", "issue-test-cert"] -> Just (pure (RunScopedVaultPki IssueVaultTestCertificate))
+    ["admin", "vault", "status"] -> Just (pure (RunScopedVaultMaintenance ObserveScopedVault))
+    ["admin", "vault", "rotate-unlock-bundle"] ->
+      Just (RunScopedVaultMaintenance . RotateScopedUnlockBundle <$> vaultConfirmationParser)
+    ["admin", "vault", "rotate-transit-key"] ->
+      Just
+        ( RunScopedVaultMaintenance
+            <$> (RotateScopedTransitKey . Text.pack <$> strArgument (metavar "KEY") <*> vaultConfirmationParser)
+        )
+    ["admin", "vault", "reset-ambiguous-initialization"] ->
+      Just
+        ( RunScopedVaultMaintenance . ResetScopedVaultInitialization
+            <$> vaultConfirmationParser
+            <* flag' () (long "yes" <> help "Confirm replacement of the original storage generation")
+        )
     ["delete"] -> Just (RunOrdinaryDelete <$ flag' () (long "yes" <> help "Confirm the deletion"))
     ["control", "lifecycle-status"] -> Just (pure RunControlLifecycleStatus)
     ["control", "authority-deploy"] -> Just (pure RunControlAuthorityDeploy)
@@ -679,6 +710,7 @@ parserForPath path =
     ["test", "init"] -> Just testInitParser
     ["test", "list"] -> Just (pure RunTestList)
     ["test", "status"] -> Just (RunTestStatus <$> strArgument (metavar "RUN_ID"))
+    ["test", "cleanup"] -> Just (RunTestCleanup <$> strArgument (metavar "RUN_ID"))
     ["test", "run"] -> Just testRunParser
     ["test", "all"] -> Just (withCoverage TestAll)
     ["test", "lint"] ->
@@ -872,28 +904,44 @@ internalKindFamilyControllerLeaf =
     "Run the pinned kind operation-family controller"
     "Internal controller requiring pinned inputs and an observed operation parent. Arguments do not grant lifecycle admission."
     [ requiredOption flag Nothing placeholder detail
-    | (flag, placeholder, detail) <- internalRpcBirthControllerPrefix ++ [internalRpcBirthControllerFinish]
+    | (flag, placeholder, detail) <-
+        internalRpcBirthControllerPrefix ++ [internalRpcBirthControllerFinish]
     ]
     [ example
         [ "internal-kind-family-controller"
-        , "--config", "/run/prodbox/controller/settings.dhall"
-        , "--request", "/run/prodbox/controller/request.json"
-        , "--input-fingerprint", replicate 64 'a'
-        , "--operation-key", replicate 64 'b'
-        , "--outer-ns", "50000000000"
-        , "--work-ns", "40000000000"
-        , "--hard-ns", "42000000000"
-        , "--stop-ns", "45000000000"
-        , "--finish-ns", "47000000000"
+        , "--config"
+        , "/run/prodbox/controller/settings.dhall"
+        , "--request"
+        , "/run/prodbox/controller/request.json"
+        , "--input-fingerprint"
+        , replicate 64 'a'
+        , "--operation-key"
+        , replicate 64 'b'
+        , "--outer-ns"
+        , "50000000000"
+        , "--work-ns"
+        , "40000000000"
+        , "--hard-ns"
+        , "42000000000"
+        , "--stop-ns"
+        , "45000000000"
+        , "--finish-ns"
+        , "47000000000"
         ]
         "Closed envelope supplied by the operation publisher"
     ]
 
 internalKindFamilyControllerParser :: Parser CommandRequest
 internalKindFamilyControllerParser =
-  BindP (concat <$> traverse field (internalRpcBirthControllerPrefix ++ [internalRpcBirthControllerFinish])) parse
+  BindP
+    (concat <$> traverse field (internalRpcBirthControllerPrefix ++ [internalRpcBirthControllerFinish]))
+    parse
  where
-  parse arguments = either (const empty) (pure . RunInternalKindFamilyController) (parseHostControllerArguments arguments)
+  parse arguments =
+    either
+      (const empty)
+      (pure . RunInternalKindFamilyController)
+      (parseHostControllerArguments arguments)
   field (flag, placeholder, detail) =
     (\raw -> ["--" ++ flag, raw]) <$> strOption (long flag <> metavar placeholder <> help detail)
 
@@ -1354,11 +1402,20 @@ testInitParser =
 
 testRunParser :: Parser CommandRequest
 testRunParser =
-  ( \suiteName coverage substrate -> RunNative (NativeTest (TestCommand (TestRun suiteName) coverage substrate False))
+  ( \suiteName coverage substrate socket ->
+      let scope = maybe (TestRun suiteName) (TestRunAtRuntimeSocket suiteName) socket
+       in RunNative (NativeTest (TestCommand scope coverage substrate False))
   )
     <$> strArgument (metavar "SUITE")
     <*> coverageFlagsParser
     <*> substrateOptionParser
+    <*> optional
+      ( strOption
+          ( long "runtime-socket"
+              <> metavar "PATH"
+              <> help "Select a Docker Unix socket for a fresh Phase 1 run"
+          )
+      )
 
 gatewayPodsTestParser :: Parser CommandRequest
 gatewayPodsTestParser =
@@ -3085,6 +3142,17 @@ testGroupSpec =
         [argument "run-id" "RUN_ID" "Exact retained mutation campaign identifier."]
         []
         [example ["test", "status", "123456789"] "Inspect a retained mutation campaign."]
+    , leafWithArgs
+        "cleanup"
+        "Retire a registered test run"
+        "Retire a settled test root after exact control read-back, or recover a recorded unused mutation volume."
+        [argument "run-id" "RUN_ID" "Exact registered test run or retained mutation campaign identifier."]
+        []
+        [ example ["test", "cleanup", "123456789"] "Recover unused storage for a retained mutation campaign."
+        , example
+            ["test", "cleanup", "run-0123456789abcdef0123456789abcdef"]
+            "Retire a registered test root and retain its reports."
+        ]
     , leaf
         "init"
         "Create prodbox.test.dhall"
@@ -3095,7 +3163,14 @@ testGroupSpec =
         "run"
         "Run a named test suite"
         "Run the local unit, env or CLI suites without a deployment configuration, or a topology-declared suite using .test-data isolation. The CLI suite refuses hosts with an existing RKE2 installation."
-        coverageOptions
+        ( coverageOptions
+            ++ [ flagOption
+                   "runtime-socket"
+                   Nothing
+                   (Just "PATH")
+                   "Select a Docker Unix socket for a fresh Phase 1 run"
+               ]
+        )
         [example ["test", "run", "unit"] "Run the unit suites without a deployment topology."]
     , leaf
         "all"
@@ -3227,6 +3302,165 @@ ordinaryDeleteLeaf =
         ["delete", "--yes"]
         "Delete the deployment's cloud-owned resources (none, when never admitted)."
     ]
+
+lifecycleStatusLeaf :: CommandSpec
+lifecycleStatusLeaf =
+  leaf
+    "status"
+    "Observe local control and current lifecycle admission"
+    "Read the selected deployment's local control and Authority journal. Reports unavailable dependencies, the journal source and the next deletion action."
+    []
+    [example ["status"] "View lifecycle and local control observations."]
+
+lifecyclePlanGroup :: CommandSpec
+lifecyclePlanGroup =
+  group
+    "plan"
+    "Plan lifecycle operations"
+    "Read current lifecycle observations and decide the next action without making changes."
+    [ leaf
+        "reconcile"
+        "Plan reconciliation for the selected deployment"
+        "Read the same retained operation that control reconcile uses and identify outstanding observations or prerequisites."
+        []
+        [example ["plan", "reconcile"] "Inspect the next action for the selected control deployment."]
+    , leaf
+        "delete"
+        "Plan deletion of the selected deployment's AWS resources"
+        "Uses the same admission assessment as delete. Reports the intended scope, journal source, and any condition that prevents execution."
+        []
+        [example ["plan", "delete"] "Inspect the deletion decision for the selected deployment."]
+    ]
+    []
+    []
+
+vaultConfirmationParser :: Parser VaultOperationConfirmation
+vaultConfirmationParser =
+  VaultOperationConfirmation . Text.pack
+    <$> strOption (long "generation" <> metavar "GENERATION" <> help "Original Vault storage generation")
+    <*> ( Text.pack
+            <$> strOption
+              (long "operation-id" <> metavar "ID" <> help "Stable operation ID for this action and its retries")
+        )
+
+adminGroup :: CommandSpec
+adminGroup =
+  group
+    "admin"
+    "Scoped maintenance"
+    "Maintain services in the selected deployment."
+    [ group
+        "vault"
+        "Vault maintenance"
+        "Use the selected control plane's Bootstrap Broker."
+        [ leaf
+            "status"
+            "Observe scoped Vault state"
+            "Read the selected Vault's storage generation and recovery state through its Bootstrap Broker."
+            []
+            [example ["admin", "vault", "status"] "Read the Vault generation before maintenance."]
+        , leaf
+            "rotate-unlock-bundle"
+            "Rotate the selected Vault unlock bundle"
+            "Confirm the original Vault storage generation and reuse the same operation ID when retrying. Both passwords are read at the prompt."
+            vaultConfirmationOptions
+            [ example
+                (["admin", "vault", "rotate-unlock-bundle"] ++ vaultConfirmationExample)
+                "Rotate the scoped unlock bundle."
+            ]
+        , leafWithArgs
+            "rotate-transit-key"
+            "Rotate an allowlisted Vault Transit key"
+            "Confirm the original Vault storage generation and reuse the same operation ID when retrying."
+            [argument "key" "KEY" "The name of a compiled allowlisted Transit key."]
+            vaultConfirmationOptions
+            [ example
+                (["admin", "vault", "rotate-transit-key", "prodbox-active-config"] ++ vaultConfirmationExample)
+                "Rotate the scoped Transit key."
+            ]
+        , leaf
+            "reset-ambiguous-initialization"
+            "Recover from an ambiguous Vault initialization"
+            "Confirm the original storage generation and use its audited recovery action. This requires the original operation ID on retry."
+            ( vaultConfirmationOptions
+                ++ [ (flagOption "yes" Nothing Nothing "Confirm replacement of the original storage generation")
+                       { required = True
+                       }
+                   ]
+            )
+            [ example
+                (["admin", "vault", "reset-ambiguous-initialization"] ++ vaultConfirmationExample ++ ["--yes"])
+                "Recover the confirmed ambiguous Vault generation."
+            ]
+        , group
+            "pki"
+            "Vault PKI"
+            "Observe PKI or issue a short-lived certificate in a test deployment."
+            [ leaf
+                "status"
+                "Observe scoped Vault PKI"
+                "Read the selected Broker's latest PKI baseline observation."
+                []
+                [ example ["admin", "vault", "pki", "status"] "Observe Vault PKI through the selected control plane."
+                ]
+            , leaf
+                "issue-test-cert"
+                "Issue a short-lived test certificate"
+                "Use the bounded PKI test role in the selected test deployment."
+                []
+                [example ["admin", "vault", "pki", "issue-test-cert"] "Issue the short-lived PKI test certificate."]
+            ]
+            []
+            []
+        ]
+        []
+        []
+    ]
+    []
+    []
+ where
+  vaultConfirmationOptions =
+    [ requiredOption "generation" Nothing "GENERATION" "Original Vault storage generation"
+    , requiredOption "operation-id" Nothing "ID" "Stable operation ID for this action and its retries"
+    ]
+  vaultConfirmationExample = ["--generation", "vault-store-test-generation", "--operation-id", "vault-change-1"]
+
+operationsGroup :: CommandSpec
+operationsGroup =
+  group
+    "operations"
+    "Inspect and recover retained lifecycle operations"
+    "Use the selected deployment's current control and management restore operations and Authority admission history."
+    [ leaf
+        "list"
+        "List recorded operations in the selected scope"
+        "Show the current control operation, any pending management restore and the fresh Authority admission verdict."
+        []
+        [example ["operations", "list"] "Read the selected deployment's current operations."]
+    , operationLeaf
+        "show"
+        "Show a recorded operation"
+        "Read the exact current control or pending management restore ID."
+    , operationLeaf
+        "resume"
+        "Resume a recorded operation"
+        "Reuse the original kind operation and deadline or resume the pending management restore with its verified backup."
+    , operationLeaf
+        "cancel"
+        "Record cancellation before publication"
+        "Cancel an owner-first control operation when a send attempt is independently excluded. A possible send requires settlement."
+    ]
+    []
+    []
+ where
+  operationLeaf leafName synopsis details =
+    leafWithArgs
+      leafName
+      synopsis
+      details
+      [argument "id" "ID" "Exact retained operation identifier."]
+      []
+      [example ["operations", leafName, replicate 32 'a'] synopsis]
 
 nukeLeaf :: CommandSpec
 nukeLeaf =

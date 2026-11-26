@@ -3858,6 +3858,46 @@ fenceReleasePermitRegression = withSocketsDo $ bracket open Socket.close $ \list
       Right (Just recorded) ->
         ProductionStore.productionSecretWorkerResultValue recorded `shouldBe` workerResult
       _ -> expectationFailure "stale worker displaced the newer result"
+    let transitRequest =
+          mkSecretFreeWorkerRequest
+            SecretWorkerRotateTransitKey
+            (secretWorkerRequestPodUid newerRequest)
+            (secretWorkerRequestImageDigest newerRequest)
+            (secretWorkerRequestServiceAccount newerRequest)
+            (secretWorkerRequestSessionId newerRequest)
+            workerSessionNotIssued
+            newerFence
+        transitResult =
+          transitRotationWorkerResult
+            (BootstrapMutationReceipt (secretWorkerRequestActionDigest transitRequest) True)
+        transitReceipt =
+          (workerReceiptFor transitRequest)
+            { rawWorkerReceiptDigest =
+                mustRight (ProductionStore.productionSecretWorkerReceiptDigest transitRequest transitResult)
+            }
+    ProductionStore.publishProductionSecretWorkerResult
+      settings
+      newerPermit
+      transitRequest
+      ( transitReceipt
+          { rawWorkerReceiptSessionAccessor = mustRight (mkWorkerSessionAccessor "foreign-transit-accessor")
+          }
+      )
+      transitResult
+      `shouldReturn` Left BootstrapStoreBindingMismatch
+    transitPublication <-
+      ProductionStore.publishProductionSecretWorkerResult
+        settings
+        newerPermit
+        transitRequest
+        transitReceipt
+        transitResult
+    case transitPublication of
+      Left failure -> expectationFailure ("bounded batch rotation receipt refused: " ++ show failure)
+      Right recorded -> do
+        ProductionStore.productionSecretWorkerResultReceipt recorded `shouldBe` transitReceipt
+        ProductionStore.observeProductionSecretWorkerResult settings transitRequest
+          `shouldReturn` Right (Just recorded)
     createPermit <- evaluate (journalPermit BootstrapStoreCreateRootInitJournal)
     casPermit <- evaluate (journalPermit BootstrapStoreCasRootInitJournal)
     deletePermit <- evaluate (journalPermit BootstrapStoreDeletePreparedInitEnvelope)
@@ -7014,7 +7054,9 @@ runPhysicalCall fixture harness call = case call of
     mutate
       permit
       BootstrapVaultIssueTestCertificate
-      (pure (Right (mutationReceipt permit)))
+      ( pure
+          (Right (VaultPkiIssueReceipt (mutationReceipt permit) "01:23" (vaultEffectPermitActionDigest permit)))
+      )
   PhysicalObserveChildRecoveryConsumption _ permit delivery ->
     observeWithPermit permit BootstrapVaultConsumeChildRecovery $ do
       observeChildRecoveryConsumption fixture harness delivery

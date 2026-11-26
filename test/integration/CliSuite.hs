@@ -76,6 +76,7 @@ import FixtureServer
   , withVaultFixtureServer
   , withVaultFixtureServerSealStatus
   )
+import GHC.Clock (getMonotonicTimeNSec)
 import Network.Socket
   ( Family (AF_INET, AF_UNIX)
   , SockAddr (SockAddrInet, SockAddrUnix)
@@ -93,6 +94,7 @@ import Network.Socket
   , tupleToHostAddress
   , withSocketsDo
   )
+import Network.Socket qualified as Socket
 import Network.Socket.ByteString (recv, sendAll)
 import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.BuildSupport
@@ -123,19 +125,23 @@ import Prodbox.Config.DeploymentScope
   , withScopeRootDescriptor
   , withScopeRootDescriptorPreserving
   )
-import Prodbox.Config.KindPlan (KindNodeCreateInput (..), kindNodeRunArguments, kindNodeVarVolumeName)
+import Prodbox.Config.KindPlan
+  ( KindNodeCreateInput (..)
+  , kindNodeRunArguments
+  , kindNodeVarVolumeName
+  )
 import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.Control.DockerConnectedInfo
-  ( DockerConnectedInfo (..)
+  ( DockerAbsenceControlCreate (..)
+  , DockerAbsenceControlObservation (..)
+  , DockerConnectedInfo (..)
   , DockerConnectedInfoFailure (..)
   , DockerConnectedInfoResult (..)
   , DockerImageLoadResult (..)
   , DockerImageLoadStream (..)
   , DockerImageReadback (..)
-  , DockerImageVolumes (..)
-  , DockerAbsenceControlObservation (..)
-  , DockerAbsenceControlCreate (..)
   , DockerImageSubmissionObservation (..)
+  , DockerImageVolumes (..)
   , DockerKindInfo (..)
   , DockerKindStorage (..)
   , DockerNetworkCreateResult (..)
@@ -152,14 +158,14 @@ import Prodbox.Control.DockerConnectedInfo
   , DockerNodeVarCreateResult (..)
   , DockerNodeVarRemoveResult (..)
   , DockerNodeVarVolumeObservation (..)
+  , absenceControlCreateBody
   , classifyDockerImageLoadStream
+  , createDockerSessionAbsenceControl
   , createDockerSessionKindNetwork
   , createDockerSessionKindNode
-  , createDockerSessionAbsenceControl
-  , absenceControlCreateBody
   , createDockerSessionNodeVarVolume
-  , inspectDockerSessionImage
   , inspectDockerSessionAbsenceControl
+  , inspectDockerSessionImage
   , inspectDockerSessionKindNetwork
   , inspectDockerSessionKindNode
   , inspectDockerSessionNodeVarVolume
@@ -177,13 +183,16 @@ import Prodbox.Control.DockerConnectedInfo
   , parseDockerNodeContainer
   , parseDockerNodeVarVolume
   , pingDockerSession
+  , readDockerSessionContainerNotFound
   , readDockerSessionKindNetworkId
-  , readDockerSessionKindNodeConfig
+  , readDockerSessionKindNetworksControlled
   , readDockerSessionKindNodeCa
+  , readDockerSessionKindNodeConfig
+  , readDockerSessionKindNodeNameNotFound
+  , removeDockerSessionAbsenceVolume
   , removeDockerSessionKindNetwork
   , removeDockerSessionKindNode
   , removeDockerSessionNodeVarVolume
-  , removeDockerSessionAbsenceVolume
   , startDockerSessionKindNode
   , withConnectedDockerInfo
   , writeDockerSessionKindNodeConfig
@@ -200,16 +209,27 @@ import Prodbox.Control.DockerPeer
   , observeDockerPeer
   , withConnectedDockerPeer
   )
-import Prodbox.Control.KindAbsenceRemoval (AbsenceRemovalOutcome (..), removeRecordedAbsenceControl)
-import Prodbox.Control.KindAbsenceRecovery (ExistingAbsenceRecovery (..), ExistingAbsenceInterrupted (..), recoverExistingAbsenceControl)
-import Prodbox.Control.KindAbsenceSample (AbsenceSampleOutcome (..), recordObservedAbsenceSample)
-import Prodbox.Control.KindAbsenceNodeReadback (AbsenceNodeReadback (..))
-import Prodbox.Control.KindAbsenceVolumeReadback
-  ( AbsenceVolumePhase (..), AbsenceVolumeReadback (..), AbsenceVolumeSample (..), observeAbsenceControlVolumes )
-import Prodbox.Control.KindAbsenceVolumeRemoval
-  ( AbsenceVolumeRemovalOutcome (..), AbsenceVolumeRecoveryObservation (..)
-  , observeResidualAbsenceVolumeRecovery, removeResidualAbsenceVolume )
 import Prodbox.Control.ImageIdObservation (ImageIdObservation (..))
+import Prodbox.Control.KindAbsenceNodeReadback (AbsenceNodeReadback (..))
+import Prodbox.Control.KindAbsenceRecovery
+  ( ExistingAbsenceInterrupted (..)
+  , ExistingAbsenceRecovery (..)
+  , recoverExistingAbsenceControl
+  )
+import Prodbox.Control.KindAbsenceRemoval (AbsenceRemovalOutcome (..), removeRecordedAbsenceControl)
+import Prodbox.Control.KindAbsenceSample (AbsenceSampleOutcome (..), recordObservedAbsenceSample)
+import Prodbox.Control.KindAbsenceVolumeReadback
+  ( AbsenceVolumePhase (..)
+  , AbsenceVolumeReadback (..)
+  , AbsenceVolumeSample (..)
+  , observeAbsenceControlVolumes
+  )
+import Prodbox.Control.KindAbsenceVolumeRemoval
+  ( AbsenceVolumeRecoveryObservation (..)
+  , AbsenceVolumeRemovalOutcome (..)
+  , observeResidualAbsenceVolumeRecovery
+  , removeResidualAbsenceVolume
+  )
 import Prodbox.Control.KindDockerClient (prepareKindDockerRequest, validKindDockerBridgePath)
 import Prodbox.Control.KindDockerEndpoint
   ( KindDockerBrokerExit (..)
@@ -268,10 +288,12 @@ import Prodbox.Control.KindDockerWorkerRoots
   , workerRequest
   , workerScratch
   )
-import Prodbox.Control.KindIntent (KindIntentObservation (..), KindIntentResult (..), observeKindOwnerFamilyIntent)
-import Prodbox.Test.FixtureTree (claimEmptyFixtureRoot, cleanupNeverSentKindFixturePublication, cleanupSettledKindFixturePublication)
+import Prodbox.Control.KindIntent
+  ( KindIntentObservation (..)
+  , KindIntentResult (..)
+  , observeKindOwnerFamilyIntent
+  )
 import Prodbox.Control.KindKubeconfigFile (withKindKubeconfigSnapshotBound)
-import Prodbox.Control.Status (matchesScopedWorkerNode, observeNodeCaBindingUnderLease, observeNodeCreateUnderLease)
 import Prodbox.Control.KindKubeconfigYaml
   ( KindKubeconfigDecodeError (..)
   , decodeBoundedYamlDocuments
@@ -335,9 +357,11 @@ import Prodbox.Control.KindNetworkRecovery
   , withNewConnectedKindNetworkRemoval
   )
 import Prodbox.Control.KindNodeCreateIntent
-  ( KindAbsenceStage (..), KindAbsenceWrite (..), KindAbsenceObservation (..), KindAbsenceVolumeResultObservation (..)
-  , KindAbsenceControlResultObservation (..)
-  , mkKindAbsencePlan, observeKindAbsenceStage, recordKindAbsenceStage, recoverKindAbsenceControlResult
+  ( KindAbsenceControlResultObservation (..)
+  , KindAbsenceObservation (..)
+  , KindAbsenceStage (..)
+  , KindAbsenceVolumeResultObservation (..)
+  , KindAbsenceWrite (..)
   , KindNodeCandidateObservation (..)
   , KindNodeCandidateWrite (..)
   , KindNodeConfigAttemptObservation (..)
@@ -354,13 +378,16 @@ import Prodbox.Control.KindNodeCreateIntent
   , KindNodeRemoveAttemptObservation (..)
   , KindNodeRemoveAttemptWrite (..)
   , KindNodeRemoveControlObservation (..)
+  , KindNodeRemovePass (RetryNodeRemoval)
   , KindNodeRemoveResultObservation (..)
   , KindNodeRemoveResultWrite (..)
   , KindNodeStartAttemptObservation (..)
   , KindNodeStartAttemptWrite (..)
   , KindNodeStartResultObservation (..)
   , KindNodeStartResultWrite (..)
+  , mkKindAbsencePlan
   , mkKindNodeCreateIntent
+  , observeKindAbsenceStage
   , observeKindNodeConfigAttempt
   , observeKindNodeConfigResult
   , observeKindNodeCreateAttempt
@@ -369,10 +396,12 @@ import Prodbox.Control.KindNodeCreateIntent
   , observeKindNodeRemoveAttempt
   , observeKindNodeRemoveControl
   , observeKindNodeRemoveResult
+  , observeKindNodeRemoveResultFor
   , observeKindNodeStartAttempt
   , observeKindNodeStartResult
   , observeRecordedKindNodeCandidate
   , observeRecordedKindNodeCreateIntent
+  , recordKindAbsenceStage
   , recordKindNodeCandidate
   , recordKindNodeConfigAttempt
   , recordKindNodeConfigResult
@@ -383,6 +412,7 @@ import Prodbox.Control.KindNodeCreateIntent
   , recordKindNodeRemoveResult
   , recordKindNodeStartAttempt
   , recordKindNodeStartResult
+  , recoverKindAbsenceControlResult
   )
 import Prodbox.Control.KindNodeCreateOperation
   ( KindNodeCandidateAction (..)
@@ -405,7 +435,9 @@ import Prodbox.Control.KindNodeCreateOperation
   , withNewConnectedKindNodeCandidate
   , withNewConnectedKindNodeCreate
   , withNewConnectedKindNodeRemove
+  , withNewConnectedKindNodeRemoveGuarded
   , withNewConnectedKindNodeStart
+  , withRecoveredConnectedKindNodeRemoveGuarded
   )
 import Prodbox.Control.KindNodeCreateReadback (NodeCreateCandidate (..), parseNodeCreateCandidate)
 import Prodbox.Control.KindNodeRemovalReadback
@@ -416,7 +448,8 @@ import Prodbox.Control.KindNodeRemovalReadback
   , parseNodeRemovalInventory
   )
 import Prodbox.Control.KindNodeVolumeIntent
-  ( KindNodeVolumeAttemptWrite (..)
+  ( KindNodeVolumeAttemptObservation (..)
+  , KindNodeVolumeAttemptWrite (..)
   , KindNodeVolumeIntentWrite (..)
   , KindNodeVolumeReceiptObservation (..)
   , KindNodeVolumeReceiptWrite (..)
@@ -425,7 +458,6 @@ import Prodbox.Control.KindNodeVolumeIntent
   , KindNodeVolumeRemovalReceiptWrite (..)
   , KindNodeVolumeRemovalWrite (..)
   , mkKindNodeVolumeIntent
-  , KindNodeVolumeAttemptObservation (..)
   , observeKindNodeVolumeAttempt
   , observeKindNodeVolumeReceipt
   , observeKindNodeVolumeRemoval
@@ -442,6 +474,7 @@ import Prodbox.Control.KindNodeVolumeOperation
   , withNewConnectedKindNodeVolumeAttempt
   , withNewConnectedKindNodeVolumeAttemptGuarded
   , withNewConnectedKindNodeVolumeRemoval
+  , withNewConnectedKindNodeVolumeRemovalGuarded
   )
 import Prodbox.Control.KindNodeVolumeReadback
   ( NodeVolumeInventory (..)
@@ -479,6 +512,7 @@ import Prodbox.Control.KindTool
   , runConfinedKindNodeOnHost
   , runVerifiedConfinedKindNodeOnHost
   )
+import Prodbox.Control.NetworkEnforcement (clientProbeScript)
 import Prodbox.Control.NodeArchive
   ( ArchiveCallbackProgress (..)
   , InspectedArchiveResult (..)
@@ -530,10 +564,15 @@ import Prodbox.Control.NodeImageOperation
   , withConnectedNodeImageRecord
   , withNewConnectedNodeImageAttempt
   , withNewConnectedNodeImageRecordedAttempt
-  , withRecoveredConnectedNodeImageRecordedFamilyAttempt
   , withNewNodeImagePreparation
+  , withRecoveredConnectedNodeImageRecordedFamilyAttempt
   )
 import Prodbox.Control.SealedTool (planSealedToolBudget, withSealedTool)
+import Prodbox.Control.Status
+  ( matchesScopedWorkerNode
+  , observeNodeCaBindingUnderLease
+  , observeNodeCreateUnderLease
+  )
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication qualified as AuthorityAuthentication
 import Prodbox.ControlPlane.LocalClient qualified as LocalClient
 import Prodbox.Http.Client
@@ -544,6 +583,11 @@ import Prodbox.Http.Client
   )
 import Prodbox.Lib.ChartPlatform qualified as ChartPlatform
 import Prodbox.Lifecycle.CredentialProvisioner.Substrate qualified as CredentialProvisionerSubstrate
+import Prodbox.Test.FixtureTree
+  ( claimEmptyFixtureRoot
+  , cleanupNeverSentKindFixturePublication
+  , cleanupSettledKindFixturePublication
+  )
 
 -- Sprint 4.64: the empty admission set is package-internal so no production
 -- module can begin a phase with one; a fixture driving the executor directly
@@ -880,6 +924,33 @@ integrationCliSuite = do
           prepareKindDockerWorkerWithSealedClient invalid [] invalid invalid invalid invalid client
             `shouldReturn` Left KindDockerWorkerInvalidClientDescriptor
 
+  describe "kind network policy client" $ do
+    let loopback = tupleToHostAddress (127, 0, 0, 1)
+        launch endpoint = do
+          address <- getSocketName endpoint
+          port <- case address of
+            SockAddrInet localPort _ -> pure localPort
+            _ -> fail "expected a loopback endpoint"
+          let shell = proc "/bin/bash" ["-c", clientProbeScript, "prodbox-connection-probe", "127.0.0.1", show port]
+          timeout 10000000 $
+            readCreateProcessWithExitCode (shell {env = Just [("PATH", "/nonexistent")]}) ""
+    it "observes loopback connection success and refusal with Bash and no external commands" $
+      forM_ [(True, "CONNECTED\n"), (False, "REFUSED\n")] $ \(acceptsConnections, expected) ->
+        bracket (socket AF_INET Stream defaultProtocol) close $ \endpoint -> do
+          bind endpoint (SockAddrInet 0 loopback)
+          when acceptsConnections (listen endpoint 1)
+          launch endpoint `shouldReturn` Just (ExitSuccess, expected, "")
+    it "cancels an acknowledged connection when the loopback accept queue stays full" $
+      bracket (socket AF_INET Stream defaultProtocol) close $ \endpoint -> do
+        bind endpoint (SockAddrInet 0 loopback)
+        listen endpoint 0
+        address <- getSocketName endpoint
+        bracket (socket AF_INET Stream defaultProtocol) close $ \queued -> do
+          timeout 2000000 (Socket.connect queued address) `shouldReturn` Just ()
+          started <- getMonotonicTimeNSec
+          launch endpoint `shouldReturn` Just (ExitSuccess, "REFUSED\n", "")
+          finished <- getMonotonicTimeNSec
+          (finished - started) `shouldSatisfy` (>= 4800000000)
   describe "connected Docker peer observation" $
     it "holds the socket, reports peer credentials and distinguishes interruption and replacement" $
       withSystemTempDirectory "prodbox-peer" $ \directory -> do
@@ -914,6 +985,29 @@ integrationCliSuite = do
           observeDockerPeer path `shouldReturn` DockerPeerRefused DockerPeerEndpointUnavailable
 
   describe "connected Docker info observation" $ do
+    it "observes exact container absence only from a matching Docker not-found response" $
+      withSystemTempDirectory "prodbox-container-not-found" $ \directory -> do
+        scope <- either (fail . show) pure (deploymentScope directory Test "run" 26443)
+        let identifier = replicate 64 'a'
+            named = "prodbox-t-run-control-plane"
+            message target = BS8.pack ("{\"message\":\"No such container: " ++ target ++ "\"}")
+            observations =
+              [ ("id", identifier, flip readDockerSessionContainerNotFound identifier)
+              , ("name", named, flip readDockerSessionKindNodeNameNotFound scope)
+              ]
+        forM_ observations $ \(label, target, observe) -> do
+          let replies =
+                [ (Left (message target), True)
+                , (Left (message (replicate 64 'b')), False)
+                , (Left BS8.empty, False)
+                , (Right (message target), False)
+                ]
+          forM_ (zip [(1 :: Int) ..] replies) $ \(index, (reply, expected)) -> do
+            let socketPath = directory </> (label ++ show index ++ ".sock")
+            withDockerNodeInspectFixture socketPath target reply $ \requests -> do
+              observed <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ -> observe session
+              observed `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted expected)
+              readMVar requests `shouldReturn` ("GET /containers/" ++ target ++ "/json HTTP/1.1")
     it "submits only the bound absence-control body and preserves lost replies" $
       withSystemTempDirectory "prodbox-absence-create" $ \directory -> do
         let operation = replicate 32 'd'
@@ -921,37 +1015,75 @@ integrationCliSuite = do
             target = replicate 64 'a'
             control = replicate 64 'e'
             imageId = "sha256:" ++ replicate 64 'c'
-            imageBody volumes = LazyBS8.toStrict $ Aeson.encode $ Aeson.object
-              [ AesonKey.fromString "Id" Aeson..= imageId
-              , AesonKey.fromString "Config" Aeson..= Aeson.object [AesonKey.fromString "Volumes" Aeson..= volumes]
-              ]
+            imageBody volumes =
+              LazyBS8.toStrict $
+                Aeson.encode $
+                  Aeson.object
+                    [ AesonKey.fromString "Id" Aeson..= imageId
+                    , AesonKey.fromString "Config" Aeson..= Aeson.object [AesonKey.fromString "Volumes" Aeson..= volumes]
+                    ]
             declared = Aeson.object [AesonKey.fromString "/var" Aeson..= Aeson.object []]
             reply = BS8.pack ("{\"Id\":\"" ++ control ++ "\"}")
             cases =
-              [ (imageBody declared, Just reply, True, DockerAbsenceCreateAttempted (DockerNodeContainerCreateReply 201 (Just control)), True)
-              , (imageBody declared, Nothing, True, DockerAbsenceCreateAttempted DockerNodeContainerCreateUnconfirmed, True)
-              , (imageBody Aeson.Null, Just reply, True, DockerAbsenceCreateImageChanged (DockerImageVolumes []), False)
+              [
+                ( imageBody declared
+                , Just reply
+                , True
+                , DockerAbsenceCreateAttempted (DockerNodeContainerCreateReply 201 (Just control))
+                , True
+                )
+              ,
+                ( imageBody declared
+                , Nothing
+                , True
+                , DockerAbsenceCreateAttempted DockerNodeContainerCreateUnconfirmed
+                , True
+                )
+              ,
+                ( imageBody Aeson.Null
+                , Just reply
+                , True
+                , DockerAbsenceCreateImageChanged (DockerImageVolumes [])
+                , False
+                )
               , (imageBody declared, Just reply, False, DockerAbsenceCreateAdmissionRefused, False)
               ]
         forM_ (zip [(1 :: Int) ..] cases) $ \(number, (imageBytes, createReply, admit, expected, shouldPost)) -> do
           let socketPath = directory </> ("create-" ++ show number ++ ".sock")
               selected = directory </> ("create-" ++ show number ++ ".dhall")
-              document = "{ bootstrap = { schema_version = 1, project_anchor = \"" ++ directory
-                ++ "\", runtime_socket = \"" ++ socketPath ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
-                ++ generation ++ "\", api_port = 26443, node_image = \"kindest/node@" ++ imageId
-                ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" } }"
+              document =
+                "{ bootstrap = { schema_version = 1, project_anchor = \""
+                  ++ directory
+                  ++ "\", runtime_socket = \""
+                  ++ socketPath
+                  ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
+                  ++ generation
+                  ++ "\", api_port = 26443, node_image = \"kindest/node@"
+                  ++ imageId
+                  ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" } }"
           writeFile selected document
           bootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
           withDockerAbsenceCreateFixture socketPath imageId imageBytes createReply $ \received -> do
             observed <- withConnectedDockerInfo 5000000 socketPath $ \session _ stable ->
-              createDockerSessionAbsenceControl session bootstrap operation target imageId (DockerImageVolumes ["/var"])
+              createDockerSessionAbsenceControl
+                session
+                bootstrap
+                operation
+                target
+                imageId
+                (DockerImageVolumes ["/var"])
                 ((&&) <$> stable <*> pure admit)
             observed `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted expected)
             body <- tryReadMVar received
             case (shouldPost, body) of
               (False, Nothing) -> pure ()
               (True, Just bytes) -> case Aeson.eitherDecodeStrict' bytes of
-                Right value -> value `shouldBe` maybe Aeson.Null id (absenceControlCreateBody bootstrap operation target imageId (DockerImageVolumes ["/var"]))
+                Right value ->
+                  value
+                    `shouldBe` maybe
+                      Aeson.Null
+                      id
+                      (absenceControlCreateBody bootstrap operation target imageId (DockerImageVolumes ["/var"]))
                 Left failure -> fail failure
               _ -> fail "unexpected create request disposition"
     it "reads the scoped absence control without treating a missing response as absence" $
@@ -963,49 +1095,89 @@ integrationCliSuite = do
             volume = replicate 64 'f'
             imageId = "sha256:" ++ replicate 64 'c'
             controlName = "prodbox-t-run-absence-control"
-            payload = Aeson.object
-              [ AesonKey.fromString "Id" Aeson..= control, AesonKey.fromString "Name" Aeson..= ('/' : controlName), AesonKey.fromString "Image" Aeson..= imageId
-              , AesonKey.fromString "Config" Aeson..= Aeson.object
-                  [ AesonKey.fromString "Image" Aeson..= imageId
-                  , AesonKey.fromString "Entrypoint" Aeson..= (["/nonexistent"] :: [String])
-                  , AesonKey.fromString "Cmd" Aeson..= (["/nonexistent"] :: [String])
-                  , AesonKey.fromString "NetworkDisabled" Aeson..= True
-                  , AesonKey.fromString "Labels" Aeson..= Aeson.object
-                      [ AesonKey.fromString "io.prodbox.absence-control" Aeson..= operation
-                      , AesonKey.fromString "io.prodbox.generation" Aeson..= generation
+            payload =
+              Aeson.object
+                [ AesonKey.fromString "Id" Aeson..= control
+                , AesonKey.fromString "Name" Aeson..= ('/' : controlName)
+                , AesonKey.fromString "Image" Aeson..= imageId
+                , AesonKey.fromString "Config"
+                    Aeson..= Aeson.object
+                      [ AesonKey.fromString "Image" Aeson..= imageId
+                      , AesonKey.fromString "Entrypoint" Aeson..= (["/nonexistent"] :: [String])
+                      , AesonKey.fromString "Cmd" Aeson..= (["/nonexistent"] :: [String])
+                      , AesonKey.fromString "NetworkDisabled" Aeson..= True
+                      , AesonKey.fromString "Labels"
+                          Aeson..= Aeson.object
+                            [ AesonKey.fromString "io.prodbox.absence-control" Aeson..= operation
+                            , AesonKey.fromString "io.prodbox.generation" Aeson..= generation
+                            ]
                       ]
-                  ]
-              , AesonKey.fromString "State" Aeson..= Aeson.object
-                  [ AesonKey.fromString "Running" Aeson..= False, AesonKey.fromString "Paused" Aeson..= False, AesonKey.fromString "Restarting" Aeson..= False
-                  , AesonKey.fromString "Dead" Aeson..= False, AesonKey.fromString "Status" Aeson..= ("created" :: String)
-                  ]
-              , AesonKey.fromString "HostConfig" Aeson..= Aeson.object
-                  [ AesonKey.fromString "NetworkMode" Aeson..= ("none" :: String), AesonKey.fromString "Privileged" Aeson..= False, AesonKey.fromString "Binds" Aeson..= Aeson.Null
-                  , AesonKey.fromString "ReadonlyRootfs" Aeson..= True, AesonKey.fromString "AutoRemove" Aeson..= False
-                  , AesonKey.fromString "CapDrop" Aeson..= (["ALL"] :: [String])
-                  , AesonKey.fromString "RestartPolicy" Aeson..= Aeson.object
-                      [ AesonKey.fromString "Name" Aeson..= ("no" :: String), AesonKey.fromString "MaximumRetryCount" Aeson..= (0 :: Int)]
-                  ]
-              , AesonKey.fromString "Mounts" Aeson..= [Aeson.object
-                  [ AesonKey.fromString "Type" Aeson..= ("volume" :: String), AesonKey.fromString "Name" Aeson..= volume
-                  , AesonKey.fromString "Destination" Aeson..= ("/var" :: String), AesonKey.fromString "Driver" Aeson..= ("local" :: String), AesonKey.fromString "RW" Aeson..= True
-                  ]]
-              , AesonKey.fromString "NetworkSettings" Aeson..= Aeson.object [AesonKey.fromString "Networks" Aeson..= Aeson.object []]
+                , AesonKey.fromString "State"
+                    Aeson..= Aeson.object
+                      [ AesonKey.fromString "Running" Aeson..= False
+                      , AesonKey.fromString "Paused" Aeson..= False
+                      , AesonKey.fromString "Restarting" Aeson..= False
+                      , AesonKey.fromString "Dead" Aeson..= False
+                      , AesonKey.fromString "Status" Aeson..= ("created" :: String)
+                      ]
+                , AesonKey.fromString "HostConfig"
+                    Aeson..= Aeson.object
+                      [ AesonKey.fromString "NetworkMode" Aeson..= ("none" :: String)
+                      , AesonKey.fromString "Privileged" Aeson..= False
+                      , AesonKey.fromString "Binds" Aeson..= Aeson.Null
+                      , AesonKey.fromString "ReadonlyRootfs" Aeson..= True
+                      , AesonKey.fromString "AutoRemove" Aeson..= False
+                      , AesonKey.fromString "CapDrop" Aeson..= (["ALL"] :: [String])
+                      , AesonKey.fromString "RestartPolicy"
+                          Aeson..= Aeson.object
+                            [ AesonKey.fromString "Name" Aeson..= ("no" :: String)
+                            , AesonKey.fromString "MaximumRetryCount" Aeson..= (0 :: Int)
+                            ]
+                      ]
+                , AesonKey.fromString "Mounts"
+                    Aeson..= [ Aeson.object
+                                 [ AesonKey.fromString "Type" Aeson..= ("volume" :: String)
+                                 , AesonKey.fromString "Name" Aeson..= volume
+                                 , AesonKey.fromString "Destination" Aeson..= ("/var" :: String)
+                                 , AesonKey.fromString "Driver" Aeson..= ("local" :: String)
+                                 , AesonKey.fromString "RW" Aeson..= True
+                                 ]
+                             ]
+                , AesonKey.fromString "NetworkSettings"
+                    Aeson..= Aeson.object [AesonKey.fromString "Networks" Aeson..= Aeson.object []]
+                ]
+            cases =
+              [
+                ( Right (LazyBS8.toStrict (Aeson.encode payload))
+                , Right (DockerAbsenceControlMatching control [("/var", volume)])
+                )
+              , (Left BS8.empty, Left DockerConnectedInfoStatus)
               ]
-            cases = [(Just (LazyBS8.toStrict (Aeson.encode payload)), Right (DockerAbsenceControlMatching control [("/var", volume)]))
-                    , (Nothing, Left DockerConnectedInfoStatus)]
         forM_ (zip [(1 :: Int) ..] cases) $ \(number, (body, expected)) -> do
           let socketPath = directory </> ("docker-" ++ show number ++ ".sock")
               selected = directory </> ("config-" ++ show number ++ ".dhall")
-              document = "{ bootstrap = { schema_version = 1, project_anchor = \"" ++ directory
-                ++ "\", runtime_socket = \"" ++ socketPath ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
-                ++ generation ++ "\", api_port = 26443, node_image = \"kindest/node@" ++ imageId
-                ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" } }"
+              document =
+                "{ bootstrap = { schema_version = 1, project_anchor = \""
+                  ++ directory
+                  ++ "\", runtime_socket = \""
+                  ++ socketPath
+                  ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
+                  ++ generation
+                  ++ "\", api_port = 26443, node_image = \"kindest/node@"
+                  ++ imageId
+                  ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" } }"
           writeFile selected document
           bootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
           withDockerNodeInspectFixture socketPath controlName body $ \requests -> do
             observed <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ ->
-              inspectDockerSessionAbsenceControl session bootstrap operation target imageId (DockerImageVolumes ["/var"]) Nothing
+              inspectDockerSessionAbsenceControl
+                session
+                bootstrap
+                operation
+                target
+                imageId
+                (DockerImageVolumes ["/var"])
+                Nothing
             observed `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted expected)
             readMVar requests >>= (`shouldBe` ("GET /containers/" ++ controlName ++ "/json HTTP/1.1"))
     it "journals exact absence-control removal and retains a lost reply" $
@@ -1020,80 +1192,167 @@ integrationCliSuite = do
               tool = "sha256:50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54"
               socketPath = directory </> "docker.sock"
               selected = directory </> "selected.dhall"
-              document = "{ bootstrap = { schema_version = 1, project_anchor = \"" ++ directory
-                ++ "\", runtime_socket = \"" ++ socketPath ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
-                ++ generation ++ "\", api_port = 26443, node_image = \"kindest/node@" ++ imageId
-                ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" } }"
+              document =
+                "{ bootstrap = { schema_version = 1, project_anchor = \""
+                  ++ directory
+                  ++ "\", runtime_socket = \""
+                  ++ socketPath
+                  ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
+                  ++ generation
+                  ++ "\", api_port = 26443, node_image = \"kindest/node@"
+                  ++ imageId
+                  ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" } }"
               controlName = "prodbox-t-run-absence-control"
-              payload = Aeson.object
-                [ AesonKey.fromString "Id" Aeson..= control, AesonKey.fromString "Name" Aeson..= ('/' : controlName), AesonKey.fromString "Image" Aeson..= imageId
-                , AesonKey.fromString "Config" Aeson..= Aeson.object
-                    [ AesonKey.fromString "Image" Aeson..= imageId, AesonKey.fromString "Entrypoint" Aeson..= (["/nonexistent"] :: [String])
-                    , AesonKey.fromString "Cmd" Aeson..= (["/nonexistent"] :: [String]), AesonKey.fromString "NetworkDisabled" Aeson..= True
-                    , AesonKey.fromString "Labels" Aeson..= Aeson.object
-                        [ AesonKey.fromString "io.prodbox.absence-control" Aeson..= operation
-                        , AesonKey.fromString "io.prodbox.generation" Aeson..= generation ] ]
-                , AesonKey.fromString "State" Aeson..= Aeson.object
-                    [ AesonKey.fromString "Running" Aeson..= False, AesonKey.fromString "Paused" Aeson..= False
-                    , AesonKey.fromString "Restarting" Aeson..= False, AesonKey.fromString "Dead" Aeson..= False
-                    , AesonKey.fromString "Status" Aeson..= ("created" :: String) ]
-                , AesonKey.fromString "HostConfig" Aeson..= Aeson.object
-                    [ AesonKey.fromString "NetworkMode" Aeson..= ("none" :: String), AesonKey.fromString "Privileged" Aeson..= False
-                    , AesonKey.fromString "Binds" Aeson..= Aeson.Null, AesonKey.fromString "ReadonlyRootfs" Aeson..= True
-                    , AesonKey.fromString "AutoRemove" Aeson..= False, AesonKey.fromString "CapDrop" Aeson..= (["ALL"] :: [String])
-                    , AesonKey.fromString "RestartPolicy" Aeson..= Aeson.object
-                        [AesonKey.fromString "Name" Aeson..= ("no" :: String), AesonKey.fromString "MaximumRetryCount" Aeson..= (0 :: Int)] ]
-                , AesonKey.fromString "Mounts" Aeson..= [Aeson.object
-                    [ AesonKey.fromString "Type" Aeson..= ("volume" :: String), AesonKey.fromString "Name" Aeson..= volume
-                    , AesonKey.fromString "Destination" Aeson..= ("/var" :: String), AesonKey.fromString "Driver" Aeson..= ("local" :: String)
-                    , AesonKey.fromString "RW" Aeson..= True ]]
-                , AesonKey.fromString "NetworkSettings" Aeson..= Aeson.object [AesonKey.fromString "Networks" Aeson..= Aeson.object []] ]
+              payload =
+                Aeson.object
+                  [ AesonKey.fromString "Id" Aeson..= control
+                  , AesonKey.fromString "Name" Aeson..= ('/' : controlName)
+                  , AesonKey.fromString "Image" Aeson..= imageId
+                  , AesonKey.fromString "Config"
+                      Aeson..= Aeson.object
+                        [ AesonKey.fromString "Image" Aeson..= imageId
+                        , AesonKey.fromString "Entrypoint" Aeson..= (["/nonexistent"] :: [String])
+                        , AesonKey.fromString "Cmd" Aeson..= (["/nonexistent"] :: [String])
+                        , AesonKey.fromString "NetworkDisabled" Aeson..= True
+                        , AesonKey.fromString "Labels"
+                            Aeson..= Aeson.object
+                              [ AesonKey.fromString "io.prodbox.absence-control" Aeson..= operation
+                              , AesonKey.fromString "io.prodbox.generation" Aeson..= generation
+                              ]
+                        ]
+                  , AesonKey.fromString "State"
+                      Aeson..= Aeson.object
+                        [ AesonKey.fromString "Running" Aeson..= False
+                        , AesonKey.fromString "Paused" Aeson..= False
+                        , AesonKey.fromString "Restarting" Aeson..= False
+                        , AesonKey.fromString "Dead" Aeson..= False
+                        , AesonKey.fromString "Status" Aeson..= ("created" :: String)
+                        ]
+                  , AesonKey.fromString "HostConfig"
+                      Aeson..= Aeson.object
+                        [ AesonKey.fromString "NetworkMode" Aeson..= ("none" :: String)
+                        , AesonKey.fromString "Privileged" Aeson..= False
+                        , AesonKey.fromString "Binds" Aeson..= Aeson.Null
+                        , AesonKey.fromString "ReadonlyRootfs" Aeson..= True
+                        , AesonKey.fromString "AutoRemove" Aeson..= False
+                        , AesonKey.fromString "CapDrop" Aeson..= (["ALL"] :: [String])
+                        , AesonKey.fromString "RestartPolicy"
+                            Aeson..= Aeson.object
+                              [ AesonKey.fromString "Name" Aeson..= ("no" :: String)
+                              , AesonKey.fromString "MaximumRetryCount" Aeson..= (0 :: Int)
+                              ]
+                        ]
+                  , AesonKey.fromString "Mounts"
+                      Aeson..= [ Aeson.object
+                                   [ AesonKey.fromString "Type" Aeson..= ("volume" :: String)
+                                   , AesonKey.fromString "Name" Aeson..= volume
+                                   , AesonKey.fromString "Destination" Aeson..= ("/var" :: String)
+                                   , AesonKey.fromString "Driver" Aeson..= ("local" :: String)
+                                   , AesonKey.fromString "RW" Aeson..= True
+                                   ]
+                               ]
+                  , AesonKey.fromString "NetworkSettings"
+                      Aeson..= Aeson.object [AesonKey.fromString "Networks" Aeson..= Aeson.object []]
+                  ]
           writeFile selected document
           bootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
           prepareFreshScope (bootstrapScope bootstrap) generation `shouldReturn` FreshScopePrepared
           let attemptPath = scopeRoot (bootstrapScope bootstrap) </> "kind-node-absence-control-remove-attempt.json"
-          withDockerAbsenceRemovalFixture socketPath controlName control (LazyBS8.toStrict (Aeson.encode payload)) reply
-            (doesFileExist attemptPath) $ \requests -> do
+          withDockerAbsenceRemovalFixture
+            socketPath
+            controlName
+            control
+            (LazyBS8.toStrict (Aeson.encode payload))
+            reply
+            (doesFileExist attemptPath)
+            $ \requests -> do
               identity <- observeDockerSocketIdentity socketPath >>= maybe (fail "fixture socket missing") pure
-              let input = KindNodeCreateInput tool imageId (replicate 64 'b') generation operation
-                    (kindNodeRunArguments (bootstrapKindPlan bootstrap) imageId)
+              let input =
+                    KindNodeCreateInput
+                      tool
+                      imageId
+                      (replicate 64 'b')
+                      generation
+                      operation
+                      (kindNodeRunArguments (bootstrapKindPlan bootstrap) imageId)
                   volumes = [("/var", volume)]
-              intent <- maybe (fail "invalid node intent") pure (mkKindNodeCreateIntent bootstrap input (DockerDaemonObserved "daemon-a" identity))
-              plan <- maybe (fail "invalid absence plan") pure (mkKindAbsencePlan intent target (DockerImageVolumes ["/var"]))
-              withNewKindOperation bootstrap operation (\stable -> do
-                recordKindNodeCreateIntent bootstrap intent stable `shouldReturn` NodeCreateIntentRecorded
-                recordKindNodeCreateAttempt bootstrap intent stable `shouldReturn` NodeCreateAttemptRecorded
-                recordKindNodeCreateResult bootstrap intent (DockerNodeContainerCreateReply 201 (Just target)) stable `shouldReturn` NodeCreateResultRecorded
-                recordKindAbsenceStage bootstrap plan AbsenceCreateAttempt stable `shouldReturn` AbsenceRecorded
-                recordKindAbsenceStage bootstrap plan (AbsenceCreateResult (DockerNodeContainerCreateReply 201 (Just control))) stable `shouldReturn` AbsenceRecorded
-                recordKindAbsenceStage bootstrap plan (AbsenceControlIdentified control) stable `shouldReturn` AbsenceRecorded
-                recordKindAbsenceStage bootstrap plan (AbsenceFootprintRecorded control volumes) stable `shouldReturn` AbsenceRecorded)
+              intent <-
+                maybe
+                  (fail "invalid node intent")
+                  pure
+                  (mkKindNodeCreateIntent bootstrap input (DockerDaemonObserved "daemon-a" identity))
+              plan <-
+                maybe
+                  (fail "invalid absence plan")
+                  pure
+                  (mkKindAbsencePlan intent target (DockerImageVolumes ["/var"]))
+              withNewKindOperation
+                bootstrap
+                operation
+                ( \stable -> do
+                    recordKindNodeCreateIntent bootstrap intent stable `shouldReturn` NodeCreateIntentRecorded
+                    recordKindNodeCreateAttempt bootstrap intent stable `shouldReturn` NodeCreateAttemptRecorded
+                    recordKindNodeCreateResult
+                      bootstrap
+                      intent
+                      (DockerNodeContainerCreateReply 201 (Just target))
+                      stable
+                      `shouldReturn` NodeCreateResultRecorded
+                    recordKindAbsenceStage bootstrap plan AbsenceCreateAttempt stable `shouldReturn` AbsenceRecorded
+                    recordKindAbsenceStage
+                      bootstrap
+                      plan
+                      (AbsenceCreateResult (DockerNodeContainerCreateReply 201 (Just control)))
+                      stable
+                      `shouldReturn` AbsenceRecorded
+                    recordKindAbsenceStage bootstrap plan (AbsenceControlIdentified control) stable
+                      `shouldReturn` AbsenceRecorded
+                    recordKindAbsenceStage bootstrap plan (AbsenceFootprintRecorded control volumes) stable
+                      `shouldReturn` AbsenceRecorded
+                )
                 `shouldReturn` KindOperationCallbackReturned ()
               transport <- case reply of
                 Just success -> do
                   result <- removeRecordedAbsenceControl bootstrap plan id
                   let value = if success then DockerNodeContainerRemoveReply 204 else DockerNodeContainerRemoveUnconfirmed
-                  result `shouldBe` KindOperationCallbackReturned (Right (DockerPeerCompleted
-                    (DockerConnectedInfoCompleted (AbsenceRemovalReturned value AbsenceRecorded True))))
+                  result
+                    `shouldBe` KindOperationCallbackReturned
+                      ( Right
+                          ( DockerPeerCompleted
+                              (DockerConnectedInfoCompleted (AbsenceRemovalReturned value AbsenceRecorded True))
+                          )
+                      )
                   takeMVar requests `shouldReturn` ("DELETE /containers/" ++ control ++ "?force=1&v=1 HTTP/1.1", True)
                   pure value
                 Nothing -> do
                   finished <- newEmptyMVar
                   worker <- forkIO $ do
                     result <- try (removeRecordedAbsenceControl bootstrap plan id)
-                    putMVar finished (result :: Either SomeException (KindOperationOutcome (Either AbsenceRemovalOutcome (DockerPeerResult (DockerConnectedInfoResult AbsenceRemovalOutcome)))))
-                  timeout 30000000 (takeMVar requests) `shouldReturn`
-                    Just ("DELETE /containers/" ++ control ++ "?force=1&v=1 HTTP/1.1", True)
+                    putMVar
+                      finished
+                      ( result
+                          :: Either
+                               SomeException
+                               ( KindOperationOutcome
+                                   (Either AbsenceRemovalOutcome (DockerPeerResult (DockerConnectedInfoResult AbsenceRemovalOutcome)))
+                               )
+                      )
+                  timeout 30000000 (takeMVar requests)
+                    `shouldReturn` Just ("DELETE /containers/" ++ control ++ "?force=1&v=1 HTTP/1.1", True)
                   killThread worker
                   completed <- timeout 30000000 (takeMVar finished)
                   case completed of
                     Just (Left _) -> pure ()
                     _ -> fail "interrupted removal did not settle with an exception"
                   pure DockerNodeContainerRemoveUnconfirmed
-              withRecoveredKindOperation bootstrap operation
+              withRecoveredKindOperation
+                bootstrap
+                operation
                 (observeKindAbsenceStage bootstrap plan (AbsenceRemoveResult control volumes transport))
                 `shouldReturn` KindOperationCallbackReturned AbsenceMatches
-              withRecoveredKindOperation bootstrap operation
+              withRecoveredKindOperation
+                bootstrap
+                operation
                 (recoverKindAbsenceControlResult bootstrap plan control volumes)
                 `shouldReturn` KindOperationCallbackReturned (AbsenceControlResultObserved transport)
     it "sends one non-forced deletion for an exact anonymous volume ID" $
@@ -1123,25 +1382,51 @@ integrationCliSuite = do
               tool = "sha256:50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54"
               socketPath = directory </> "docker.sock"
               selected = directory </> "selected.dhall"
-              document = "{ bootstrap = { schema_version = 1, project_anchor = \"" ++ directory
-                ++ "\", runtime_socket = \"" ++ socketPath ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
-                ++ generation ++ "\", api_port = 26443, node_image = \"kindest/node@" ++ imageId
-                ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" } }"
+              document =
+                "{ bootstrap = { schema_version = 1, project_anchor = \""
+                  ++ directory
+                  ++ "\", runtime_socket = \""
+                  ++ socketPath
+                  ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
+                  ++ generation
+                  ++ "\", api_port = 26443, node_image = \"kindest/node@"
+                  ++ imageId
+                  ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" } }"
           writeFile selected document
           bootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
           prepareFreshScope (bootstrapScope bootstrap) generation `shouldReturn` FreshScopePrepared
-          positive <- maybe (fail "positive volume name") pure (kindNodeVarVolumeName (bootstrapKindPlan bootstrap) generation operation)
-          let positiveBody = LazyBS8.toStrict . Aeson.encode $ Aeson.object
-                [ AesonKey.fromString "Name" Aeson..= positive, AesonKey.fromString "Driver" Aeson..= ("local" :: String)
-                , AesonKey.fromString "Scope" Aeson..= ("local" :: String), AesonKey.fromString "Options" Aeson..= Aeson.Null
-                , AesonKey.fromString "Labels" Aeson..= Aeson.object
-                    [ AesonKey.fromString "io.prodbox.deployment" Aeson..= ("prodbox-t-run" :: String)
-                    , AesonKey.fromString "io.prodbox.generation" Aeson..= generation
-                    , AesonKey.fromString "io.prodbox.operation" Aeson..= operation
-                    , AesonKey.fromString "io.prodbox.resource" Aeson..= ("kind-node-var" :: String) ] ]
-              attachedBody = BS8.pack ("[{\"Id\":\"" ++ replicate 64 '9' ++ "\",\"Names\":[\"/foreign\"],\"Image\":\"example\",\"ImageID\":\"sha256:" ++ replicate 64 '8' ++ "\",\"Command\":\"\",\"Created\":1,\"Ports\":[],\"Labels\":{},\"State\":\"created\",\"Status\":\"Created\",\"HostConfig\":{},\"NetworkSettings\":{\"Networks\":{}},\"Mounts\":[]}]")
+          positive <-
+            maybe
+              (fail "positive volume name")
+              pure
+              (kindNodeVarVolumeName (bootstrapKindPlan bootstrap) generation operation)
+          let positiveBody =
+                LazyBS8.toStrict . Aeson.encode $
+                  Aeson.object
+                    [ AesonKey.fromString "Name" Aeson..= positive
+                    , AesonKey.fromString "Driver" Aeson..= ("local" :: String)
+                    , AesonKey.fromString "Scope" Aeson..= ("local" :: String)
+                    , AesonKey.fromString "Options" Aeson..= Aeson.Null
+                    , AesonKey.fromString "Labels"
+                        Aeson..= Aeson.object
+                          [ AesonKey.fromString "io.prodbox.deployment" Aeson..= ("prodbox-t-run" :: String)
+                          , AesonKey.fromString "io.prodbox.generation" Aeson..= generation
+                          , AesonKey.fromString "io.prodbox.operation" Aeson..= operation
+                          , AesonKey.fromString "io.prodbox.resource" Aeson..= ("kind-node-var" :: String)
+                          ]
+                    ]
+              attachedBody =
+                BS8.pack
+                  ( "[{\"Id\":\""
+                      ++ replicate 64 '9'
+                      ++ "\",\"Names\":[\"/foreign\"],\"Image\":\"example\",\"ImageID\":\"sha256:"
+                      ++ replicate 64 '8'
+                      ++ "\",\"Command\":\"\",\"Created\":1,\"Ports\":[],\"Labels\":{},\"State\":\"created\",\"Status\":\"Created\",\"HostConfig\":{},\"NetworkSettings\":{\"Networks\":{}},\"Mounts\":[]}]"
+                  )
               containerBody = if mode == "attached" then attachedBody else BS8.pack "[]"
-              attemptPath = scopeRoot (bootstrapScope bootstrap) </> ("kind-node-absence-control-volume-" ++ volume ++ "-attempt.json")
+              attemptPath =
+                scopeRoot (bootstrapScope bootstrap)
+                  </> ("kind-node-absence-control-volume-" ++ volume ++ "-attempt.json")
           exists <- newIORef True
           sawAttempt <- newIORef False
           daemonChanged <- newIORef False
@@ -1150,91 +1435,179 @@ integrationCliSuite = do
           let listVolumes = do
                 present <- readIORef exists
                 let names = [positive | mode /= "missing-positive"] ++ [volume | present]
-                pure . LazyBS8.toStrict . Aeson.encode $ Aeson.object
-                  [ AesonKey.fromString "Volumes" Aeson..= map (\name -> Aeson.object [AesonKey.fromString "Name" Aeson..= name]) names
-                  , AesonKey.fromString "Warnings" Aeson..= ([] :: [String]) ]
+                pure . LazyBS8.toStrict . Aeson.encode $
+                  Aeson.object
+                    [ AesonKey.fromString "Volumes"
+                        Aeson..= map (\name -> Aeson.object [AesonKey.fromString "Name" Aeson..= name]) names
+                    , AesonKey.fromString "Warnings" Aeson..= ([] :: [String])
+                    ]
               hook request = when (("DELETE /volumes/" ++ volume ++ " ") `isPrefixOf` request) $ do
                 doesFileExist attemptPath >>= writeIORef sawAttempt
                 when (mode /= "lost-no-effect") (writeIORef exists False)
                 when (mode `elem` ["lost", "lost-no-effect"]) (fail "simulated lost volume reply")
                 when (mode == "cancel") (putMVar deleteStarted () >> takeMVar holdReply)
-          withDockerDaemonFixtureControlVolumeAndRemoval socketPath False hook (readIORef daemonChanged) containerBody (BS8.pack "[]")
-            (pure True) (Just (positive, positiveBody)) listVolumes Nothing (Just volume) $ \requests -> do
+          withDockerDaemonFixtureControlVolumeAndRemoval
+            socketPath
+            False
+            hook
+            (readIORef daemonChanged)
+            containerBody
+            (BS8.pack "[]")
+            (pure True)
+            (Just (positive, positiveBody))
+            listVolumes
+            Nothing
+            (Just volume)
+            $ \requests -> do
               identity <- observeDockerSocketIdentity socketPath >>= maybe (fail "fixture socket missing") pure
               let daemon = DockerDaemonObserved "daemon-a" identity
-                  input = KindNodeCreateInput tool imageId (replicate 64 'b') generation operation
-                    (kindNodeRunArguments (bootstrapKindPlan bootstrap) imageId)
+                  input =
+                    KindNodeCreateInput
+                      tool
+                      imageId
+                      (replicate 64 'b')
+                      generation
+                      operation
+                      (kindNodeRunArguments (bootstrapKindPlan bootstrap) imageId)
                   volumes = [("/var", volume)]
               intent <- maybe (fail "node intent") pure (mkKindNodeCreateIntent bootstrap input daemon)
-              plan <- maybe (fail "absence plan") pure (mkKindAbsencePlan intent target (DockerImageVolumes ["/var"]))
+              plan <-
+                maybe (fail "absence plan") pure (mkKindAbsencePlan intent target (DockerImageVolumes ["/var"]))
               volumeIntent <- maybe (fail "volume intent") pure (mkKindNodeVolumeIntent operation daemon)
-              withNewKindOperation bootstrap operation (\stable -> do
-                recordKindNodeVolumeIntent bootstrap volumeIntent stable `shouldReturn` NodeVolumeIntentRecorded
-                recordKindNodeVolumeAttempt bootstrap volumeIntent stable `shouldReturn` NodeVolumeAttemptRecorded
-                recordKindNodeVolumeReceipt bootstrap volumeIntent (DockerNodeVarCreateReply 201 (Just DockerNodeVarVolumeMatching)) stable `shouldReturn` NodeVolumeReceiptRecorded
-                recordKindNodeCreateIntent bootstrap intent stable `shouldReturn` NodeCreateIntentRecorded
-                recordKindNodeCreateAttempt bootstrap intent stable `shouldReturn` NodeCreateAttemptRecorded
-                recordKindNodeCreateResult bootstrap intent (DockerNodeContainerCreateReply 201 (Just target)) stable `shouldReturn` NodeCreateResultRecorded
-                recordKindAbsenceStage bootstrap plan AbsenceCreateAttempt stable `shouldReturn` AbsenceRecorded
-                recordKindAbsenceStage bootstrap plan (AbsenceCreateResult (DockerNodeContainerCreateReply 201 (Just control))) stable `shouldReturn` AbsenceRecorded
-                recordKindAbsenceStage bootstrap plan (AbsenceControlIdentified control) stable `shouldReturn` AbsenceRecorded
-                recordKindAbsenceStage bootstrap plan (AbsenceFootprintRecorded control volumes) stable `shouldReturn` AbsenceRecorded
-                recordKindAbsenceStage bootstrap plan (AbsenceControlSampled control volumes) stable `shouldReturn` AbsenceRecorded
-                recordKindAbsenceStage bootstrap plan (AbsenceRemoveAttempt control volumes) stable `shouldReturn` AbsenceRecorded)
+              withNewKindOperation
+                bootstrap
+                operation
+                ( \stable -> do
+                    recordKindNodeVolumeIntent bootstrap volumeIntent stable `shouldReturn` NodeVolumeIntentRecorded
+                    recordKindNodeVolumeAttempt bootstrap volumeIntent stable `shouldReturn` NodeVolumeAttemptRecorded
+                    recordKindNodeVolumeReceipt
+                      bootstrap
+                      volumeIntent
+                      (DockerNodeVarCreateReply 201 (Just DockerNodeVarVolumeMatching))
+                      stable
+                      `shouldReturn` NodeVolumeReceiptRecorded
+                    recordKindNodeCreateIntent bootstrap intent stable `shouldReturn` NodeCreateIntentRecorded
+                    recordKindNodeCreateAttempt bootstrap intent stable `shouldReturn` NodeCreateAttemptRecorded
+                    recordKindNodeCreateResult
+                      bootstrap
+                      intent
+                      (DockerNodeContainerCreateReply 201 (Just target))
+                      stable
+                      `shouldReturn` NodeCreateResultRecorded
+                    recordKindAbsenceStage bootstrap plan AbsenceCreateAttempt stable `shouldReturn` AbsenceRecorded
+                    recordKindAbsenceStage
+                      bootstrap
+                      plan
+                      (AbsenceCreateResult (DockerNodeContainerCreateReply 201 (Just control)))
+                      stable
+                      `shouldReturn` AbsenceRecorded
+                    recordKindAbsenceStage bootstrap plan (AbsenceControlIdentified control) stable
+                      `shouldReturn` AbsenceRecorded
+                    recordKindAbsenceStage bootstrap plan (AbsenceFootprintRecorded control volumes) stable
+                      `shouldReturn` AbsenceRecorded
+                    recordKindAbsenceStage bootstrap plan (AbsenceControlSampled control volumes) stable
+                      `shouldReturn` AbsenceRecorded
+                    recordKindAbsenceStage bootstrap plan (AbsenceRemoveAttempt control volumes) stable
+                      `shouldReturn` AbsenceRecorded
+                )
                 `shouldReturn` KindOperationCallbackReturned ()
-              result <- if mode == "cancel" then do
-                finished <- newEmptyMVar
-                worker <- forkIO $ do
-                  outcome <- try (removeResidualAbsenceVolume bootstrap plan volume id)
-                  putMVar finished (outcome :: Either SomeException (KindOperationOutcome (Either AbsenceVolumeRemovalOutcome (DockerPeerResult (DockerConnectedInfoResult AbsenceVolumeRemovalOutcome)))))
-                timeout 180000000 (takeMVar deleteStarted) `shouldReturn` Just ()
-                killThread worker
-                completed <- timeout 30000000 (takeMVar finished)
-                case completed of Just (Left _) -> pure Nothing; _ -> fail "interrupted volume removal did not settle"
-                else Just <$> removeResidualAbsenceVolume bootstrap plan volume id
+              result <-
+                if mode == "cancel"
+                  then do
+                    finished <- newEmptyMVar
+                    worker <- forkIO $ do
+                      outcome <- try (removeResidualAbsenceVolume bootstrap plan volume id)
+                      putMVar
+                        finished
+                        ( outcome
+                            :: Either
+                                 SomeException
+                                 ( KindOperationOutcome
+                                     ( Either
+                                         AbsenceVolumeRemovalOutcome
+                                         (DockerPeerResult (DockerConnectedInfoResult AbsenceVolumeRemovalOutcome))
+                                     )
+                                 )
+                        )
+                    timeout 180000000 (takeMVar deleteStarted) `shouldReturn` Just ()
+                    killThread worker
+                    completed <- timeout 30000000 (takeMVar finished)
+                    case completed of
+                      Just (Left _) -> pure Nothing
+                      _ -> fail "interrupted volume removal did not settle"
+                  else Just <$> removeResidualAbsenceVolume bootstrap plan volume id
               if mode `elem` ["remove", "lost", "lost-no-effect", "cancel"]
                 then do
                   let transport = if mode == "remove" then DockerNodeVarRemoveReply 204 else DockerNodeVarRemoveUnconfirmed
                   when (mode /= "cancel") $
-                    result `shouldBe` Just (KindOperationCallbackReturned (Right (DockerPeerCompleted
-                      (DockerConnectedInfoCompleted (AbsenceVolumeRemovalReturned transport AbsenceRecorded True)))))
+                    result
+                      `shouldBe` Just
+                        ( KindOperationCallbackReturned
+                            ( Right
+                                ( DockerPeerCompleted
+                                    (DockerConnectedInfoCompleted (AbsenceVolumeRemovalReturned transport AbsenceRecorded True))
+                                )
+                            )
+                        )
                   readIORef sawAttempt `shouldReturn` True
-                  withRecoveredKindOperation bootstrap operation
+                  withRecoveredKindOperation
+                    bootstrap
+                    operation
                     (observeKindAbsenceStage bootstrap plan (AbsenceVolumeRemoveResult control volumes volume transport))
                     `shouldReturn` KindOperationCallbackReturned AbsenceMatches
                   if mode == "lost-no-effect"
                     then do
-                      observeAbsenceControlVolumes bootstrap plan AbsenceVolumesAfterRemoval id `shouldReturn`
-                        KindOperationCallbackReturned (AbsenceVolumeResidual [volume])
-                      observeResidualAbsenceVolumeRecovery bootstrap plan volume id `shouldReturn`
-                        KindOperationCallbackReturned (AbsenceVolumeRecoveryObserved (AbsenceVolumeResultObserved transport) (AbsenceVolumeResidual [volume]) True)
+                      observeAbsenceControlVolumes bootstrap plan AbsenceVolumesAfterRemoval id
+                        `shouldReturn` KindOperationCallbackReturned (AbsenceVolumeResidual [volume])
+                      observeResidualAbsenceVolumeRecovery bootstrap plan volume id
+                        `shouldReturn` KindOperationCallbackReturned
+                          ( AbsenceVolumeRecoveryObserved
+                              (AbsenceVolumeResultObserved transport)
+                              (AbsenceVolumeResidual [volume])
+                              True
+                          )
                       binary <- resolveBinaryPath
-                      (_, statusOutput, statusErrors) <- readCreateProcessWithExitCode (proc binary ["--config", selected, "control", "status"]) ""
+                      (_, statusOutput, statusErrors) <-
+                        readCreateProcessWithExitCode (proc binary ["--config", selected, "control", "status"]) ""
                       let statusText = statusOutput ++ statusErrors
                       statusText `shouldContain` "Absence-control journal: AbsenceJournalRecorded"
                       statusText `shouldContain` "AbsenceVolumeResultObserved DockerNodeVarRemoveUnconfirmed"
-                      statusText `shouldContain` "local records only; resource presence, cleanup and worker settlement are not established"
-                      statusText `shouldContain` "Absence-control volume inventory: AbsenceInventoryObserved (AbsenceVolumeResidual"
-                      statusText `shouldContain` "unsettled observation only; cleanup and worker settlement are not established"
+                      statusText
+                        `shouldContain` "local records only; resource presence, cleanup and worker settlement are not established"
+                      statusText
+                        `shouldContain` "Absence-control volume inventory: AbsenceInventoryObserved (AbsenceVolumeResidual"
+                      statusText
+                        `shouldContain` "unsettled observation only; cleanup and worker settlement are not established"
                       writeIORef daemonChanged True
-                      (_, changedOutput, changedErrors) <- readCreateProcessWithExitCode (proc binary ["--config", selected, "control", "status"]) ""
+                      (_, changedOutput, changedErrors) <-
+                        readCreateProcessWithExitCode (proc binary ["--config", selected, "control", "status"]) ""
                       let changedText = changedOutput ++ changedErrors
                       changedText `shouldContain` "Absence-control journal: AbsenceJournalRecorded"
                       changedText `shouldContain` "AbsenceVolumeResultObserved DockerNodeVarRemoveUnconfirmed"
                       changedText `shouldContain` "Absence-control volume inventory: "
                       changedText `shouldSatisfy` (not . isInfixOf "AbsenceInventoryObserved (AbsenceVolumeResidual")
                       writeIORef daemonChanged False
-                      removeResidualAbsenceVolume bootstrap plan volume id `shouldReturn`
-                        KindOperationCallbackReturned (Right (DockerPeerCompleted
-                          (DockerConnectedInfoCompleted (AbsenceVolumeRemovalAttempt AbsenceAlreadyExists))))
+                      removeResidualAbsenceVolume bootstrap plan volume id
+                        `shouldReturn` KindOperationCallbackReturned
+                          ( Right
+                              ( DockerPeerCompleted
+                                  (DockerConnectedInfoCompleted (AbsenceVolumeRemovalAttempt AbsenceAlreadyExists))
+                              )
+                          )
                     else do
                       let absent = AbsenceVolumeSampled (AbsenceVolumeSample True [(volume, NodeVolumeInventory False [])])
-                      observeAbsenceControlVolumes bootstrap plan AbsenceVolumesAfterRemoval id `shouldReturn` KindOperationCallbackReturned absent
-                      observeResidualAbsenceVolumeRecovery bootstrap plan volume id `shouldReturn`
-                        KindOperationCallbackReturned (AbsenceVolumeRecoveryObserved (AbsenceVolumeResultObserved transport) absent True)
-                else result `shouldBe` Just (KindOperationCallbackReturned (Left (AbsenceVolumeRemovalNotResidual AbsenceVolumeUnobservable)))
+                      observeAbsenceControlVolumes bootstrap plan AbsenceVolumesAfterRemoval id
+                        `shouldReturn` KindOperationCallbackReturned absent
+                      observeResidualAbsenceVolumeRecovery bootstrap plan volume id
+                        `shouldReturn` KindOperationCallbackReturned
+                          (AbsenceVolumeRecoveryObserved (AbsenceVolumeResultObserved transport) absent True)
+                else
+                  result
+                    `shouldBe` Just
+                      (KindOperationCallbackReturned (Left (AbsenceVolumeRemovalNotResidual AbsenceVolumeUnobservable)))
               observed <- readMVar requests
-              length (filter (("DELETE /volumes/" ++ volume ++ " ") `isPrefixOf`) observed) `shouldBe` (if mode `elem` ["remove", "lost", "lost-no-effect", "cancel"] then 1 else 0)
+              length (filter (("DELETE /volumes/" ++ volume ++ " ") `isPrefixOf`) observed)
+                `shouldBe` (if mode `elem` ["remove", "lost", "lost-no-effect", "cancel"] then 1 else 0)
     it "samples and removes the exact absence control before volume readback" $
       forM_ ["direct", "blind", "recover", "recover-blind", "residual", "lost", "interrupt"] $ \mode ->
         withSystemTempDirectory "prodbox-absence-sample" $ \directory -> do
@@ -1251,58 +1624,120 @@ integrationCliSuite = do
               tool = "sha256:50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54"
               socketPath = directory </> "docker.sock"
               selected = directory </> "selected.dhall"
-              document = "{ bootstrap = { schema_version = 1, project_anchor = \"" ++ directory
-                ++ "\", runtime_socket = \"" ++ socketPath ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
-                ++ generation ++ "\", api_port = 26443, node_image = \"kindest/node@" ++ imageId
-                ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" } }"
+              document =
+                "{ bootstrap = { schema_version = 1, project_anchor = \""
+                  ++ directory
+                  ++ "\", runtime_socket = \""
+                  ++ socketPath
+                  ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
+                  ++ generation
+                  ++ "\", api_port = 26443, node_image = \"kindest/node@"
+                  ++ imageId
+                  ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" } }"
               name = "prodbox-t-run-absence-control"
-              controlBody = LazyBS8.toStrict . Aeson.encode $ Aeson.object
-                [ AesonKey.fromString "Id" Aeson..= control, AesonKey.fromString "Name" Aeson..= ('/' : name), AesonKey.fromString "Image" Aeson..= imageId
-                , AesonKey.fromString "Config" Aeson..= Aeson.object
-                    [ AesonKey.fromString "Image" Aeson..= imageId, AesonKey.fromString "Entrypoint" Aeson..= (["/nonexistent"] :: [String])
-                    , AesonKey.fromString "Cmd" Aeson..= (["/nonexistent"] :: [String]), AesonKey.fromString "NetworkDisabled" Aeson..= True
-                    , AesonKey.fromString "Labels" Aeson..= Aeson.object
-                        [ AesonKey.fromString "io.prodbox.absence-control" Aeson..= operation, AesonKey.fromString "io.prodbox.generation" Aeson..= generation ] ]
-                , AesonKey.fromString "State" Aeson..= Aeson.object
-                    [ AesonKey.fromString "Running" Aeson..= False, AesonKey.fromString "Paused" Aeson..= False
-                    , AesonKey.fromString "Restarting" Aeson..= False, AesonKey.fromString "Dead" Aeson..= False
-                    , AesonKey.fromString "Status" Aeson..= ("created" :: String) ]
-                , AesonKey.fromString "HostConfig" Aeson..= Aeson.object
-                    [ AesonKey.fromString "NetworkMode" Aeson..= ("none" :: String), AesonKey.fromString "Privileged" Aeson..= False
-                    , AesonKey.fromString "Binds" Aeson..= Aeson.Null, AesonKey.fromString "ReadonlyRootfs" Aeson..= True
-                    , AesonKey.fromString "AutoRemove" Aeson..= False, AesonKey.fromString "CapDrop" Aeson..= (["ALL"] :: [String])
-                    , AesonKey.fromString "RestartPolicy" Aeson..= Aeson.object
-                        [AesonKey.fromString "Name" Aeson..= ("no" :: String), AesonKey.fromString "MaximumRetryCount" Aeson..= (0 :: Int)] ]
-                , AesonKey.fromString "Mounts" Aeson..= [Aeson.object
-                    [ AesonKey.fromString "Type" Aeson..= ("volume" :: String), AesonKey.fromString "Name" Aeson..= volume
-                    , AesonKey.fromString "Destination" Aeson..= ("/var" :: String), AesonKey.fromString "Driver" Aeson..= ("local" :: String)
-                    , AesonKey.fromString "RW" Aeson..= True ]]
-                , AesonKey.fromString "NetworkSettings" Aeson..= Aeson.object [AesonKey.fromString "Networks" Aeson..= Aeson.object []] ]
-              controlList = BS8.pack ("[{\"Id\":\"" ++ control ++ "\",\"Names\":[\"/" ++ name ++ "\"],\"Image\":\"example\",\"ImageID\":\"" ++ imageId ++ "\",\"Command\":\"\",\"Created\":1,\"Ports\":[],\"Labels\":{},\"State\":\"created\",\"Status\":\"Created\",\"HostConfig\":{},\"NetworkSettings\":{\"Networks\":{}},\"Mounts\":[]}]")
+              controlBody =
+                LazyBS8.toStrict . Aeson.encode $
+                  Aeson.object
+                    [ AesonKey.fromString "Id" Aeson..= control
+                    , AesonKey.fromString "Name" Aeson..= ('/' : name)
+                    , AesonKey.fromString "Image" Aeson..= imageId
+                    , AesonKey.fromString "Config"
+                        Aeson..= Aeson.object
+                          [ AesonKey.fromString "Image" Aeson..= imageId
+                          , AesonKey.fromString "Entrypoint" Aeson..= (["/nonexistent"] :: [String])
+                          , AesonKey.fromString "Cmd" Aeson..= (["/nonexistent"] :: [String])
+                          , AesonKey.fromString "NetworkDisabled" Aeson..= True
+                          , AesonKey.fromString "Labels"
+                              Aeson..= Aeson.object
+                                [ AesonKey.fromString "io.prodbox.absence-control" Aeson..= operation
+                                , AesonKey.fromString "io.prodbox.generation" Aeson..= generation
+                                ]
+                          ]
+                    , AesonKey.fromString "State"
+                        Aeson..= Aeson.object
+                          [ AesonKey.fromString "Running" Aeson..= False
+                          , AesonKey.fromString "Paused" Aeson..= False
+                          , AesonKey.fromString "Restarting" Aeson..= False
+                          , AesonKey.fromString "Dead" Aeson..= False
+                          , AesonKey.fromString "Status" Aeson..= ("created" :: String)
+                          ]
+                    , AesonKey.fromString "HostConfig"
+                        Aeson..= Aeson.object
+                          [ AesonKey.fromString "NetworkMode" Aeson..= ("none" :: String)
+                          , AesonKey.fromString "Privileged" Aeson..= False
+                          , AesonKey.fromString "Binds" Aeson..= Aeson.Null
+                          , AesonKey.fromString "ReadonlyRootfs" Aeson..= True
+                          , AesonKey.fromString "AutoRemove" Aeson..= False
+                          , AesonKey.fromString "CapDrop" Aeson..= (["ALL"] :: [String])
+                          , AesonKey.fromString "RestartPolicy"
+                              Aeson..= Aeson.object
+                                [ AesonKey.fromString "Name" Aeson..= ("no" :: String)
+                                , AesonKey.fromString "MaximumRetryCount" Aeson..= (0 :: Int)
+                                ]
+                          ]
+                    , AesonKey.fromString "Mounts"
+                        Aeson..= [ Aeson.object
+                                     [ AesonKey.fromString "Type" Aeson..= ("volume" :: String)
+                                     , AesonKey.fromString "Name" Aeson..= volume
+                                     , AesonKey.fromString "Destination" Aeson..= ("/var" :: String)
+                                     , AesonKey.fromString "Driver" Aeson..= ("local" :: String)
+                                     , AesonKey.fromString "RW" Aeson..= True
+                                     ]
+                                 ]
+                    , AesonKey.fromString "NetworkSettings"
+                        Aeson..= Aeson.object [AesonKey.fromString "Networks" Aeson..= Aeson.object []]
+                    ]
+              controlList =
+                BS8.pack
+                  ( "[{\"Id\":\""
+                      ++ control
+                      ++ "\",\"Names\":[\"/"
+                      ++ name
+                      ++ "\"],\"Image\":\"example\",\"ImageID\":\""
+                      ++ imageId
+                      ++ "\",\"Command\":\"\",\"Created\":1,\"Ports\":[],\"Labels\":{},\"State\":\"created\",\"Status\":\"Created\",\"HostConfig\":{},\"NetworkSettings\":{\"Networks\":{}},\"Mounts\":[]}]"
+                  )
           writeFile selected document
           bootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
           prepareFreshScope (bootstrapScope bootstrap) generation `shouldReturn` FreshScopePrepared
-          positive <- maybe (fail "positive volume name") pure (kindNodeVarVolumeName (bootstrapKindPlan bootstrap) generation operation)
-          let positiveBody = LazyBS8.toStrict . Aeson.encode $ Aeson.object
-                [ AesonKey.fromString "Name" Aeson..= positive, AesonKey.fromString "Driver" Aeson..= ("local" :: String)
-                , AesonKey.fromString "Scope" Aeson..= ("local" :: String), AesonKey.fromString "Options" Aeson..= Aeson.Null
-                , AesonKey.fromString "Labels" Aeson..= Aeson.object
-                    [ AesonKey.fromString "io.prodbox.deployment" Aeson..= ("prodbox-t-run" :: String)
-                    , AesonKey.fromString "io.prodbox.generation" Aeson..= generation
-                    , AesonKey.fromString "io.prodbox.operation" Aeson..= operation
-                    , AesonKey.fromString "io.prodbox.resource" Aeson..= ("kind-node-var" :: String) ] ]
+          positive <-
+            maybe
+              (fail "positive volume name")
+              pure
+              (kindNodeVarVolumeName (bootstrapKindPlan bootstrap) generation operation)
+          let positiveBody =
+                LazyBS8.toStrict . Aeson.encode $
+                  Aeson.object
+                    [ AesonKey.fromString "Name" Aeson..= positive
+                    , AesonKey.fromString "Driver" Aeson..= ("local" :: String)
+                    , AesonKey.fromString "Scope" Aeson..= ("local" :: String)
+                    , AesonKey.fromString "Options" Aeson..= Aeson.Null
+                    , AesonKey.fromString "Labels"
+                        Aeson..= Aeson.object
+                          [ AesonKey.fromString "io.prodbox.deployment" Aeson..= ("prodbox-t-run" :: String)
+                          , AesonKey.fromString "io.prodbox.generation" Aeson..= generation
+                          , AesonKey.fromString "io.prodbox.operation" Aeson..= operation
+                          , AesonKey.fromString "io.prodbox.resource" Aeson..= ("kind-node-var" :: String)
+                          ]
+                    ]
           controlPresent <- newIORef True
           volumePresent <- newIORef True
           let listVolumes = do
                 visible <- readIORef volumePresent
-                pure . LazyBS8.toStrict . Aeson.encode $ Aeson.object
-                  [ AesonKey.fromString "Volumes" Aeson..= map (\item -> Aeson.object [AesonKey.fromString "Name" Aeson..= item])
-                      (positive : [volume | visible])
-                  , AesonKey.fromString "Warnings" Aeson..= ([] :: [String]) ]
+                pure . LazyBS8.toStrict . Aeson.encode $
+                  Aeson.object
+                    [ AesonKey.fromString "Volumes"
+                        Aeson..= map
+                          (\item -> Aeson.object [AesonKey.fromString "Name" Aeson..= item])
+                          (positive : [volume | visible])
+                    , AesonKey.fromString "Warnings" Aeson..= ([] :: [String])
+                    ]
               listContainers endpoint = do
                 visible <- readIORef controlPresent
-                let selectedControl = not ("filters=" `isInfixOf` endpoint)
-                      || "absence-control" `isInfixOf` endpoint || "volume" `isInfixOf` endpoint
+                let selectedControl =
+                      not ("filters=" `isInfixOf` endpoint)
+                        || "absence-control" `isInfixOf` endpoint
+                        || "volume" `isInfixOf` endpoint
                     blindLabel = blind && "label" `isInfixOf` endpoint && "absence-control" `isInfixOf` endpoint
                 pure (if visible && selectedControl && not blindLabel then controlList else BS8.pack "[]")
               hook request = do
@@ -1311,26 +1746,68 @@ integrationCliSuite = do
                   unless residual (writeIORef volumePresent False)
                   when lost (fail "simulated lost control reply")
                 when (("DELETE /volumes/" ++ volume ++ " ") `isPrefixOf` request) (writeIORef volumePresent False)
-          withDockerDaemonFixtureDynamic socketPath False hook (pure False) (BS8.pack "[]") (BS8.pack "[]")
-            (pure True) (Just (positive, positiveBody)) listVolumes (Just (name, controlBody)) (Just volume) (Just control) (Just listContainers) $ \requests -> do
+          withDockerDaemonFixtureDynamic
+            socketPath
+            False
+            hook
+            (pure False)
+            (BS8.pack "[]")
+            (BS8.pack "[]")
+            (pure True)
+            (Just (positive, positiveBody))
+            listVolumes
+            (Just (name, controlBody))
+            (Just volume)
+            (Just control)
+            (Just listContainers)
+            $ \requests -> do
               identity <- observeDockerSocketIdentity socketPath >>= maybe (fail "fixture socket missing") pure
               let daemon = DockerDaemonObserved "daemon-a" identity
-                  input = KindNodeCreateInput tool imageId (replicate 64 'b') generation operation (kindNodeRunArguments (bootstrapKindPlan bootstrap) imageId)
+                  input =
+                    KindNodeCreateInput
+                      tool
+                      imageId
+                      (replicate 64 'b')
+                      generation
+                      operation
+                      (kindNodeRunArguments (bootstrapKindPlan bootstrap) imageId)
                   volumes = [("/var", volume)]
               intent <- maybe (fail "node intent") pure (mkKindNodeCreateIntent bootstrap input daemon)
-              plan <- maybe (fail "absence plan") pure (mkKindAbsencePlan intent target (DockerImageVolumes ["/var"]))
+              plan <-
+                maybe (fail "absence plan") pure (mkKindAbsencePlan intent target (DockerImageVolumes ["/var"]))
               volumeIntent <- maybe (fail "volume intent") pure (mkKindNodeVolumeIntent operation daemon)
-              withNewKindOperation bootstrap operation (\stable -> do
-                recordKindNodeVolumeIntent bootstrap volumeIntent stable `shouldReturn` NodeVolumeIntentRecorded
-                recordKindNodeVolumeAttempt bootstrap volumeIntent stable `shouldReturn` NodeVolumeAttemptRecorded
-                recordKindNodeVolumeReceipt bootstrap volumeIntent (DockerNodeVarCreateReply 201 (Just DockerNodeVarVolumeMatching)) stable `shouldReturn` NodeVolumeReceiptRecorded
-                recordKindNodeCreateIntent bootstrap intent stable `shouldReturn` NodeCreateIntentRecorded
-                recordKindNodeCreateAttempt bootstrap intent stable `shouldReturn` NodeCreateAttemptRecorded
-                recordKindNodeCreateResult bootstrap intent (DockerNodeContainerCreateReply 201 (Just target)) stable `shouldReturn` NodeCreateResultRecorded
-                recordKindAbsenceStage bootstrap plan AbsenceCreateAttempt stable `shouldReturn` AbsenceRecorded
-                recordKindAbsenceStage bootstrap plan (AbsenceCreateResult (DockerNodeContainerCreateReply 201 (Just control))) stable `shouldReturn` AbsenceRecorded
-                recordKindAbsenceStage bootstrap plan (AbsenceControlIdentified control) stable `shouldReturn` AbsenceRecorded
-                recordKindAbsenceStage bootstrap plan (AbsenceFootprintRecorded control volumes) stable `shouldReturn` AbsenceRecorded)
+              withNewKindOperation
+                bootstrap
+                operation
+                ( \stable -> do
+                    recordKindNodeVolumeIntent bootstrap volumeIntent stable `shouldReturn` NodeVolumeIntentRecorded
+                    recordKindNodeVolumeAttempt bootstrap volumeIntent stable `shouldReturn` NodeVolumeAttemptRecorded
+                    recordKindNodeVolumeReceipt
+                      bootstrap
+                      volumeIntent
+                      (DockerNodeVarCreateReply 201 (Just DockerNodeVarVolumeMatching))
+                      stable
+                      `shouldReturn` NodeVolumeReceiptRecorded
+                    recordKindNodeCreateIntent bootstrap intent stable `shouldReturn` NodeCreateIntentRecorded
+                    recordKindNodeCreateAttempt bootstrap intent stable `shouldReturn` NodeCreateAttemptRecorded
+                    recordKindNodeCreateResult
+                      bootstrap
+                      intent
+                      (DockerNodeContainerCreateReply 201 (Just target))
+                      stable
+                      `shouldReturn` NodeCreateResultRecorded
+                    recordKindAbsenceStage bootstrap plan AbsenceCreateAttempt stable `shouldReturn` AbsenceRecorded
+                    recordKindAbsenceStage
+                      bootstrap
+                      plan
+                      (AbsenceCreateResult (DockerNodeContainerCreateReply 201 (Just control)))
+                      stable
+                      `shouldReturn` AbsenceRecorded
+                    recordKindAbsenceStage bootstrap plan (AbsenceControlIdentified control) stable
+                      `shouldReturn` AbsenceRecorded
+                    recordKindAbsenceStage bootstrap plan (AbsenceFootprintRecorded control volumes) stable
+                      `shouldReturn` AbsenceRecorded
+                )
                 `shouldReturn` KindOperationCallbackReturned ()
               if mode == "interrupt"
                 then do
@@ -1349,46 +1826,111 @@ integrationCliSuite = do
                   interrupted <- timeout 120000000 (takeMVar finished)
                   case interrupted of
                     Just (Left failure) -> case fromException failure of
-                      Just (ExistingAbsenceInterrupted _ (Right (KindOperationCallbackReturned (Right (DockerPeerCompleted
-                        (DockerConnectedInfoCompleted (AbsenceRemovalReturned (DockerNodeContainerRemoveReply 204) AbsenceRecorded True))))))) -> pure ()
+                      Just
+                        ( ExistingAbsenceInterrupted
+                            _
+                            ( Right
+                                ( KindOperationCallbackReturned
+                                    ( Right
+                                        ( DockerPeerCompleted
+                                            ( DockerConnectedInfoCompleted
+                                                (AbsenceRemovalReturned (DockerNodeContainerRemoveReply 204) AbsenceRecorded True)
+                                              )
+                                          )
+                                      )
+                                  )
+                              )
+                          ) -> pure ()
                       _ -> fail "interrupted sample did not preserve control cleanup"
                     _ -> fail "interrupted sample did not propagate"
-                  withRecoveredKindOperation bootstrap operation
-                    (observeKindAbsenceStage bootstrap plan (AbsenceRemoveResult control volumes (DockerNodeContainerRemoveReply 204)))
+                  withRecoveredKindOperation
+                    bootstrap
+                    operation
+                    ( observeKindAbsenceStage
+                        bootstrap
+                        plan
+                        (AbsenceRemoveResult control volumes (DockerNodeContainerRemoveReply 204))
+                    )
                     `shouldReturn` KindOperationCallbackReturned AbsenceMatches
-                else if recover
-                then do
-                  recovered <- recoverExistingAbsenceControl bootstrap plan id
-                  existingAbsenceSample recovered `shouldBe` KindOperationCallbackReturned
-                    (if blind then AbsenceSampleNodeUnconfirmed AbsenceNodeUnobservable else AbsenceSampleWrite AbsenceRecorded True)
-                  let controlTransport = if lost then DockerNodeContainerRemoveUnconfirmed else DockerNodeContainerRemoveReply 204
-                  existingAbsenceControlRemoval recovered `shouldBe` KindOperationCallbackReturned (Right (DockerPeerCompleted
-                    (DockerConnectedInfoCompleted (AbsenceRemovalReturned controlTransport AbsenceRecorded True))))
-                  existingAbsenceVolumeBefore recovered `shouldBe` if lost then Nothing else Just (KindOperationCallbackReturned
-                    (if blind then AbsenceVolumeRecordsUnconfirmed else if residual then AbsenceVolumeResidual [volume]
-                      else AbsenceVolumeSampled (AbsenceVolumeSample True [(volume, NodeVolumeInventory False [])])))
-                  if residual
+                else
+                  if recover
                     then do
-                      existingAbsenceVolumeAttempts recovered `shouldBe`
-                        [(volume, KindOperationCallbackReturned (Right (DockerPeerCompleted (DockerConnectedInfoCompleted
-                          (AbsenceVolumeRemovalReturned (DockerNodeVarRemoveReply 204) AbsenceRecorded True)))))]
-                      existingAbsenceVolumeAfter recovered `shouldBe` Just (KindOperationCallbackReturned
-                        (AbsenceVolumeSampled (AbsenceVolumeSample True [(volume, NodeVolumeInventory False [])])))
-                    else existingAbsenceVolumeAttempts recovered `shouldBe` []
-                else do
-                  sampled <- recordObservedAbsenceSample bootstrap plan id
-                  if blind
-                    then sampled `shouldBe` KindOperationCallbackReturned (AbsenceSampleNodeUnconfirmed AbsenceNodeUnobservable)
+                      recovered <- recoverExistingAbsenceControl bootstrap plan id
+                      existingAbsenceSample recovered
+                        `shouldBe` KindOperationCallbackReturned
+                          ( if blind
+                              then AbsenceSampleNodeUnconfirmed AbsenceNodeUnobservable
+                              else AbsenceSampleWrite AbsenceRecorded True
+                          )
+                      let controlTransport = if lost then DockerNodeContainerRemoveUnconfirmed else DockerNodeContainerRemoveReply 204
+                      existingAbsenceControlRemoval recovered
+                        `shouldBe` KindOperationCallbackReturned
+                          ( Right
+                              ( DockerPeerCompleted
+                                  (DockerConnectedInfoCompleted (AbsenceRemovalReturned controlTransport AbsenceRecorded True))
+                              )
+                          )
+                      existingAbsenceVolumeBefore recovered
+                        `shouldBe` if lost
+                          then Nothing
+                          else
+                            Just
+                              ( KindOperationCallbackReturned
+                                  ( if blind
+                                      then AbsenceVolumeRecordsUnconfirmed
+                                      else
+                                        if residual
+                                          then AbsenceVolumeResidual [volume]
+                                          else AbsenceVolumeSampled (AbsenceVolumeSample True [(volume, NodeVolumeInventory False [])])
+                                  )
+                              )
+                      if residual
+                        then do
+                          existingAbsenceVolumeAttempts recovered
+                            `shouldBe` [
+                                         ( volume
+                                         , KindOperationCallbackReturned
+                                             ( Right
+                                                 ( DockerPeerCompleted
+                                                     ( DockerConnectedInfoCompleted
+                                                         (AbsenceVolumeRemovalReturned (DockerNodeVarRemoveReply 204) AbsenceRecorded True)
+                                                     )
+                                                 )
+                                             )
+                                         )
+                                       ]
+                          existingAbsenceVolumeAfter recovered
+                            `shouldBe` Just
+                              ( KindOperationCallbackReturned
+                                  (AbsenceVolumeSampled (AbsenceVolumeSample True [(volume, NodeVolumeInventory False [])]))
+                              )
+                        else existingAbsenceVolumeAttempts recovered `shouldBe` []
                     else do
-                      sampled `shouldBe` KindOperationCallbackReturned (AbsenceSampleWrite AbsenceRecorded True)
-                      removed <- removeRecordedAbsenceControl bootstrap plan id
-                      removed `shouldBe` KindOperationCallbackReturned (Right (DockerPeerCompleted
-                        (DockerConnectedInfoCompleted (AbsenceRemovalReturned (DockerNodeContainerRemoveReply 204) AbsenceRecorded True))))
-                      observeAbsenceControlVolumes bootstrap plan AbsenceVolumesAfterRemoval id `shouldReturn`
-                        KindOperationCallbackReturned (AbsenceVolumeSampled (AbsenceVolumeSample True [(volume, NodeVolumeInventory False [])]))
+                      sampled <- recordObservedAbsenceSample bootstrap plan id
+                      if blind
+                        then
+                          sampled
+                            `shouldBe` KindOperationCallbackReturned (AbsenceSampleNodeUnconfirmed AbsenceNodeUnobservable)
+                        else do
+                          sampled `shouldBe` KindOperationCallbackReturned (AbsenceSampleWrite AbsenceRecorded True)
+                          removed <- removeRecordedAbsenceControl bootstrap plan id
+                          removed
+                            `shouldBe` KindOperationCallbackReturned
+                              ( Right
+                                  ( DockerPeerCompleted
+                                      ( DockerConnectedInfoCompleted
+                                          (AbsenceRemovalReturned (DockerNodeContainerRemoveReply 204) AbsenceRecorded True)
+                                      )
+                                  )
+                              )
+                          observeAbsenceControlVolumes bootstrap plan AbsenceVolumesAfterRemoval id
+                            `shouldReturn` KindOperationCallbackReturned
+                              (AbsenceVolumeSampled (AbsenceVolumeSample True [(volume, NodeVolumeInventory False [])]))
               observed <- readMVar requests
-              length (filter (("DELETE /containers/" ++ control ++ "?force=1&v=1 ") `isPrefixOf`) observed) `shouldBe` (if blind && not recover then 0 else 1)
-              length (filter (("DELETE /volumes/" ++ volume ++ " ") `isPrefixOf`) observed) `shouldBe` (if residual then 1 else 0)
+              length (filter (("DELETE /containers/" ++ control ++ "?force=1&v=1 ") `isPrefixOf`) observed)
+                `shouldBe` (if blind && not recover then 0 else 1)
+              length (filter (("DELETE /volumes/" ++ volume ++ " ") `isPrefixOf`) observed)
+                `shouldBe` (if residual then 1 else 0)
     it "observes bounded container path metadata without treating a 404 as absence" $
       withSystemTempDirectory "prodbox-config-path" $ \directory -> do
         let encoded raw = Base64.encode (BS8.pack raw)
@@ -2534,22 +3076,36 @@ integrationCliSuite = do
                 `shouldReturn` KindOperationCallbackReturned ()
               let controlDir = statusRoot </> "control"
                   kubeconfig = controlDir </> "kubeconfig"
-                  kubeDocument encoded = unlines
-                    [ "apiVersion: v1", "kind: Config", "current-context: kind-prodbox-t-run"
-                    , "clusters:", "- name: kind-prodbox-t-run", "  cluster:"
-                    , "    server: https://127.0.0.1:26443", "    certificate-authority-data: " ++ encoded
-                    , "contexts:", "- name: kind-prodbox-t-run", "  context:"
-                    , "    cluster: kind-prodbox-t-run", "    user: kind-prodbox-t-run"
-                    , "users:", "- name: kind-prodbox-t-run", "  user:"
-                    , "    client-certificate-data: Y2VydA==", "    client-key-data: a2V5"
-                    ]
+                  kubeDocument encoded =
+                    unlines
+                      [ "apiVersion: v1"
+                      , "kind: Config"
+                      , "current-context: kind-prodbox-t-run"
+                      , "clusters:"
+                      , "- name: kind-prodbox-t-run"
+                      , "  cluster:"
+                      , "    server: https://127.0.0.1:26443"
+                      , "    certificate-authority-data: " ++ encoded
+                      , "contexts:"
+                      , "- name: kind-prodbox-t-run"
+                      , "  context:"
+                      , "    cluster: kind-prodbox-t-run"
+                      , "    user: kind-prodbox-t-run"
+                      , "users:"
+                      , "- name: kind-prodbox-t-run"
+                      , "  user:"
+                      , "    client-certificate-data: Y2VydA=="
+                      , "    client-key-data: a2V5"
+                      ]
               createDirectoryIfMissing True controlDir
               setFileMode controlDir 0o700
               writeFile kubeconfig (kubeDocument "Y2E=")
               setFileMode kubeconfig 0o600
               let checkCa expected = do
                     observed <- withKindKubeconfigSnapshotBound statusBootstrap $ \config _ ->
-                      withRecoveredKindOperation statusBootstrap operation
+                      withRecoveredKindOperation
+                        statusBootstrap
+                        operation
                         (observeNodeCaBindingUnderLease statusBootstrap operation nodeId config)
                     observed `shouldBe` Right (KindOperationCallbackReturned expected)
               checkCa True
@@ -2560,8 +3116,21 @@ integrationCliSuite = do
                 other -> fail ("slow node observation was unconfirmed: " ++ show other)
               slowCa <- withKindKubeconfigSnapshotBound statusBootstrap $ \config _ ->
                 withRecoveredKindOperation statusBootstrap operation $ \stable ->
-                  observeNodeCaBindingUnderLease statusBootstrap operation nodeId config (threadDelay 300000 >> stable)
+                  observeNodeCaBindingUnderLease
+                    statusBootstrap
+                    operation
+                    nodeId
+                    config
+                    (threadDelay 300000 >> stable)
               slowCa `shouldBe` Right (KindOperationCallbackReturned True)
+              caChecks <- newIORef (0 :: Int)
+              changedCa <- withKindKubeconfigSnapshotBound statusBootstrap $ \config _ ->
+                withRecoveredKindOperation statusBootstrap operation $ \stable ->
+                  observeNodeCaBindingUnderLease statusBootstrap operation nodeId config $ do
+                    held <- stable
+                    first <- atomicModifyIORef' caChecks (\count -> (count + 1, count == 0))
+                    pure (held && first)
+              changedCa `shouldBe` Right (KindOperationCallbackReturned False)
               checks <- newIORef (0 :: Int)
               changedNode <- withRecoveredKindOperation statusBootstrap operation $ \stable ->
                 observeNodeCreateUnderLease statusBootstrap operation $ do
@@ -2839,7 +3408,7 @@ integrationCliSuite = do
               _ -> inspected
         parseDockerNodeContainer bootstrap nodeInput nodeId changedGeneration
           `shouldBe` Right DockerNodeContainerConflict
-        withDockerNodeInspectFixture socketPath nodeId (Just (LazyBS8.toStrict (Aeson.encode inspected))) $ \requests -> do
+        withDockerNodeInspectFixture socketPath nodeId (Right (LazyBS8.toStrict (Aeson.encode inspected))) $ \requests -> do
           result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ -> do
             inspectDockerSessionKindNode session bootstrap nodeInput "invalid"
               `shouldReturn` Left DockerConnectedInfoInvalid
@@ -2849,7 +3418,7 @@ integrationCliSuite = do
           request <- takeMVar requests
           request `shouldBe` ("GET /containers/" ++ nodeId ++ "/json HTTP/1.1")
         removeFile socketPath
-        withDockerNodeInspectFixture socketPath nodeId Nothing $ \requests -> do
+        withDockerNodeInspectFixture socketPath nodeId (Left BS8.empty) $ \requests -> do
           result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ -> inspectDockerSessionKindNode session bootstrap nodeInput nodeId
           result
             `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted (Left DockerConnectedInfoStatus))
@@ -3901,161 +4470,201 @@ integrationCliSuite = do
               `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted DockerNodeContainerCreateUnconfirmed)
             void (takeMVar requests)
         removeFile socketPath
-        forM_ ["remove", "blind", "deny", "start-after-remove"] $ \mode ->
-          withSystemTempDirectory "prodbox-node-remove" $ \removeDirectory -> do
-            let removeSocket = removeDirectory </> "docker.sock"
-                removeSelected = removeDirectory </> "selected.dhall"
-                removeDocument = Text.unpack (Text.replace (Text.pack directory) (Text.pack removeDirectory) (Text.pack document))
-            writeFile removeSelected removeDocument
-            removeBootstrap <- readBootstrapProjection removeSelected >>= either (fail . show) pure
-            prepareFreshScope (bootstrapScope removeBootstrap) generation `shouldReturn` FreshScopePrepared
-            let removeRoot = scopeRoot (bootstrapScope removeBootstrap)
-                removeArgs =
-                  map
-                    ( \arg ->
-                        if arg == "--volume=" ++ rootPath ++ ":/var/lib/prodbox"
-                          then "--volume=" ++ removeRoot ++ ":/var/lib/prodbox"
-                          else arg
-                    )
-                    nodeArgs
-                removeInput = nodeInput {nodeCreateArguments = removeArgs}
-                containerId = replicate 64 'c'
-                nodeBody =
-                  pure
-                    ( LazyBS8.toStrict
-                        ( Aeson.encode
-                            (nodeInspect image (replicate 64 'c') name "/var/lib/docker/volumes/example/_data" removeRoot)
-                        )
-                    )
-            body <- nodeBody
-            let listing =
-                  if mode == "blind"
-                    then BS8.pack "[]"
-                    else
-                      BS8.pack
-                        ( "[{\"Id\":\""
-                            ++ containerId
-                            ++ "\",\"Names\":[\"/prodbox-t-run-control-plane\"],\"Image\":\"example\",\"ImageID\":\"sha256:"
-                            ++ replicate 64 'a'
-                            ++ "\",\"Command\":\"\",\"Created\":1,\"Ports\":[],\"Labels\":{},\"State\":\"running\",\"Status\":\"Up\",\"HostConfig\":{},\"NetworkSettings\":{\"Networks\":{}},\"Mounts\":[]}]"
-                        )
-            withDockerDaemonFixtureControlVolumeAndNode
-              removeSocket
-              False
-              (const (pure ()))
-              (pure False)
-              listing
-              (BS8.pack "[]")
-              (pure True)
-              Nothing
-              (pure (BS8.pack "{\"Volumes\":[],\"Warnings\":[]}"))
-              (Just (containerId, body))
-              $ \requests -> do
-                let effects = filter ("DELETE /containers/" `isPrefixOf`) <$> readMVar requests
-                socketIdentity <-
-                  observeDockerSocketIdentity removeSocket >>= maybe (fail "missing fixture socket") pure
-                proposal <-
-                  maybe
-                    (fail "invalid node intent")
+        forM_
+          ["remove", "slow-remove", "resume-remove", "blocked-retry", "blind", "deny", "start-after-remove"]
+          $ \mode ->
+            withSystemTempDirectory "prodbox-node-remove" $ \removeDirectory -> do
+              let removeSocket = removeDirectory </> "docker.sock"
+                  removeSelected = removeDirectory </> "selected.dhall"
+                  removeDocument = Text.unpack (Text.replace (Text.pack directory) (Text.pack removeDirectory) (Text.pack document))
+              writeFile removeSelected removeDocument
+              removeBootstrap <- readBootstrapProjection removeSelected >>= either (fail . show) pure
+              prepareFreshScope (bootstrapScope removeBootstrap) generation `shouldReturn` FreshScopePrepared
+              let removeRoot = scopeRoot (bootstrapScope removeBootstrap)
+                  removeArgs =
+                    map
+                      ( \arg ->
+                          if arg == "--volume=" ++ rootPath ++ ":/var/lib/prodbox"
+                            then "--volume=" ++ removeRoot ++ ":/var/lib/prodbox"
+                            else arg
+                      )
+                      nodeArgs
+                  removeInput = nodeInput {nodeCreateArguments = removeArgs}
+                  containerId = replicate 64 'c'
+                  nodeBody =
                     pure
-                    (mkKindNodeCreateIntent removeBootstrap removeInput (DockerDaemonObserved "daemon-a" socketIdentity))
-                withNewKindOperation
-                  removeBootstrap
-                  operation
-                  ( \stable -> do
-                      recordKindNodeCreateIntent removeBootstrap proposal stable `shouldReturn` NodeCreateIntentRecorded
-                      recordKindNodeCreateAttempt removeBootstrap proposal stable `shouldReturn` NodeCreateAttemptRecorded
-                      recordKindNodeCreateResult
-                        removeBootstrap
-                        proposal
-                        (DockerNodeContainerCreateReply 201 (Just containerId))
-                        stable
-                        `shouldReturn` NodeCreateResultRecorded
-                      when (mode == "start-after-remove") $
-                        recordKindNodeRemoveAttempt removeBootstrap proposal containerId stable
-                          `shouldReturn` NodeRemoveAttemptRecorded
-                  )
-                  `shouldReturn` KindOperationCallbackReturned ()
-                if mode == "start-after-remove"
-                  then do
-                    result <- withNewConnectedKindNodeStart removeBootstrap operation (\_ _ _ _ -> pure True)
-                    result
-                      `shouldBe` KindOperationCallbackReturned
-                        ( DockerPeerCompleted
-                            (DockerConnectedInfoCompleted (NodeStartActionRemovalRefused NodeRemoveAttemptMatches))
-                        )
-                    effects `shouldReturn` []
-                  else do
-                    let admit candidate actual _ _ = pure (mode /= "deny" && candidate == proposal && actual == containerId)
-                    result <- withNewConnectedKindNodeRemove removeBootstrap operation admit
-                    if mode == "remove"
-                      then do
-                        result
-                          `shouldBe` KindOperationCallbackReturned
-                            ( DockerPeerCompleted
-                                ( DockerConnectedInfoCompleted
-                                    (NodeRemoveActionReturned (DockerNodeContainerRemoveReply 204) NodeRemoveResultRecorded)
-                                )
-                            )
-                        effects `shouldReturn` ["DELETE /containers/" ++ containerId ++ "?force=1&v=1 HTTP/1.1"]
-                        withRecoveredKindOperation
+                      ( LazyBS8.toStrict
+                          ( Aeson.encode
+                              (nodeInspect image (replicate 64 'c') name "/var/lib/docker/volumes/example/_data" removeRoot)
+                          )
+                      )
+              body <- nodeBody
+              let listing =
+                    if mode == "blind"
+                      then BS8.pack "[]"
+                      else
+                        BS8.pack
+                          ( "[{\"Id\":\""
+                              ++ containerId
+                              ++ "\",\"Names\":[\"/prodbox-t-run-control-plane\"],\"Image\":\"example\",\"ImageID\":\"sha256:"
+                              ++ replicate 64 'a'
+                              ++ "\",\"Command\":\"\",\"Created\":1,\"Ports\":[],\"Labels\":{},\"State\":\"running\",\"Status\":\"Up\",\"HostConfig\":{},\"NetworkSettings\":{\"Networks\":{}},\"Mounts\":[]}]"
+                          )
+              withDockerDaemonFixtureControlVolumeAndNode
+                removeSocket
+                False
+                (const (pure ()))
+                (pure False)
+                listing
+                (BS8.pack "[]")
+                (pure True)
+                Nothing
+                (pure (BS8.pack "{\"Volumes\":[],\"Warnings\":[]}"))
+                (Just (containerId, body))
+                $ \requests -> do
+                  let effects = filter ("DELETE /containers/" `isPrefixOf`) <$> readMVar requests
+                  socketIdentity <-
+                    observeDockerSocketIdentity removeSocket >>= maybe (fail "missing fixture socket") pure
+                  proposal <-
+                    maybe
+                      (fail "invalid node intent")
+                      pure
+                      (mkKindNodeCreateIntent removeBootstrap removeInput (DockerDaemonObserved "daemon-a" socketIdentity))
+                  withNewKindOperation
+                    removeBootstrap
+                    operation
+                    ( \stable -> do
+                        recordKindNodeCreateIntent removeBootstrap proposal stable `shouldReturn` NodeCreateIntentRecorded
+                        recordKindNodeCreateAttempt removeBootstrap proposal stable `shouldReturn` NodeCreateAttemptRecorded
+                        recordKindNodeCreateResult
                           removeBootstrap
-                          operation
-                          (observeKindNodeRemoveControl removeBootstrap proposal containerId)
-                          `shouldReturn` KindOperationCallbackReturned NodeRemoveControlMatches
-                        withRecoveredKindOperation
-                          removeBootstrap
-                          operation
-                          (observeKindNodeRemoveResult removeBootstrap proposal containerId)
-                          `shouldReturn` KindOperationCallbackReturned (NodeRemoveResultObserved (DockerNodeContainerRemoveReply 204))
-                        withRecoveredKindOperation
-                          removeBootstrap
-                          operation
-                          (\stable -> recordKindNodeRemoveAttempt removeBootstrap proposal containerId stable)
-                          `shouldReturn` KindOperationCallbackReturned NodeRemoveAttemptAlreadyExists
-                        let controlPath = removeRoot </> "kind-node-remove-positive-control.json"
-                        writeFile controlPath "{\"kind\":1,\"kind\":1}"
-                        withRecoveredKindOperation
-                          removeBootstrap
-                          operation
-                          (observeKindNodeRemoveControl removeBootstrap proposal containerId)
-                          `shouldReturn` KindOperationCallbackReturned NodeRemoveControlInvalid
-                        withRecoveredKindOperation
-                          removeBootstrap
-                          operation
-                          (observeKindNodeRemoveAttempt removeBootstrap proposal containerId)
-                          `shouldReturn` KindOperationCallbackReturned NodeRemoveAttemptMatches
-                        removeFile controlPath
-                        withRecoveredKindOperation
-                          removeBootstrap
-                          operation
-                          (observeKindNodeRemoveControl removeBootstrap proposal containerId)
-                          `shouldReturn` KindOperationCallbackReturned NodeRemoveControlMissing
-                        withRecoveredKindOperation
-                          removeBootstrap
-                          operation
-                          (observeKindNodeRemoveResult removeBootstrap proposal containerId)
-                          `shouldReturn` KindOperationCallbackReturned (NodeRemoveResultObserved (DockerNodeContainerRemoveReply 204))
-                      else do
-                        result
-                          `shouldBe` KindOperationCallbackReturned
-                            ( DockerPeerCompleted
-                                ( DockerConnectedInfoCompleted
-                                    ( if mode == "blind"
-                                        then
-                                          NodeRemoveActionPositiveControlRefused
-                                            (NodeRemovalReadbackSampled (NodeRemovalInventory False [] []))
-                                        else NodeRemoveActionAdmissionRefused
-                                    )
-                                )
-                            )
-                        effects `shouldReturn` []
-                        doesFileExist (removeRoot </> "kind-node-remove-positive-control.json") `shouldReturn` False
-                        withRecoveredKindOperation
-                          removeBootstrap
-                          operation
-                          (observeKindNodeRemoveAttempt removeBootstrap proposal containerId)
-                          `shouldReturn` KindOperationCallbackReturned NodeRemoveAttemptMissing
+                          proposal
+                          (DockerNodeContainerCreateReply 201 (Just containerId))
+                          stable
+                          `shouldReturn` NodeCreateResultRecorded
+                        when (mode `elem` ["start-after-remove", "resume-remove", "blocked-retry"]) $
+                          recordKindNodeRemoveAttempt removeBootstrap proposal containerId stable
+                            `shouldReturn` NodeRemoveAttemptRecorded
+                    )
+                    `shouldReturn` KindOperationCallbackReturned ()
+                  if mode == "start-after-remove"
+                    then do
+                      result <- withNewConnectedKindNodeStart removeBootstrap operation (\_ _ _ _ -> pure True)
+                      result
+                        `shouldBe` KindOperationCallbackReturned
+                          ( DockerPeerCompleted
+                              (DockerConnectedInfoCompleted (NodeStartActionRemovalRefused NodeRemoveAttemptMatches))
+                          )
+                      effects `shouldReturn` []
+                    else
+                      if mode `elem` ["resume-remove", "blocked-retry"]
+                        then do
+                          when (mode == "blocked-retry") $
+                            writeFile (removeRoot </> "kind-node-remove-result.json") "{}"
+                          let runRetry =
+                                withRecoveredConnectedKindNodeRemoveGuarded removeBootstrap operation id (\_ _ _ stable -> stable)
+                              observed action = KindOperationCallbackReturned (DockerPeerCompleted (DockerConnectedInfoCompleted action))
+                          if mode == "blocked-retry"
+                            then do
+                              runRetry `shouldReturn` observed (NodeRemoveActionAttemptRefused NodeRemoveAttemptRefused)
+                              effects `shouldReturn` []
+                            else do
+                              runRetry
+                                `shouldReturn` observed (NodeRemoveActionReturned (DockerNodeContainerRemoveReply 204) NodeRemoveResultRecorded)
+                              withRecoveredKindOperation
+                                removeBootstrap
+                                operation
+                                (observeKindNodeRemoveResult removeBootstrap proposal containerId)
+                                `shouldReturn` KindOperationCallbackReturned NodeRemoveResultMissing
+                              withRecoveredKindOperation
+                                removeBootstrap
+                                operation
+                                (observeKindNodeRemoveResultFor RetryNodeRemoval removeBootstrap proposal containerId)
+                                `shouldReturn` KindOperationCallbackReturned (NodeRemoveResultObserved (DockerNodeContainerRemoveReply 204))
+                              runRetry `shouldReturn` observed (NodeRemoveActionAttemptRefused NodeRemoveAttemptAlreadyExists)
+                              effects `shouldReturn` ["DELETE /containers/" ++ containerId ++ "?force=1&v=1 HTTP/1.1"]
+                        else do
+                          admissions <- newIORef (0 :: Int)
+                          let admit candidate actual _ _ = do
+                                when (mode == "slow-remove") $
+                                  atomicModifyIORef' admissions (\count -> (count + 1, ()))
+                                pure (mode /= "deny" && candidate == proposal && actual == containerId)
+                              slowSettlement stable = do
+                                count <- readIORef admissions
+                                when (count >= 2) (threadDelay 1300000)
+                                stable
+                          result <-
+                            if mode == "slow-remove"
+                              then withNewConnectedKindNodeRemoveGuarded removeBootstrap operation slowSettlement admit
+                              else withNewConnectedKindNodeRemove removeBootstrap operation admit
+                          if mode `elem` ["remove", "slow-remove"]
+                            then do
+                              result
+                                `shouldBe` KindOperationCallbackReturned
+                                  ( DockerPeerCompleted
+                                      ( DockerConnectedInfoCompleted
+                                          (NodeRemoveActionReturned (DockerNodeContainerRemoveReply 204) NodeRemoveResultRecorded)
+                                      )
+                                  )
+                              effects `shouldReturn` ["DELETE /containers/" ++ containerId ++ "?force=1&v=1 HTTP/1.1"]
+                              withRecoveredKindOperation
+                                removeBootstrap
+                                operation
+                                (observeKindNodeRemoveControl removeBootstrap proposal containerId)
+                                `shouldReturn` KindOperationCallbackReturned NodeRemoveControlMatches
+                              withRecoveredKindOperation
+                                removeBootstrap
+                                operation
+                                (observeKindNodeRemoveResult removeBootstrap proposal containerId)
+                                `shouldReturn` KindOperationCallbackReturned (NodeRemoveResultObserved (DockerNodeContainerRemoveReply 204))
+                              withRecoveredKindOperation
+                                removeBootstrap
+                                operation
+                                (\stable -> recordKindNodeRemoveAttempt removeBootstrap proposal containerId stable)
+                                `shouldReturn` KindOperationCallbackReturned NodeRemoveAttemptAlreadyExists
+                              let controlPath = removeRoot </> "kind-node-remove-positive-control.json"
+                              writeFile controlPath "{\"kind\":1,\"kind\":1}"
+                              withRecoveredKindOperation
+                                removeBootstrap
+                                operation
+                                (observeKindNodeRemoveControl removeBootstrap proposal containerId)
+                                `shouldReturn` KindOperationCallbackReturned NodeRemoveControlInvalid
+                              withRecoveredKindOperation
+                                removeBootstrap
+                                operation
+                                (observeKindNodeRemoveAttempt removeBootstrap proposal containerId)
+                                `shouldReturn` KindOperationCallbackReturned NodeRemoveAttemptMatches
+                              removeFile controlPath
+                              withRecoveredKindOperation
+                                removeBootstrap
+                                operation
+                                (observeKindNodeRemoveControl removeBootstrap proposal containerId)
+                                `shouldReturn` KindOperationCallbackReturned NodeRemoveControlMissing
+                              withRecoveredKindOperation
+                                removeBootstrap
+                                operation
+                                (observeKindNodeRemoveResult removeBootstrap proposal containerId)
+                                `shouldReturn` KindOperationCallbackReturned (NodeRemoveResultObserved (DockerNodeContainerRemoveReply 204))
+                            else do
+                              result
+                                `shouldBe` KindOperationCallbackReturned
+                                  ( DockerPeerCompleted
+                                      ( DockerConnectedInfoCompleted
+                                          ( if mode == "blind"
+                                              then
+                                                NodeRemoveActionPositiveControlRefused
+                                                  (NodeRemovalReadbackSampled (NodeRemovalInventory False [] []))
+                                              else NodeRemoveActionAdmissionRefused
+                                          )
+                                      )
+                                  )
+                              effects `shouldReturn` []
+                              doesFileExist (removeRoot </> "kind-node-remove-positive-control.json") `shouldReturn` False
+                              withRecoveredKindOperation
+                                removeBootstrap
+                                operation
+                                (observeKindNodeRemoveAttempt removeBootstrap proposal containerId)
+                                `shouldReturn` KindOperationCallbackReturned NodeRemoveAttemptMissing
         forM_
           [ (Just 204, DockerNodeContainerRemoveReply 204)
           , (Just 404, DockerNodeContainerRemoveReply 404)
@@ -4227,9 +4836,18 @@ integrationCliSuite = do
               recordKindNodeVolumeIntent removalBootstrap intent stable `shouldReturn` NodeVolumeIntentRecorded
               recordKindNodeVolumeAttempt removalBootstrap intent stable `shouldReturn` NodeVolumeAttemptRecorded
             prepared `shouldBe` KindOperationCallbackReturned ()
-            let admit _ _ = pure True
-                remove session stable = removeDockerSessionNodeVarVolume session removalBootstrap operation stable
-            removed <- withNewConnectedKindNodeVolumeRemoval removalBootstrap operation admit remove
+            effectReturned <- newIORef False
+            let admit _ stable = stable
+                remove session stable = do
+                  result <- removeDockerSessionNodeVarVolume session removalBootstrap operation stable
+                  writeIORef effectReturned True
+                  pure result
+                slowClosing stable = do
+                  returned <- readIORef effectReturned
+                  when returned (threadDelay 900000)
+                  stable
+            removed <-
+              withNewConnectedKindNodeVolumeRemovalGuarded removalBootstrap operation slowClosing admit remove
             removed
               `shouldBe` KindOperationCallbackReturned
                 ( DockerPeerCompleted
@@ -4378,6 +4996,36 @@ integrationCliSuite = do
                 readDockerSessionKindNetworkId session scope (replicate 64 'c')
                   `shouldReturn` Left DockerConnectedInfoInvalid
             result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+
+    it "requires a visible bridge before observing a scoped network name" $
+      withSystemTempDirectory "prodbox-network-name-control" $ \directory -> do
+        let path = directory </> "docker.sock"
+            networkId = replicate 64 'b'
+            selected = BS8.pack ("[{\"Name\":\"prodbox-t-run\",\"Id\":\"" ++ networkId ++ "\"}]")
+            empty = BS8.pack "[]"
+        scope <- either (fail . show) pure (deploymentScope directory Test "run" 26443)
+        forM_
+          [ ("-blind", False, empty, Nothing)
+          , ("-empty", True, empty, Just [])
+          , ("-present", True, selected, Just [networkId])
+          ]
+          $ \(suffix, visible, body, expected) -> do
+            let selectedPath = path ++ suffix
+            withDockerDaemonFixtureControl
+              selectedPath
+              False
+              (const (pure ()))
+              (pure False)
+              empty
+              body
+              (pure visible)
+              $ \requests -> do
+                result <- withConnectedDockerInfo 5000000 selectedPath $ \session _ _ ->
+                  readDockerSessionKindNetworksControlled session scope
+                result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted (Right expected))
+                observed <- readMVar requests
+                length (filter (isInfixOf "/networks?") observed)
+                  `shouldBe` if visible then 2 else 1
 
     it "observes only the built-in bridge MTU and rejects invalid options" $
       withSystemTempDirectory "prodbox-gated-bridge" $ \directory -> do
@@ -4728,8 +5376,10 @@ integrationCliSuite = do
             selected = directory </> "selected.dhall"
             operation = replicate 32 'b'
             document =
-              "{ bootstrap = { schema_version = 2, project_anchor = \"" ++ directory
-                ++ "\", runtime_socket = \"" ++ path
+              "{ bootstrap = { schema_version = 2, project_anchor = \""
+                ++ directory
+                ++ "\", runtime_socket = \""
+                ++ path
                 ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
                 ++ replicate 32 'a'
                 ++ "\", api_port = 26443, node_image = \"kindest/node@sha256:"
@@ -4743,8 +5393,13 @@ integrationCliSuite = do
         prepareFreshScope (bootstrapScope bootstrap) (replicate 32 'a') `shouldReturn` FreshScopePrepared
         withDockerNetworkCreateFixture path True $ \received -> do
           identity <- observeDockerSocketIdentity path >>= maybe (fail "missing socket") pure
-          intent <- maybe (fail "invalid network intent") pure $
-            mkKindNetworkIntent operation "fc00:c1c8:9c54:6b75::/64" (Just 1500) (DockerDaemonObserved "daemon-a" identity)
+          intent <-
+            maybe (fail "invalid network intent") pure $
+              mkKindNetworkIntent
+                operation
+                "fc00:c1c8:9c54:6b75::/64"
+                (Just 1500)
+                (DockerDaemonObserved "daemon-a" identity)
           withNewKindOperation bootstrap operation (recordKindNetworkIntent bootstrap intent)
             `shouldReturn` KindOperationCallbackReturned NetworkIntentRecorded
           called <- newIORef False
@@ -4758,8 +5413,9 @@ integrationCliSuite = do
         removeFile path
         withDockerNodeVolumeCreateFixture path Nothing $ \received -> do
           identity <- observeDockerSocketIdentity path >>= maybe (fail "missing socket") pure
-          intent <- maybe (fail "invalid volume intent") pure $
-            mkKindNodeVolumeIntent operation (DockerDaemonObserved "daemon-a" identity)
+          intent <-
+            maybe (fail "invalid volume intent") pure $
+              mkKindNodeVolumeIntent operation (DockerDaemonObserved "daemon-a" identity)
           withRecoveredKindOperation bootstrap operation (recordKindNodeVolumeIntent bootstrap intent)
             `shouldReturn` KindOperationCallbackReturned NodeVolumeIntentRecorded
           called <- newIORef False
@@ -4776,10 +5432,15 @@ integrationCliSuite = do
         claim <- claimEmptyFixtureRoot directory >>= maybe (fail "cannot claim empty fixture root") pure
         let path = directory </> "docker.sock"
             selected = directory </> "selected.dhall"
-            toolDeclaration = ", kind_tool = { path = \"artifacts/kind\", digest = \"sha256:" ++ replicate 64 'c' ++ "\", maximum_bytes = 4096 }"
+            toolDeclaration =
+              ", kind_tool = { path = \"artifacts/kind\", digest = \"sha256:"
+                ++ replicate 64 'c'
+                ++ "\", maximum_bytes = 4096 }"
             document =
-              "{ bootstrap = { schema_version = 3, project_anchor = \"" ++ directory
-                ++ "\", runtime_socket = \"" ++ path
+              "{ bootstrap = { schema_version = 3, project_anchor = \""
+                ++ directory
+                ++ "\", runtime_socket = \""
+                ++ path
                 ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
                 ++ replicate 32 'a'
                 ++ "\", api_port = 36443, node_image = \"kindest/node@sha256:"
@@ -4787,17 +5448,26 @@ integrationCliSuite = do
                 ++ "\", http_host_port = 38080, http_node_port = 30080, https_host_port = 38443, https_node_port = 30443, "
                 ++ "node_artifact = { path = \"artifacts/node.tar\", digest = \"sha256:"
                 ++ replicate 64 'a'
-                ++ "\", maximum_bytes = 4096 }" ++ toolDeclaration ++ ", listen_address = \"127.0.0.1\" } }"
-            incomplete = Text.unpack (Text.replace (Text.pack "schema_version = 3") (Text.pack "schema_version = 2") $
-              Text.replace (Text.pack toolDeclaration) Text.empty (Text.pack document))
+                ++ "\", maximum_bytes = 4096 }"
+                ++ toolDeclaration
+                ++ ", listen_address = \"127.0.0.1\" } }"
+            incomplete =
+              Text.unpack
+                ( Text.replace (Text.pack "schema_version = 3") (Text.pack "schema_version = 2") $
+                    Text.replace (Text.pack toolDeclaration) Text.empty (Text.pack document)
+                )
         writeFile selected document
         bootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
         withDockerDaemonFixture path False $ \requests -> do
           writeFile selected incomplete
-          invalid <- timeout 30000000 $
-            readCreateProcessWithExitCode
-              ((proc "./.build/prodbox" ["--config", selected, "control", "reconcile"])
-                {env = Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")]}) ""
+          invalid <-
+            timeout 30000000 $
+              readCreateProcessWithExitCode
+                ( (proc "./.build/prodbox" ["--config", selected, "control", "reconcile"])
+                    { env = Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")]
+                    }
+                )
+                ""
           case invalid of
             Just (ExitFailure 1, output, errors) -> (output ++ errors) `shouldContain` "ReconcileFamilyConfigurationRefused"
             other -> fail ("incomplete bootstrap was not refused: " ++ show other)
@@ -4806,34 +5476,53 @@ integrationCliSuite = do
           writeFile selected document
           -- The manager's original hard deadline may have to expire before
           -- retirement is observable; do not kill the public caller first.
-          result <- timeout 650000000 $
-            readCreateProcessWithExitCode
-              ((proc "./.build/prodbox" ["--config", selected, "control", "reconcile"])
-                {env = Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")]}) ""
+          result <-
+            timeout 650000000 $
+              readCreateProcessWithExitCode
+                ( (proc "./.build/prodbox" ["--config", selected, "control", "reconcile"])
+                    { env = Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")]
+                    }
+                )
+                ""
           report <- case result of
             Just (ExitFailure 1, output, errors) -> pure (output ++ errors)
             other -> fail ("unexpected owner-first reconcile result: " ++ show other)
           intent <- observeKindOwnerFamilyIntent bootstrap
-          operation <- case intent of KindIntentMatches current -> pure current; other -> fail ("owner-first intent missing: " ++ show other)
+          operation <- case intent of
+            KindIntentMatches current -> pure current
+            other -> fail ("owner-first intent missing: " ++ show other)
           seen <- readMVar requests
-          filter (\request -> "POST " `isPrefixOf` request || "DELETE " `isPrefixOf` request) seen `shouldBe` []
+          filter (\request -> "POST " `isPrefixOf` request || "DELETE " `isPrefixOf` request) seen
+            `shouldBe` []
           let root = scopeRoot (bootstrapScope bootstrap)
-          mapM_ (\name -> doesFileExist (root </> name) `shouldReturn` False)
-            ["node-image-intent.json", "kind-network-intent.json", "kind-node-var-volume-intent.json", "kind-node-create-intent.json"]
+          mapM_
+            (\name -> doesFileExist (root </> name) `shouldReturn` False)
+            [ "node-image-intent.json"
+            , "kind-network-intent.json"
+            , "kind-node-var-volume-intent.json"
+            , "kind-node-create-intent.json"
+            ]
           let foreignOperation = if operation == replicate 32 'f' then replicate 32 'e' else replicate 32 'f'
           cleanupNeverSentKindFixturePublication claim bootstrap foreignOperation `shouldReturn` False
           withSystemTempDirectory "prodbox-foreign-fixture" $ \foreignRoot -> do
-            foreignClaim <- claimEmptyFixtureRoot foreignRoot >>= maybe (fail "cannot claim foreign fixture root") pure
+            foreignClaim <-
+              claimEmptyFixtureRoot foreignRoot >>= maybe (fail "cannot claim foreign fixture root") pure
             cleanupNeverSentKindFixturePublication foreignClaim bootstrap operation `shouldReturn` False
-          let noEffects = null . filter (\request -> "POST " `isPrefixOf` request || "DELETE " `isPrefixOf` request) <$> readMVar requests
-          if "KindFamilyLaunchUnsentRetired" `isInfixOf` report then do
-            cleanupSettledKindFixturePublication claim bootstrap operation noEffects `shouldReturn` False
-            cleanupNeverSentKindFixturePublication claim bootstrap operation `shouldReturn` True
-            fail ("family was refused before the manager submission: " ++ report)
-          else do
-            unless ("KindFamilyLaunchPossiblySent" `isInfixOf` report || "family completion or probe cleanup unconfirmed" `isInfixOf` report) $
-              fail ("family submission disposition was not observable: " ++ report)
-            cleanupSettledKindFixturePublication claim bootstrap operation noEffects `shouldReturn` True
+          let noEffects =
+                null . filter (\request -> "POST " `isPrefixOf` request || "DELETE " `isPrefixOf` request)
+                  <$> readMVar requests
+          if "KindFamilyLaunchUnsentRetired" `isInfixOf` report
+            then do
+              cleanupSettledKindFixturePublication claim bootstrap operation noEffects `shouldReturn` False
+              cleanupNeverSentKindFixturePublication claim bootstrap operation `shouldReturn` True
+              fail ("family was refused before the manager submission: " ++ report)
+            else do
+              unless
+                ( "KindFamilyLaunchPossiblySent" `isInfixOf` report
+                    || "family completion or probe cleanup unconfirmed" `isInfixOf` report
+                )
+                $ fail ("family submission disposition was not observable: " ++ report)
+              cleanupSettledKindFixturePublication claim bootstrap operation noEffects `shouldReturn` True
 
     it "submits one scoped network request and retains a lost reply as unconfirmed" $
       forM_ [True, False] $ \reply ->
@@ -6985,9 +7674,10 @@ integrationCliSuite = do
                       socketIdentity <-
                         observeDockerSocketIdentity (anchor </> "docker.sock")
                           >>= maybe (fail "missing fixture socket") pure
-                      let prepareImage = if caseName == "connected-family"
-                            then withRecoveredConnectedNodeImageRecordedFamilyAttempt projection (replicate 32 'b') id
-                            else withNewConnectedNodeImageRecordedAttempt projection (replicate 32 'b')
+                      let prepareImage =
+                            if caseName == "connected-family"
+                              then withRecoveredConnectedNodeImageRecordedFamilyAttempt projection (replicate 32 'b') id
+                              else withNewConnectedNodeImageRecordedAttempt projection (replicate 32 'b')
                       prepared <- prepareImage $ \verified expected size heldFd session stable -> do
                         writeIORef called True
                         stable `shouldReturn` True
@@ -11736,7 +12426,7 @@ withDockerNetworkCreateFixture path reply action =
       (const (action received))
 
 withDockerNodeInspectFixture
-  :: FilePath -> String -> Maybe BS8.ByteString -> (MVar String -> IO a) -> IO a
+  :: FilePath -> String -> Either BS8.ByteString BS8.ByteString -> (MVar String -> IO a) -> IO a
 withDockerNodeInspectFixture path identifier nodeBody action =
   bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
     bind listener (SockAddrUnix path)
@@ -11761,15 +12451,22 @@ withDockerNodeInspectFixture path identifier nodeBody action =
             $ fail "invalid fixture node read"
           putMVar received (takeWhile (/= '\r') (BS8.unpack request))
           case nodeBody of
-            Just body -> sendAll connection (response "200 OK" body)
-            Nothing -> sendAll connection (response "404 Not Found" BS8.empty)
+            Right body -> sendAll connection (response "200 OK" body)
+            Left body -> sendAll connection (response "404 Not Found" body)
     bracket
       (forkIO (void (try serve :: IO (Either SomeException ()))))
       killThread
       (const (action received))
 
 withDockerAbsenceRemovalFixture
-  :: FilePath -> String -> String -> BS8.ByteString -> Maybe Bool -> IO Bool -> (MVar (String, Bool) -> IO a) -> IO a
+  :: FilePath
+  -> String
+  -> String
+  -> BS8.ByteString
+  -> Maybe Bool
+  -> IO Bool
+  -> (MVar (String, Bool) -> IO a)
+  -> IO a
 withDockerAbsenceRemovalFixture path name identifier controlBody reply attemptExists action =
   bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
     bind listener (SockAddrUnix path)
@@ -11792,7 +12489,9 @@ withDockerAbsenceRemovalFixture path name identifier controlBody reply attemptEx
                   then sendAll connection (response controlBody) >> inspections
                   else do
                     let line = takeWhile (/= '\r') (BS8.unpack request)
-                    unless (line == "DELETE /containers/" ++ identifier ++ "?force=1&v=1 HTTP/1.1") (fail "unexpected control request")
+                    unless
+                      (line == "DELETE /containers/" ++ identifier ++ "?force=1&v=1 HTTP/1.1")
+                      (fail "unexpected control request")
                     recorded <- attemptExists
                     putMVar received (line, recorded)
                     case reply of
@@ -11802,16 +12501,27 @@ withDockerAbsenceRemovalFixture path name identifier controlBody reply attemptEx
                       Just False -> pure ()
                       Nothing -> void (recv connection 1)
           inspections
-    bracket (forkIO (void (try serve :: IO (Either SomeException ())))) killThread (const (action received))
+    bracket
+      (forkIO (void (try serve :: IO (Either SomeException ()))))
+      killThread
+      (const (action received))
 
 withDockerAbsenceCreateFixture
-  :: FilePath -> String -> BS8.ByteString -> Maybe BS8.ByteString -> (MVar BS8.ByteString -> IO a) -> IO a
+  :: FilePath
+  -> String
+  -> BS8.ByteString
+  -> Maybe BS8.ByteString
+  -> (MVar BS8.ByteString -> IO a)
+  -> IO a
 withDockerAbsenceCreateFixture path image imageBody reply action =
   bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
     bind listener (SockAddrUnix path)
     listen listener 1
     received <- newEmptyMVar
-    let response status responseBytes = BS8.pack ("HTTP/1.1 " ++ status ++ "\r\nContent-Length: " ++ show (BS8.length responseBytes) ++ "\r\n\r\n") <> responseBytes
+    let response status responseBytes =
+          BS8.pack
+            ("HTTP/1.1 " ++ status ++ "\r\nContent-Length: " ++ show (BS8.length responseBytes) ++ "\r\n\r\n")
+            <> responseBytes
         headers connection bytes = case BS8.breakSubstring (BS8.pack "\r\n\r\n") bytes of
           (prefix, rest) | not (BS8.null rest) -> pure (prefix, BS8.drop 4 rest)
           _ | BS8.length bytes >= 16384 -> fail "fixture headers too large"
@@ -11829,18 +12539,35 @@ withDockerAbsenceCreateFixture path image imageBody reply action =
           unless (BS8.pack "GET /info HTTP/1.1" `BS8.isPrefixOf` info) (fail "invalid fixture info")
           sendAll connection (response "200 OK" (BS8.pack "{\"ID\":\"daemon-a\"}"))
           (imageRequest, _) <- headers connection BS8.empty
-          unless (BS8.pack ("GET /images/" ++ image ++ "/json HTTP/1.1") `BS8.isPrefixOf` imageRequest) (fail "invalid image request")
+          unless
+            (BS8.pack ("GET /images/" ++ image ++ "/json HTTP/1.1") `BS8.isPrefixOf` imageRequest)
+            (fail "invalid image request")
           sendAll connection (response "200 OK" imageBody)
           (request, initial) <- headers connection BS8.empty
-          unless (BS8.pack "POST /containers/create?name=prodbox-t-run-absence-control HTTP/1.1" `BS8.isPrefixOf` request) (fail "invalid control request")
-          let lengths = [BS8.dropWhile (== ' ') (BS8.drop 15 line) | line <- BS8.lines request, BS8.pack "content-length:" `BS8.isPrefixOf` BS8.map toLower line]
+          unless
+            ( BS8.pack "POST /containers/create?name=prodbox-t-run-absence-control HTTP/1.1"
+                `BS8.isPrefixOf` request
+            )
+            (fail "invalid control request")
+          let lengths =
+                [ BS8.dropWhile (== ' ') (BS8.drop 15 line)
+                | line <- BS8.lines request
+                , BS8.pack "content-length:" `BS8.isPrefixOf` BS8.map toLower line
+                ]
           size <- case lengths of
-            [encoded] -> case BS8.readInt encoded of Just (count, _) | count > 0 && count <= 8192 -> pure count; _ -> fail "invalid control body size"
+            [encoded] -> case BS8.readInt encoded of
+              Just (count, _) | count > 0 && count <= 8192 -> pure count
+              _ -> fail "invalid control body size"
             _ -> fail "missing control body length"
           payload <- body connection size initial
           putMVar received payload
-          case reply of Just responseBody -> sendAll connection (response "201 Created" responseBody); Nothing -> pure ()
-    bracket (forkIO (void (try serve :: IO (Either SomeException ())))) killThread (const (action received))
+          case reply of
+            Just responseBody -> sendAll connection (response "201 Created" responseBody)
+            Nothing -> pure ()
+    bracket
+      (forkIO (void (try serve :: IO (Either SomeException ()))))
+      killThread
+      (const (action received))
 
 withDockerNodeContainerCreateFixture
   :: FilePath -> Maybe BS8.ByteString -> (MVar BS8.ByteString -> IO a) -> IO a
@@ -12218,19 +12945,67 @@ withDockerDaemonFixtureControlVolumeAndNode
   -> (MVar [String] -> IO a)
   -> IO a
 withDockerDaemonFixtureControlVolumeAndNode path conflict hook daemonChanged containerBody networkBody controlVisible volumeResponse volumeList nodeResponse action =
-  withDockerDaemonFixtureControlVolumeAndRemoval path conflict hook daemonChanged containerBody networkBody controlVisible volumeResponse volumeList nodeResponse Nothing action
+  withDockerDaemonFixtureControlVolumeAndRemoval
+    path
+    conflict
+    hook
+    daemonChanged
+    containerBody
+    networkBody
+    controlVisible
+    volumeResponse
+    volumeList
+    nodeResponse
+    Nothing
+    action
 
 withDockerDaemonFixtureControlVolumeAndRemoval
-  :: FilePath -> Bool -> (String -> IO ()) -> IO Bool -> BS8.ByteString -> BS8.ByteString
-  -> IO Bool -> Maybe (String, BS8.ByteString) -> IO BS8.ByteString -> Maybe (String, BS8.ByteString)
-  -> Maybe String -> (MVar [String] -> IO a) -> IO a
+  :: FilePath
+  -> Bool
+  -> (String -> IO ())
+  -> IO Bool
+  -> BS8.ByteString
+  -> BS8.ByteString
+  -> IO Bool
+  -> Maybe (String, BS8.ByteString)
+  -> IO BS8.ByteString
+  -> Maybe (String, BS8.ByteString)
+  -> Maybe String
+  -> (MVar [String] -> IO a)
+  -> IO a
 withDockerDaemonFixtureControlVolumeAndRemoval path conflict hook daemonChanged containerBody networkBody controlVisible volumeResponse volumeList nodeResponse volumeRemoval action =
-  withDockerDaemonFixtureDynamic path conflict hook daemonChanged containerBody networkBody controlVisible volumeResponse volumeList nodeResponse volumeRemoval Nothing Nothing action
+  withDockerDaemonFixtureDynamic
+    path
+    conflict
+    hook
+    daemonChanged
+    containerBody
+    networkBody
+    controlVisible
+    volumeResponse
+    volumeList
+    nodeResponse
+    volumeRemoval
+    Nothing
+    Nothing
+    action
 
 withDockerDaemonFixtureDynamic
-  :: FilePath -> Bool -> (String -> IO ()) -> IO Bool -> BS8.ByteString -> BS8.ByteString
-  -> IO Bool -> Maybe (String, BS8.ByteString) -> IO BS8.ByteString -> Maybe (String, BS8.ByteString)
-  -> Maybe String -> Maybe String -> Maybe (String -> IO BS8.ByteString) -> (MVar [String] -> IO a) -> IO a
+  :: FilePath
+  -> Bool
+  -> (String -> IO ())
+  -> IO Bool
+  -> BS8.ByteString
+  -> BS8.ByteString
+  -> IO Bool
+  -> Maybe (String, BS8.ByteString)
+  -> IO BS8.ByteString
+  -> Maybe (String, BS8.ByteString)
+  -> Maybe String
+  -> Maybe String
+  -> Maybe (String -> IO BS8.ByteString)
+  -> (MVar [String] -> IO a)
+  -> IO a
 withDockerDaemonFixtureDynamic path conflict hook daemonChanged containerBody networkBody controlVisible volumeResponse volumeList nodeResponse volumeRemoval controlRemoval containerReply action =
   bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
     bind listener (SockAddrUnix path)
@@ -12265,8 +13040,9 @@ withDockerDaemonFixtureDynamic path conflict hook daemonChanged containerBody ne
             ["GET", endpoint, _] | endpoint == "/volumes" || "/volumes?" `isPrefixOf` endpoint -> Just <$> volumeList
             _ -> pure Nothing
           containers <- case parts of
-            ["GET", endpoint, _] | "/containers/json" `isInfixOf` endpoint ->
-              Just <$> maybe (pure containerBody) ($ endpoint) containerReply
+            ["GET", endpoint, _]
+              | "/containers/json" `isInfixOf` endpoint ->
+                  Just <$> maybe (pure containerBody) ($ endpoint) containerReply
             _ -> pure Nothing
           let response = case parts of
                 ["GET", endpoint, _] | endpoint == "/volumes" || "/volumes?" `isPrefixOf` endpoint -> (True,) <$> listing
@@ -12276,10 +13052,12 @@ withDockerDaemonFixtureDynamic path conflict hook daemonChanged containerBody ne
                   , endpoint == "/containers/" ++ nodeId ++ "?force=1&v=1" ->
                       Just (False, BS8.empty)
                 ["DELETE", endpoint, _]
-                  | Just volumeId <- volumeRemoval, endpoint == "/volumes/" ++ volumeId ->
+                  | Just volumeId <- volumeRemoval
+                  , endpoint == "/volumes/" ++ volumeId ->
                       Just (False, BS8.empty)
                 ["DELETE", endpoint, _]
-                  | Just controlId <- controlRemoval, endpoint == "/containers/" ++ controlId ++ "?force=1&v=1" ->
+                  | Just controlId <- controlRemoval
+                  , endpoint == "/containers/" ++ controlId ++ "?force=1&v=1" ->
                       Just (False, BS8.empty)
                 ["GET", endpoint, _]
                   | Just (name, body) <- volumeResponse, endpoint == "/volumes/" ++ name -> Just (True, body)
@@ -12287,9 +13065,13 @@ withDockerDaemonFixtureDynamic path conflict hook daemonChanged containerBody ne
                   | Just (nodeId, _) <- nodeResponse
                   , ("/containers/" ++ nodeId ++ "/archive?") `isPrefixOf` endpoint
                   , "ca.crt" `isInfixOf` endpoint ->
-                      Just (True, either (const BS8.empty)
-                        (\archivePath -> LazyBS8.toStrict (Tar.write [TarEntry.fileEntry archivePath (LazyBS8.pack "ca")]))
-                        (TarEntry.toTarPath False "ca.crt"))
+                      Just
+                        ( True
+                        , either
+                            (const BS8.empty)
+                            (\archivePath -> LazyBS8.toStrict (Tar.write [TarEntry.fileEntry archivePath (LazyBS8.pack "ca")]))
+                            (TarEntry.toTarPath False "ca.crt")
+                        )
                 ["GET", endpoint, _]
                   | Just (nodeId, body) <- nodeResponse
                   , endpoint == "/containers/" ++ nodeId ++ "/json" ->
@@ -12301,7 +13083,7 @@ withDockerDaemonFixtureDynamic path conflict hook daemonChanged containerBody ne
                   | "/networks?" `isPrefixOf` endpoint ->
                       Just
                         ( True
-                        , if replicate 64 'd' `isInfixOf` endpoint
+                        , if replicate 64 'd' `isInfixOf` endpoint || "%5Ebridge%24" `isInfixOf` endpoint
                             then
                               if control
                                 then BS8.pack ("[{\"Name\":\"bridge\",\"Id\":\"" ++ replicate 64 'd' ++ "\"}]")
@@ -12384,7 +13166,10 @@ withDockerDaemonFixtureDynamic path conflict hook daemonChanged containerBody ne
                 )
               serveRequests connection
             Just (includeBody, body) -> do
-              let status = if "DELETE /containers/" `isPrefixOf` request || "DELETE /volumes/" `isPrefixOf` request then "204 No Content" else "200 OK"
+              let status =
+                    if "DELETE /containers/" `isPrefixOf` request || "DELETE /volumes/" `isPrefixOf` request
+                      then "204 No Content"
+                      else "200 OK"
               sendAll connection $
                 BS8.pack
                   ( "HTTP/1.1 "

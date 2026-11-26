@@ -25,34 +25,70 @@ module Prodbox.Control.Services
   , startServicePods
   ) where
 
+import Control.Concurrent (threadDelay)
 import Control.Monad (foldM)
+import Data.Aeson ((.!=), (.:), (.:?), (.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Aeson.Types qualified as AesonTypes
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as ByteString8
+import Data.ByteString.Lazy qualified as LazyByteString
 import Data.List (isInfixOf)
 import Data.Text qualified as Text
+import GHC.Clock (getMonotonicTimeNSec)
 import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Config.BootstrapProjection
   ( BootstrapProjection
+  , bootstrapRootGeneration
   , bootstrapRuntimeSocket
   , bootstrapScope
   )
 import Prodbox.Config.DeploymentScope (scopeKindName, scopeRoot)
 import Prodbox.Control.BrokerDeploy (deployBroker, observeBrokerReadiness)
-import Prodbox.Control.DockerIdentity (readDocker)
-import Prodbox.Control.KindNodeBootstrap (writeJournalRecord)
-import Prodbox.Control.KindIntent (KindIntentObservation (KindIntentMatches), observeKindIntent)
+import Prodbox.Control.KindControllerReceipt
+  ( ControllerReceiptObservation (ControllerReceiptObserved)
+  , observeControllerReceipt
+  )
+import Prodbox.Control.KindFamilyRecovery
+  ( KindFamilyRetirementOutcome (KindFamilyRetirementReturned)
+  , verifyKindFamilyRetirement
+  , withKindFamilyRetirement
+  )
+import Prodbox.Control.KindIntent
+  ( KindIntentObservation (KindIntentMatches, KindIntentMissing)
+  , observeKindIntent
+  , observeKindTeardownAdmission
+  )
+import Prodbox.Control.KindKubeconfigFile (withKindKubeconfigSnapshotBound)
+import Prodbox.Control.KindLease
+  ( KindOperationOutcome (KindOperationCallbackReturned)
+  , withRecoveredKindOperation
+  )
+import Prodbox.Control.KindNodeBootstrap
+  ( JournalRecordObservation (..)
+  , observeJournalRecord
+  , writeJournalRecord
+  )
 import Prodbox.Control.ManagementPolicy (managementNamespace, managementPolicyManifest)
+import Prodbox.Control.ManagementRestore (managementRestoreIdle)
 import Prodbox.Control.NetworkEnforcement
   ( EnforcementCleanup (..)
   , EnforcementOutcome (..)
   , enforcementComplete
+  , observeNetworkEnforcementUnderBoundLease
   , renderEnforcementCleanup
-  , observeNetworkEnforcementScoped
   )
-import Prodbox.Control.ServiceSupport (ServiceStep (..), importImageStep, run)
+import Prodbox.Control.ServiceSupport
+  ( ServiceStep (..)
+  , importImageStep
+  , maxServiceAttempts
+  , run
+  , serviceAttemptNamespace
+  , serviceAttemptRecordName
+  )
+import Prodbox.Control.Status (observeNodeCaBindingUnderLease)
 import Prodbox.Infra.BootstrapImageArchive (BootstrapImageArchitecture (BootstrapImageAmd64))
 import Prodbox.Infra.BootstrapImageSourceNative
   ( bootstrapSourceArtifactArchivePath
@@ -96,133 +132,230 @@ minioReference = "docker.io/prodbox/minio-bootstrap:RELEASE.2024-12-18T13-15-44Z
 
 reconcileServices :: BootstrapProjection -> IO ServicesOutcome
 reconcileServices bootstrap = do
+  intent <- observeKindIntent bootstrap
+  case intent of
+    KindIntentMatches operation -> do
+      ending <- (+ 1200000000000) <$> getMonotonicTimeNSec
+      retired <- withKindFamilyRetirement ending bootstrap operation $ \owner ->
+        withRecoveredKindOperation bootstrap operation $ \stable -> do
+          let admitted = do
+                held <- stable
+                checkpoint <- observeKindTeardownAdmission bootstrap
+                idle <- managementRestoreIdle bootstrap
+                after <- stable
+                pure (held && checkpoint == KindIntentMissing && idle && after)
+          before <- verifyKindFamilyRetirement owner admitted
+          receipt <- observeControllerReceipt bootstrap operation admitted
+          case (before, receipt) of
+            (Right (), ControllerReceiptObserved node) ->
+              runServicesAttempt bootstrap operation node admitted
+            _ -> pure (refusedServices "exact running kind operation or worker settlement is unconfirmed")
+      pure $ case retired of
+        KindFamilyRetirementReturned (KindOperationCallbackReturned outcome) (Right ()) True -> outcome
+        _ -> refusedServices "owner or operation lease did not settle; inspect the retained service attempt"
+    _ -> pure (refusedServices "a recorded kind operation is required; run control reconcile first")
+
+refusedServices :: String -> ServicesOutcome
+refusedServices reason = ServicesOutcome [ServiceStep "service-admission" False reason]
+
+runServicesAttempt :: BootstrapProjection -> String -> String -> IO Bool -> IO ServicesOutcome
+runServicesAttempt bootstrap operation node stable = do
+  snapshot <- withKindKubeconfigSnapshotBound bootstrap $ \config kubeconfig -> do
+    let bindConfig selected = observeNodeCaBindingUnderLease bootstrap operation node selected stable
+    running <- bindConfig config
+    if not running
+      then pure (refusedServices "the exact node and its Kubernetes credential could not be verified")
+      else do
+        allocation <- nextServiceAttempt bootstrap operation node stable
+        case allocation of
+          Left reason -> pure (refusedServices reason)
+          Right attempt -> do
+            enforcement <-
+              observeNetworkEnforcementUnderBoundLease
+                bootstrap
+                operation
+                (serviceProbeNamespace attempt)
+                stable
+                bindConfig
+            let proven = enforcementComplete enforcement
+                gate =
+                  ServiceStep "enforcement-gate" proven $
+                    if proven
+                      then "pinned management policy enforced by real sockets before any secret is created"
+                      else
+                        "enforcement not proven ("
+                          ++ maybe "no complete observation" id (enforcementFailure enforcement)
+                          ++ "; cleanup: "
+                          ++ renderEnforcementCleanup (enforcementCleanup enforcement)
+                          ++ "); no secret was created"
+            if not proven
+              then case enforcementCleanup enforcement of
+                EnforcementCleanupConfirmed -> finishServiceAttempt bootstrap stable attempt False [gate]
+                EnforcementCleanupNotStarted -> finishServiceAttempt bootstrap stable attempt False [gate]
+                EnforcementCleanupUnconfirmed _ -> pure (ServicesOutcome [gate, pendingServiceStep attempt])
+              else do
+                current <- bindConfig config
+                if not current
+                  then pure (ServicesOutcome [gate, pendingServiceStep attempt])
+                  else do
+                    steps <- deployServiceComponents bootstrap node kubeconfig stable gate
+                    if all serviceStepOk steps
+                      then finishServiceAttempt bootstrap (bindConfig config) attempt True steps
+                      else pure (ServicesOutcome (steps ++ [pendingServiceStep attempt]))
+  pure (either (const (refusedServices "validated Kubernetes credential unavailable")) id snapshot)
+
+data ServiceAttempt = ServiceAttempt !String !String !String !Int
+
+serviceProbeNamespace :: ServiceAttempt -> String
+serviceProbeNamespace (ServiceAttempt operation _ _ index) = serviceAttemptNamespace operation index
+
+serviceRecordName :: ServiceAttempt -> String -> FilePath
+serviceRecordName (ServiceAttempt operation _ _ index) = serviceAttemptRecordName operation index
+
+serviceRecord :: ServiceAttempt -> Maybe Bool -> Aeson.Value
+serviceRecord attempt@(ServiceAttempt operation generation node index) result =
+  Aeson.object $
+    [ "schema_version" .= (2 :: Int)
+    , "kind" .= maybe ("kind-services-attempt" :: String) (const "kind-services-result") result
+    , "operation_id" .= operation
+    , "generation" .= generation
+    , "node_id" .= node
+    , "attempt" .= index
+    , "probe_namespace" .= serviceProbeNamespace attempt
+    ]
+      ++ ["ok" .= ok | ok <- maybe [] pure result]
+
+nextServiceAttempt
+  :: BootstrapProjection -> String -> String -> IO Bool -> IO (Either String ServiceAttempt)
+nextServiceAttempt bootstrap operation node stable = do
+  legacyAttempt <- observeJournalRecord bootstrap "kind-services-attempt.json"
+  legacyResult <- observeJournalRecord bootstrap "kind-services-result.json"
+  case (legacyAttempt, legacyResult) of
+    (JournalRecordMissing, JournalRecordMissing) -> next 1
+    _ ->
+      pure
+        ( Left
+            "retained legacy service records lack operation binding; preserve the original scope for recovery"
+        )
+ where
+  next index
+    | index > maxServiceAttempts = pure (Left "service attempts exhausted for the exact kind operation")
+    | otherwise = do
+        let attempt = ServiceAttempt operation (Text.unpack (bootstrapRootGeneration bootstrap)) node index
+            path = serviceRecordName attempt "attempt"
+            expected = serviceRecord attempt Nothing
+        previous <- observeJournalRecord bootstrap path
+        result <- observeJournalRecord bootstrap (serviceRecordName attempt "result")
+        held <- stable
+        case (held, previous, result) of
+          (True, JournalRecordMissing, JournalRecordMissing) -> do
+            written <- writeJournalRecord bootstrap path expected
+            found <- observeJournalRecord bootstrap path
+            current <- stable
+            pure $
+              if written && current && found == JournalRecordObserved expected
+                then Right attempt
+                else Left "the new service attempt could not be durably bound"
+          (True, JournalRecordObserved observed, JournalRecordObserved settled)
+            | observed == expected
+            , settled == serviceRecord attempt (Just True) || settled == serviceRecord attempt (Just False) ->
+                next (index + 1)
+          _ -> pure (Left (serviceStepDetail (pendingServiceStep attempt)))
+
+pendingServiceStep :: ServiceAttempt -> ServiceStep
+pendingServiceStep attempt =
+  ServiceStep "service-settlement" False $
+    "service attempt remains recoverable under "
+      ++ serviceProbeNamespace attempt
+      ++ "; settle the original kind operation with control delete before recreation"
+
+finishServiceAttempt
+  :: BootstrapProjection -> IO Bool -> ServiceAttempt -> Bool -> [ServiceStep] -> IO ServicesOutcome
+finishServiceAttempt bootstrap stable attempt ok steps = do
+  let path = serviceRecordName attempt "result"
+      expected = serviceRecord attempt (Just ok)
+  before <- stable
+  written <- if before then writeJournalRecord bootstrap path expected else pure False
+  observed <- observeJournalRecord bootstrap path
+  after <- stable
+  pure $
+    ServicesOutcome $
+      if written && after && observed == JournalRecordObserved expected
+        then steps
+        else steps ++ [pendingServiceStep attempt]
+
+deployServiceComponents
+  :: BootstrapProjection -> String -> FilePath -> IO Bool -> ServiceStep -> IO [ServiceStep]
+deployServiceComponents bootstrap node kubeconfig stable gate = do
   let scope = bootstrapScope bootstrap
       root = scopeRoot scope
-      kubeconfig = root </> "control" </> "kubeconfig"
-      node = scopeKindName scope ++ "-control-plane"
       socket = bootstrapRuntimeSocket bootstrap
-      docker arguments = run 120 "/usr/bin/docker" (["--host", "unix://" ++ socket] ++ arguments) ByteString.empty
+      guarded action = do
+        held <- stable
+        if held then action else pure (Left "service operation identity changed")
+      docker seconds arguments input =
+        guarded $
+          run seconds "/usr/bin/docker" (["--host", "unix://" ++ socket] ++ arguments) input
       kubectl seconds arguments input =
-        run
-          seconds
-          "/usr/bin/kubectl"
-          (["--kubeconfig", kubeconfig, "--request-timeout=60s"] ++ arguments)
-          input
+        guarded $
+          run
+            seconds
+            "/usr/bin/kubectl"
+            (["--kubeconfig", kubeconfig, "--request-timeout=60s"] ++ arguments)
+            input
       importAll = foldM $ \steps (name, path, reference) ->
         if all serviceStepOk steps
-          then (\step -> steps ++ [step]) <$> importImageStep name path reference node
+          then (\step -> steps ++ [step]) <$> importImageStep docker name path reference node
           else pure steps
-  present <- doesFileExist kubeconfig
-  running <- readDocker socket ["inspect", "--format", "{{.State.Running}}", node]
-  if not present || fmap (take 4 . dropWhile (== ' ')) running /= Just "true"
-    then
-      pure
-        ( ServicesOutcome
-            [ ServiceStep
-                "environment"
-                False
-                "no running recorded node and installed cluster credential; run `control reconcile` first"
-            ]
-        )
-    else do
-      attempt <-
-        writeJournalRecord
-          bootstrap
-          "kind-services-attempt.json"
-          ( Aeson.object
-              [ (Key.fromString "schema_version", Aeson.Number 1)
-              , (Key.fromString "kind", Aeson.String "kind-services-attempt")
-              ]
-          )
-      -- 1. the management policy must be enforced before any secret exists.
-      enforcement <-
-        if attempt
-          then do
-            intent <- observeKindIntent bootstrap
-            case intent of
-              KindIntentMatches operation -> observeNetworkEnforcementScoped bootstrap operation "prodbox-services-gate"
-              _ -> pure (EnforcementOutcome Nothing (Just "kind operation identity unavailable") EnforcementCleanupNotStarted)
-          else pure (EnforcementOutcome Nothing (Just "service attempt was not recorded") EnforcementCleanupNotStarted)
-      let proven =
-            attempt && enforcementComplete enforcement
-          gate =
-            ServiceStep
-              "enforcement-gate"
-              proven
-              ( if proven
-                  then "pinned management policy enforced by real sockets before any secret is created"
-                  else
-                    "enforcement not proven ("
-                      ++ maybe (maybe "no observation" id (enforcementFailure enforcement)) (const "observation incomplete") (enforcementObservation enforcement)
-                      ++ "; cleanup: "
-                      ++ renderEnforcementCleanup (enforcementCleanup enforcement)
-                      ++ "); no secret was created"
-              )
-      if not proven
-        then pure (ServicesOutcome [gate])
+  minioArtifacts <- ensureBootstrapSourceArtifacts "." BootstrapImageAmd64
+  minioArchive <- pure $ case minioArtifacts of
+    Right artifacts ->
+      case [a | a <- artifacts, Text.unpack (bootstrapSourceArtifactReference a) == minioReference] of
+        [artifact] ->
+          Right
+            ( bootstrapSourceArtifactArchivePath artifact
+            , Text.unpack (bootstrapSourceArtifactIdentity artifact)
+            )
+        _ -> Left "the source build did not yield exactly the pinned MinIO artifact"
+    Left failure -> Left ("source artifact acquisition failed: " ++ show failure)
+  let mcArchive = case minioArtifacts of
+        Right artifacts ->
+          case [a | a <- artifacts, Text.unpack (bootstrapSourceArtifactReference a) == mcReference] of
+            [artifact] ->
+              Right
+                ( bootstrapSourceArtifactArchivePath artifact
+                , Text.unpack (bootstrapSourceArtifactIdentity artifact)
+                )
+            _ -> Left "the source build did not yield exactly the pinned MinIO client artifact"
+        Left failure -> Left ("source artifact acquisition failed: " ++ show failure)
+  vaultArchive <- saveVaultArchive (\arguments -> docker 120 arguments ByteString.empty) root
+  let archiveStep name result = case result of
+        Right (path, identity) -> ServiceStep name True (path ++ " identity " ++ identity)
+        Left reason -> ServiceStep name False reason
+      archiveSteps =
+        [ archiveStep "minio-archive" minioArchive
+        , archiveStep "mc-archive" mcArchive
+        , archiveStep "vault-archive" vaultArchive
+        ]
+  case (minioArchive, mcArchive, vaultArchive) of
+    (Right (minioPath, _), Right (mcPath, _), Right (vaultPath, _)) -> do
+      imported <-
+        importAll
+          (gate : archiveSteps)
+          [ ("minio-import", minioPath, minioReference)
+          , ("mc-import", mcPath, mcReference)
+          , ("vault-import", vaultPath, vaultTagged)
+          ]
+      if not (all serviceStepOk imported)
+        then pure imported
         else do
-          -- 2. archives
-          minioArtifacts <- ensureBootstrapSourceArtifacts "." BootstrapImageAmd64
-          minioArchive <- pure $ case minioArtifacts of
-            Right artifacts ->
-              case [a | a <- artifacts, Text.unpack (bootstrapSourceArtifactReference a) == minioReference] of
-                [artifact] ->
-                  Right
-                    ( bootstrapSourceArtifactArchivePath artifact
-                    , Text.unpack (bootstrapSourceArtifactIdentity artifact)
-                    )
-                _ -> Left "the source build did not yield exactly the pinned MinIO artifact"
-            Left failure -> Left ("source artifact acquisition failed: " ++ show failure)
-          let mcArchive = case minioArtifacts of
-                Right artifacts ->
-                  case [a | a <- artifacts, Text.unpack (bootstrapSourceArtifactReference a) == mcReference] of
-                    [artifact] ->
-                      Right
-                        ( bootstrapSourceArtifactArchivePath artifact
-                        , Text.unpack (bootstrapSourceArtifactIdentity artifact)
-                        )
-                    _ -> Left "the source build did not yield exactly the pinned MinIO client artifact"
-                Left failure -> Left ("source artifact acquisition failed: " ++ show failure)
-          vaultArchive <- saveVaultArchive docker root
-          let archiveStep name result = case result of
-                Right (path, identity) -> ServiceStep name True (path ++ " identity " ++ identity)
-                Left reason -> ServiceStep name False reason
-              archiveSteps =
-                [ archiveStep "minio-archive" minioArchive
-                , archiveStep "mc-archive" mcArchive
-                , archiveStep "vault-archive" vaultArchive
-                ]
-          case (minioArchive, mcArchive, vaultArchive) of
-            (Right (minioPath, _), Right (mcPath, _), Right (vaultPath, _)) -> do
-              imported <-
-                importAll
-                  (gate : archiveSteps)
-                  [ ("minio-import", minioPath, minioReference)
-                  , ("mc-import", mcPath, mcReference)
-                  , ("vault-import", vaultPath, vaultTagged)
-                  ]
-              if not (all serviceStepOk imported)
-                then pure (ServicesOutcome imported)
-                else do
-                  created <- prepareAndApply root kubeconfig kubectl
-                  broker <-
-                    if all serviceStepOk created
-                      then deployBroker socket root node (scopeKindName scope) docker kubectl
-                      else pure []
-                  let steps = imported ++ created ++ broker
-                  _ <-
-                    writeJournalRecord
-                      bootstrap
-                      "kind-services-result.json"
-                      ( Aeson.object
-                          [ (Key.fromString "schema_version", Aeson.Number 1)
-                          , (Key.fromString "kind", Aeson.String "kind-services-result")
-                          , (Key.fromString "attempt_recorded", Aeson.Bool attempt)
-                          , (Key.fromString "ok", Aeson.Bool (all serviceStepOk steps))
-                          ]
-                      )
-                  pure (ServicesOutcome steps)
-            _ -> pure (ServicesOutcome (gate : archiveSteps))
+          created <- prepareAndApply root kubectl
+          broker <-
+            if all serviceStepOk created
+              then deployBroker socket root node (scopeKindName scope) docker kubectl
+              else pure []
+          pure (imported ++ created ++ broker)
+    _ -> pure (gate : archiveSteps)
 
 -- | Pull by digest, tag with the readable name so containerd registers it,
 -- and save to a private archive under the retained root. The saved archive's
@@ -258,82 +391,68 @@ fileDigest path = do
 
 prepareAndApply
   :: FilePath
-  -> FilePath
   -> (Int -> [String] -> ByteString.ByteString -> IO (Either String (Int, String, String)))
   -> IO [ServiceStep]
-prepareAndApply root _ kubectl = do
-  createDirectoryIfMissing False (root </> "minio-data")
-  setFileMode (root </> "minio-data") 0o700
-  createDirectoryIfMissing False (root </> "vault-data")
-  setFileMode (root </> "vault-data") 0o700
-  -- Each credential is created once and reused so existing MinIO data stays
-  -- reachable; it is written 0600 and never printed.
-  -- MinIO's root credential is the compiled bootstrap-floor credential the
-  -- Broker's store boundary uses; the unlock-object reader below is per
-  -- environment and random.
-  let (finalUser, finalPassword) = (minioRootUser, minioRootPassword)
-  (readerUser, readerPassword) <-
-    loadOrCreateCredential (root </> "control" </> "minio-unlock-reader-credential") "unlock-reader"
-  namespaceStep <- apply "namespace" namespaceManifest
-  policyStep <- apply "management-policy" (managementPolicyManifest managementNamespace)
-  secretStep <-
-    apply "bootstrap-credential" (secretManifest "minio-bootstrap-credential" finalUser finalPassword)
-  readerSecretStep <-
-    apply
-      "unlock-reader-credential"
-      (secretManifest "minio-unlock-reader-credential" readerUser readerPassword)
-  servicesStep <- apply "services" servicesManifest
-  waited <-
-    kubectl
-      200
-      [ "-n"
-      , managementNamespace
-      , "wait"
-      , "--for=condition=Ready"
-      , "pod"
-      , "--all"
-      , "--timeout=180s"
-      ]
-      ByteString.empty
-  let waitStep = case waited of
-        Right (0, _, _) -> ServiceStep "services-ready" True "MinIO, Vault and the MinIO client pods report Ready"
-        Right (code, _, err) -> ServiceStep "services-ready" False ("wait exit " ++ show code ++ ": " ++ take 200 err)
-        Left failure -> ServiceStep "services-ready" False failure
-  minio <- proxyGet "minio-direct" "minio:9000" "minio/health/ready"
-  vault <-
-    proxyGet "vault-direct" "vault:8200" "v1/sys/health?uninitcode=200&sealedcode=200&standbyok=true"
-  reader <- unlockReaderStep
-  pure
-    [ namespaceStep
-    , policyStep
-    , secretStep
-    , readerSecretStep
-    , servicesStep
-    , waitStep
-    , minio
-    , vault
-    , reader
-    ]
+prepareAndApply root kubectl = do
+  namespace <- apply "namespace" namespaceManifest
+  prerequisites <-
+    advance [namespace] (apply "management-policy" (managementPolicyManifest managementNamespace))
+  if all serviceStepOk prerequisites
+    then provision prerequisites
+    else pure prerequisites
  where
-  -- The pre-Vault read capability: a MinIO user whose policy allows exactly
-  -- GetObject on the one unlock object, created with the root credential
-  -- inside the client Pod. Re-running replaces it with the same definition.
-  unlockReaderStep = do
-    let script =
-          "mc alias set local http://minio:9000 \"$MINIO_USER\" \"$MINIO_PASSWORD\" >/dev/null 2>&1 && "
-            ++ "printf '%s' '{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\"],\"Resource\":[\"arn:aws:s3:::prodbox-bootstrap/vault-unlock-test.json\"]}]}' > /tmp/unlock-read.json && "
-            ++ "(mc admin policy create local unlock-object-read /tmp/unlock-read.json >/dev/null 2>&1 || true) && "
-            ++ "mc admin user add local \"$MINIO_READER_USER\" \"$MINIO_READER_PASSWORD\" >/dev/null 2>&1 && "
-            ++ "mc admin policy attach local unlock-object-read --user \"$MINIO_READER_USER\" >/dev/null 2>&1; "
-            ++ "mc admin user info local \"$MINIO_READER_USER\" 2>&1 | grep -c unlock-object-read"
-    result <-
-      kubectl 90 ["-n", managementNamespace, "exec", "mc", "--", "/bin/sh", "-c", script] ByteString.empty
+  advance steps action
+    | all serviceStepOk steps = (\step -> steps ++ [step]) <$> action
+    | otherwise = pure steps
+  provision prerequisites = do
+    createDirectoryIfMissing False (root </> "minio-data")
+    setFileMode (root </> "minio-data") 0o700
+    createDirectoryIfMissing False (root </> "vault-data")
+    setFileMode (root </> "vault-data") 0o700
+    -- The Broker uses the compiled bootstrap-floor credential. The restricted
+    -- unlock-object reader is random per environment and reused on repeat.
+    (readerUser, readerPassword) <-
+      loadOrCreateCredential (root </> "control" </> "minio-unlock-reader-credential") "unlock-reader"
+    bootstrap <-
+      advance prerequisites $
+        applyCredential "bootstrap-credential" "minio-bootstrap-credential" minioRootUser minioRootPassword
+    reader <-
+      advance bootstrap $
+        applyCredential
+          "unlock-reader-credential"
+          "minio-unlock-reader-credential"
+          readerUser
+          readerPassword
+    applied <- advance reader (apply "services" servicesManifest)
+    ready <- advance applied waitForComponents
+    minio <- advance ready (proxyGet "minio-direct" "minio:9000" "minio/health/ready")
+    vault <-
+      advance minio $
+        proxyGet "vault-direct" "vault:8200" "v1/sys/health?uninitcode=200&sealedcode=200&standbyok=true"
+    advance vault (reconcileUnlockReader readerUser kubectl)
+  waitForComponents = do
+    waited <-
+      kubectl
+        200
+        [ "-n"
+        , managementNamespace
+        , "wait"
+        , "--for=condition=Ready"
+        , "pod"
+        , "--all"
+        , "--timeout=180s"
+        ]
+        ByteString.empty
+    pure $ case waited of
+      Right (0, _, _) -> ServiceStep "services-ready" True "MinIO, Vault and the MinIO client pods report Ready"
+      Right (code, _, err) -> ServiceStep "services-ready" False ("wait exit " ++ show code ++ ": " ++ take 200 err)
+      Left failure -> ServiceStep "services-ready" False failure
+  applyCredential step name user password = do
+    result <- kubectl 90 ["apply", "-f", "-"] (secretManifest name user password)
     pure $ case result of
-      Right (0, out, _)
-        | take 1 (words out) == ["1"] ->
-            ServiceStep "unlock-reader" True "a MinIO user limited to reading the unlock object exists"
-      Right (code, out, err) -> ServiceStep "unlock-reader" False ("exit " ++ show code ++ ": " ++ take 120 (out ++ err))
-      Left failure -> ServiceStep "unlock-reader" False failure
+      Right (0, _, _) -> ServiceStep step True "credential applied"
+      Right (code, _, _) -> ServiceStep step False ("credential apply exit " ++ show code)
+      Left _ -> ServiceStep step False "credential apply request unobservable"
   apply name manifest = do
     result <- kubectl 90 ["apply", "-f", "-"] manifest
     pure $ case result of
@@ -364,6 +483,160 @@ prepareAndApply root _ kubectl = do
   renderValue value = case value of
     Aeson.Bool flag -> if flag then "true" else "false"
     other -> show other
+
+data ReaderAdminObservation a
+  = ReaderAdminObserved !a
+  | ReaderAdminAbsent
+  | ReaderAdminUnobservable
+  deriving (Eq)
+
+data ReaderAttachment = ReaderUnattached | ReaderAttached
+  deriving (Eq)
+
+unlockReaderPolicyName :: String
+unlockReaderPolicyName = "unlock-object-read"
+
+unlockReaderPolicy :: Aeson.Value
+unlockReaderPolicy =
+  Aeson.object
+    [ "Version" .= ("2012-10-17" :: Text.Text)
+    , "Statement"
+        .= [ Aeson.object
+               [ "Effect" .= ("Allow" :: Text.Text)
+               , "Action" .= ["s3:GetObject" :: Text.Text]
+               , "Resource" .= ["arn:aws:s3:::prodbox-bootstrap/vault-unlock-test.json" :: Text.Text]
+               ]
+           ]
+    ]
+
+-- Observe the exact MinIO records before changing them. A healthy retained
+-- reader needs no writes after kind recreation. A mutation reply alone does
+-- not settle the attempt, including when the reply was lost.
+reconcileUnlockReader
+  :: String
+  -> (Int -> [String] -> ByteString.ByteString -> IO (Either String (Int, String, String)))
+  -> IO ServiceStep
+reconcileUnlockReader readerUser kubectl = do
+  existing <- policyState
+  policy <- case existing of
+    ReaderAdminAbsent -> do
+      _ <-
+        admin
+          ( "umask 077; policy=$(mktemp) && trap 'rm -f \"$policy\"' EXIT && cat > \"$policy\" && "
+              ++ "mc admin policy create local "
+              ++ unlockReaderPolicyName
+              ++ " \"$policy\""
+          )
+          (LazyByteString.toStrict (Aeson.encode unlockReaderPolicy))
+      policyState
+    recorded -> pure recorded
+  if policy /= ReaderAdminObserved True
+    then pure (refuseReader "the exact single-object policy definition is unconfirmed")
+    else do
+      previous <- accountState
+      account <- case previous of
+        ReaderAdminAbsent -> do
+          _ <-
+            admin "mc admin user add local \"$MINIO_READER_USER\" \"$MINIO_READER_PASSWORD\"" ByteString.empty
+          accountState
+        recorded -> pure recorded
+      attached <- case account of
+        ReaderAdminObserved ReaderUnattached -> do
+          _ <-
+            admin
+              ("mc admin policy attach local " ++ unlockReaderPolicyName ++ " --user \"$MINIO_READER_USER\"")
+              ByteString.empty
+          accountState
+        recorded -> pure recorded
+      pure $
+        if attached == ReaderAdminObserved ReaderAttached
+          then
+            ServiceStep
+              "unlock-reader"
+              True
+              "the exact enabled reader is bound only to the single-object policy"
+          else refuseReader "the exact enabled reader and its exclusive policy attachment are unconfirmed"
+ where
+  refuseReader = ServiceStep "unlock-reader" False
+  admin script =
+    kubectl
+      40
+      [ "-n"
+      , managementNamespace
+      , "exec"
+      , "-i"
+      , "mc"
+      , "--"
+      , "/bin/sh"
+      , "-c"
+      , "mc alias set local http://minio:9000 \"$MINIO_USER\" \"$MINIO_PASSWORD\" >/dev/null 2>&1 && { "
+          ++ script
+          ++ "; }"
+      ]
+  policyState =
+    observeReaderAdmin
+      "XMinioAdminNoSuchPolicy"
+      ( Aeson.withObject "MinIO policy" $ \policy -> do
+          status <- policy .: "status"
+          name <- policy .: "policy"
+          info <- policy .: "policyInfo"
+          definition <- Aeson.withObject "MinIO policy document" (.: "Policy") info
+          pure
+            ( status == ("success" :: Text.Text)
+                && name == unlockReaderPolicyName
+                && definition == unlockReaderPolicy
+            )
+      )
+      (admin ("mc --json admin policy info local " ++ unlockReaderPolicyName) ByteString.empty)
+  accountState =
+    observeReaderAdmin
+      "XMinioAdminNoSuchUser"
+      ( Aeson.withObject "MinIO user" $ \account -> do
+          status <- account .: "status"
+          user <- account .: "accessKey"
+          enabled <- account .: "userStatus"
+          groups <- account .:? "memberOf" .!= ([] :: [Aeson.Value])
+          attached <- account .:? "policyName" .!= ""
+          if status == ("success" :: Text.Text)
+            && user == readerUser
+            && enabled == ("enabled" :: Text.Text)
+            && null groups
+            then
+              if attached == unlockReaderPolicyName
+                then pure ReaderAttached
+                else if null attached then pure ReaderUnattached else fail "unexpected reader policy"
+            else fail "unexpected reader account"
+      )
+      (admin "mc --json admin user info local \"$MINIO_READER_USER\"" ByteString.empty)
+
+observeReaderAdmin
+  :: Text.Text
+  -> (Aeson.Value -> AesonTypes.Parser a)
+  -> IO (Either String (Int, String, String))
+  -> IO (ReaderAdminObservation a)
+observeReaderAdmin missing parse action = go (3 :: Int)
+ where
+  go attempts = do
+    reply <- action
+    case reply of
+      Right (0, out, _)
+        | Just result <- decode parse out -> pure (ReaderAdminObserved result)
+      Right (1, out, _)
+        | Just code <- decode minioAdminErrorCode out
+        , code == missing ->
+            pure ReaderAdminAbsent
+      _ | attempts > 0 -> threadDelay 1500000 >> go (attempts - 1)
+      _ -> pure ReaderAdminUnobservable
+  decode parser out = Aeson.decodeStrict' (ByteString8.pack out) >>= AesonTypes.parseMaybe parser
+  minioAdminErrorCode = Aeson.withObject "MinIO admin refusal" $ \response -> do
+    status <- response .: "status"
+    if status == ("error" :: Text.Text)
+      then do
+        failure <- response .: "error"
+        cause <- Aeson.withObject "MinIO admin failure" (.: "cause") failure
+        detail <- Aeson.withObject "MinIO admin cause" (.: "error") cause
+        Aeson.withObject "MinIO admin code" (.: "Code") detail
+      else fail "expected a MinIO admin refusal"
 
 namespaceManifest :: ByteString.ByteString
 namespaceManifest =

@@ -66,38 +66,38 @@ observeKubernetesReadiness bootstrap = do
 -- still verifies the TLS endpoint against the CA in that snapshot.
 observeKubernetesReadinessSnapshot :: FilePath -> IO ReadinessObservation
 observeKubernetesReadinessSnapshot kubeconfig = do
-      ready <- query kubeconfig ["get", "--raw=/readyz"]
-      nodes <-
-        query
-          kubeconfig
-          [ "get"
-          , "nodes"
-          , "-o"
-          , "jsonpath={range .items[*]}{.status.conditions[?(@.type==\"Ready\")].status}{\"\\n\"}{end}"
-          ]
-      pods <-
-        query
-          kubeconfig
-          [ "-n"
-          , "kube-system"
-          , "get"
-          , "pods"
-          , "-o"
-          , "jsonpath={range .items[*]}{.status.phase}{\"\\n\"}{end}"
-          ]
-      pure $ case (ready, nodes, pods) of
-        (Right api, Right nodeLines, Right podLines) ->
-          let nodeValues = lines nodeLines
-              podValues = lines podLines
-           in ReadinessObserved
-                (api == "ok")
-                (length (filter (== "True") nodeValues))
-                (length nodeValues)
-                (length (filter (== "Running") podValues))
-                (length podValues)
-        (Left failure, _, _) -> ReadinessUnobservable ("API readiness: " ++ failure)
-        (_, Left failure, _) -> ReadinessUnobservable ("nodes: " ++ failure)
-        (_, _, Left failure) -> ReadinessUnobservable ("pods: " ++ failure)
+  ready <- query kubeconfig ["get", "--raw=/readyz"]
+  nodes <-
+    query
+      kubeconfig
+      [ "get"
+      , "nodes"
+      , "-o"
+      , "jsonpath={range .items[*]}{.status.conditions[?(@.type==\"Ready\")].status}{\"\\n\"}{end}"
+      ]
+  pods <-
+    query
+      kubeconfig
+      [ "-n"
+      , "kube-system"
+      , "get"
+      , "pods"
+      , "-o"
+      , "jsonpath={range .items[*]}{.status.phase}{\"\\n\"}{end}"
+      ]
+  pure $ case (ready, nodes, pods) of
+    (Right api, Right nodeLines, Right podLines) ->
+      let nodeValues = lines nodeLines
+          podValues = lines podLines
+       in ReadinessObserved
+            (api == "ok")
+            (length (filter (== "True") nodeValues))
+            (length nodeValues)
+            (length (filter (== "Running") podValues))
+            (length podValues)
+    (Left failure, _, _) -> ReadinessUnobservable ("API readiness: " ++ failure)
+    (_, Left failure, _) -> ReadinessUnobservable ("nodes: " ++ failure)
+    (_, _, Left failure) -> ReadinessUnobservable ("pods: " ++ failure)
 
 renderKubernetesReadiness :: ReadinessObservation -> String
 renderKubernetesReadiness observation = "Kubernetes readiness: " ++ body ++ "\n"

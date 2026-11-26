@@ -101,7 +101,7 @@ A session makes at most three AWS-spending attempts without a new offline reprod
 
 A defect class closes through a recorded real-behavior regression, the relevant real canary/acceptance, and the declared repeated clean cycles. Two clean cycles are an entry to reliability testing, not proof of permanent correctness. State the actual load, failure schedule, resource envelope, failure domain and repetition/soak budget supported by the evidence.
 
-Manual infrastructure changes explicitly requested by the operator remain hand actions. Record them; they do not qualify a supported lifecycle run. Ordinary test setup, cleanup, residue injection and recovery use registered prodbox paths.
+Ordinary test setup, cleanup, residue injection and recovery use registered prodbox paths. Operator-requested manual changes and fallbacks under the standing [autonomous test cleanup authorization](../AGENTS.md#autonomous-test-cleanup) are hand actions. Record their exact scope and independent postconditions. They can settle failed-run residue, while supported lifecycle qualification requires its own cleanup evidence.
 
 ## Legacy removal ownership
 

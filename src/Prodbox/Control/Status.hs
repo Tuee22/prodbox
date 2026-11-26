@@ -86,8 +86,8 @@ import Prodbox.Control.DockerConnectedInfo
   , DockerConnectedInfoResult (..)
   , DockerNetworkCreateResult (..)
   , DockerNetworkRemoveResult (..)
-  , DockerNodeConfigWriteResult (..)
   , DockerNodeConfigReadback (..)
+  , DockerNodeConfigWriteResult (..)
   , DockerNodeContainerCreateResult (..)
   , DockerNodeContainerObservation (..)
   , DockerNodeContainerRemoveResult (..)
@@ -97,8 +97,8 @@ import Prodbox.Control.DockerConnectedInfo
   , DockerNodeVarVolumeObservation (..)
   , inspectDockerSessionKindNode
   , inspectDockerSessionNodeVarVolume
-  , readDockerSessionKindNodeCa
   , observeConnectedDockerInfo
+  , readDockerSessionKindNodeCa
   , withConnectedDockerInfo
   )
 import Prodbox.Control.DockerIdentity
@@ -361,7 +361,8 @@ matchesRunningWorkerNode identifier observed = case controlNodeCreate observed o
       ) -> matchesNodeCreateStatus identifier status
   _ -> False
 
-matchesScopedWorkerNode :: String -> DockerPeerResult (DockerConnectedInfoResult NodeCreateStatus) -> Bool
+matchesScopedWorkerNode
+  :: String -> DockerPeerResult (DockerConnectedInfoResult NodeCreateStatus) -> Bool
 matchesScopedWorkerNode identifier observed = case observed of
   DockerPeerCompleted (DockerConnectedInfoCompleted status) -> matchesNodeCreateStatus identifier status
   _ -> False
@@ -569,100 +570,104 @@ observeNodeCreate bootstrap operation =
 
 -- The caller holds the matching recovered operation lease throughout.
 observeNodeCreateUnderLease
-  :: BootstrapProjection -> String -> IO Bool
+  :: BootstrapProjection
+  -> String
+  -> IO Bool
   -> IO (DockerPeerResult (DockerConnectedInfoResult NodeCreateStatus))
 observeNodeCreateUnderLease bootstrap operation operationStable =
-    withConnectedDockerInfo 60000000 (bootstrapRuntimeSocket bootstrap) $ \session (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable -> do
-      let stable = (&&) <$> operationStable <*> peerStable
-      before <- stable
-      -- The caller's held lease and Docker peer bracket this read-only
-      -- snapshot. Individual journal readers still verify their own records
-      -- and roots, without recursively repeating the full family proof.
-      observed <- if before then observeRecordedKindNodeCreateIntent bootstrap operation (pure True)
+  withConnectedDockerInfo 60000000 (bootstrapRuntimeSocket bootstrap) $ \session (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable -> do
+    let stable = (&&) <$> operationStable <*> peerStable
+    before <- stable
+    -- The caller's held lease and Docker peer bracket this read-only
+    -- snapshot. Individual journal readers still verify their own records
+    -- and roots, without recursively repeating the full family proof.
+    observed <-
+      if before
+        then observeRecordedKindNodeCreateIntent bootstrap operation (pure True)
         else pure NodeCreateRecoveryUnobservable
-      let matches = case observed of
-            NodeCreateRecoveryRecorded candidate -> kindNodeCreateDaemon candidate == DockerDaemonObserved identifier identity
-            _ -> False
-      ( attempt
-        , result
-        , startAttempt
-        , startResult
-        , removeControl
-        , removeAttempt
-        , removeResult
-        , nodeInspection
-        ) <- case observed of
-        NodeCreateRecoveryRecorded candidate | matches -> do
-          marker <- observeKindNodeCreateAttempt bootstrap candidate (pure True)
-          transport <- case marker of
-            NodeCreateAttemptMatches -> Just <$> observeKindNodeCreateResult bootstrap candidate (pure True)
-            _ -> pure Nothing
-          start <- case transport of
-            Just (NodeCreateResultObserved (DockerNodeContainerCreateReply 201 (Just containerId))) ->
-              Just <$> observeKindNodeStartAttempt bootstrap candidate containerId (pure True)
-            _ -> pure Nothing
-          startOutcome <- case (transport, start) of
-            ( Just (NodeCreateResultObserved (DockerNodeContainerCreateReply 201 (Just containerId)))
-              , Just NodeStartAttemptMatches
-              ) ->
-                Just <$> observeKindNodeStartResult bootstrap candidate containerId (pure True)
-            _ -> pure Nothing
-          control <- case transport of
-            Just (NodeCreateResultObserved (DockerNodeContainerCreateReply 201 (Just containerId))) ->
-              Just <$> observeKindNodeRemoveControl bootstrap candidate containerId (pure True)
-            _ -> pure Nothing
-          removal <- case transport of
-            Just (NodeCreateResultObserved (DockerNodeContainerCreateReply 201 (Just containerId))) ->
-              Just <$> observeKindNodeRemoveAttempt bootstrap candidate containerId (pure True)
-            _ -> pure Nothing
-          removalOutcome <- case (transport, removal) of
-            ( Just (NodeCreateResultObserved (DockerNodeContainerCreateReply 201 (Just containerId)))
-              , Just NodeRemoveAttemptMatches
-              ) ->
-                Just <$> observeKindNodeRemoveResult bootstrap candidate containerId (pure True)
-            _ -> pure Nothing
-          inspected <- case transport of
-            Just (NodeCreateResultObserved (DockerNodeContainerCreateReply 201 (Just containerId))) ->
-              Just <$> inspectDockerSessionKindNode session bootstrap (kindNodeCreateInput candidate) containerId
-            _ -> pure Nothing
-          pure
-            ( Just marker
-            , transport
-            , start
-            , startOutcome
-            , control
-            , removal
-            , removalOutcome
-            , inspected
-            )
-        _ -> pure (Nothing, Nothing, Nothing, Nothing, Nothing, Nothing, Nothing, Nothing)
-      after <- stable
-      pure $
-        if before && after
-          then
-            NodeCreateStatus
-              observed
-              matches
-              attempt
-              result
-              startAttempt
-              startResult
-              removeControl
-              removeAttempt
-              removeResult
-              nodeInspection
-          else
-            NodeCreateStatus
-              NodeCreateRecoveryUnobservable
-              False
-              Nothing
-              Nothing
-              Nothing
-              Nothing
-              Nothing
-              Nothing
-              Nothing
-              Nothing
+    let matches = case observed of
+          NodeCreateRecoveryRecorded candidate -> kindNodeCreateDaemon candidate == DockerDaemonObserved identifier identity
+          _ -> False
+    ( attempt
+      , result
+      , startAttempt
+      , startResult
+      , removeControl
+      , removeAttempt
+      , removeResult
+      , nodeInspection
+      ) <- case observed of
+      NodeCreateRecoveryRecorded candidate | matches -> do
+        marker <- observeKindNodeCreateAttempt bootstrap candidate (pure True)
+        transport <- case marker of
+          NodeCreateAttemptMatches -> Just <$> observeKindNodeCreateResult bootstrap candidate (pure True)
+          _ -> pure Nothing
+        start <- case transport of
+          Just (NodeCreateResultObserved (DockerNodeContainerCreateReply 201 (Just containerId))) ->
+            Just <$> observeKindNodeStartAttempt bootstrap candidate containerId (pure True)
+          _ -> pure Nothing
+        startOutcome <- case (transport, start) of
+          ( Just (NodeCreateResultObserved (DockerNodeContainerCreateReply 201 (Just containerId)))
+            , Just NodeStartAttemptMatches
+            ) ->
+              Just <$> observeKindNodeStartResult bootstrap candidate containerId (pure True)
+          _ -> pure Nothing
+        control <- case transport of
+          Just (NodeCreateResultObserved (DockerNodeContainerCreateReply 201 (Just containerId))) ->
+            Just <$> observeKindNodeRemoveControl bootstrap candidate containerId (pure True)
+          _ -> pure Nothing
+        removal <- case transport of
+          Just (NodeCreateResultObserved (DockerNodeContainerCreateReply 201 (Just containerId))) ->
+            Just <$> observeKindNodeRemoveAttempt bootstrap candidate containerId (pure True)
+          _ -> pure Nothing
+        removalOutcome <- case (transport, removal) of
+          ( Just (NodeCreateResultObserved (DockerNodeContainerCreateReply 201 (Just containerId)))
+            , Just NodeRemoveAttemptMatches
+            ) ->
+              Just <$> observeKindNodeRemoveResult bootstrap candidate containerId (pure True)
+          _ -> pure Nothing
+        inspected <- case transport of
+          Just (NodeCreateResultObserved (DockerNodeContainerCreateReply 201 (Just containerId))) ->
+            Just <$> inspectDockerSessionKindNode session bootstrap (kindNodeCreateInput candidate) containerId
+          _ -> pure Nothing
+        pure
+          ( Just marker
+          , transport
+          , start
+          , startOutcome
+          , control
+          , removal
+          , removalOutcome
+          , inspected
+          )
+      _ -> pure (Nothing, Nothing, Nothing, Nothing, Nothing, Nothing, Nothing, Nothing)
+    after <- stable
+    pure $
+      if before && after
+        then
+          NodeCreateStatus
+            observed
+            matches
+            attempt
+            result
+            startAttempt
+            startResult
+            removeControl
+            removeAttempt
+            removeResult
+            nodeInspection
+        else
+          NodeCreateStatus
+            NodeCreateRecoveryUnobservable
+            False
+            Nothing
+            Nothing
+            Nothing
+            Nothing
+            Nothing
+            Nothing
+            Nothing
+            Nothing
 
 -- The caller holds the recovered operation lease. This brackets the CA read
 -- with exact running-node and daemon observations and compares the full
@@ -670,30 +675,45 @@ observeNodeCreateUnderLease bootstrap operation operationStable =
 observeNodeCaBindingUnderLease
   :: BootstrapProjection -> String -> String -> KindKubeconfig -> IO Bool -> IO Bool
 observeNodeCaBindingUnderLease bootstrap operation node config operationStable = do
-  before <- matchesScopedWorkerNode node <$> observeNodeCreateUnderLease bootstrap operation operationStable
-  current <- readKindKubeconfig bootstrap
-  configBefore <- either (const (pure False)) (sameKindKubeconfig config) current
-  if not (before && configBefore) then pure False else do
-    observed <- withKindKubeconfigMaterial config $ \ca _ _ ->
-      withConnectedDockerInfo 30000000 (bootstrapRuntimeSocket bootstrap) $ \session (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable -> do
-        let stable = (&&) <$> operationStable <*> peerStable
-        proposal <- observeRecordedKindNodeCreateIntent bootstrap operation stable
-        case proposal of
-          NodeCreateRecoveryRecorded candidate
-            | kindNodeCreateDaemon candidate == DockerDaemonObserved identifier identity -> do
-                initial <- inspectDockerSessionKindNode session bootstrap (kindNodeCreateInput candidate) node
-                caRead <- readDockerSessionKindNodeCa session node ca
-                final <- inspectDockerSessionKindNode session bootstrap (kindNodeCreateInput candidate) node
-                unchanged <- stable
-                pure (initial == Right (DockerNodeContainerMatching True)
-                  && caRead == Right DockerNodeConfigMatches
-                  && final == initial && unchanged)
-          _ -> pure False
-    after <- matchesScopedWorkerNode node <$> observeNodeCreateUnderLease bootstrap operation operationStable
-    latest <- readKindKubeconfig bootstrap
-    configAfter <- either (const (pure False)) (sameKindKubeconfig config) latest
-    stable <- operationStable
-    pure (observed == DockerPeerCompleted (DockerConnectedInfoCompleted True) && after && configAfter && stable)
+  admitted <- operationStable
+  if not admitted
+    then pure False
+    else do
+      before <- observeBinding
+      if not before
+        then pure False
+        else do
+          observed <- withKindKubeconfigMaterial config $ \ca _ _ ->
+            withConnectedDockerInfo 30000000 (bootstrapRuntimeSocket bootstrap) $ \session (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable -> do
+              proposal <- observeRecordedKindNodeCreateIntent bootstrap operation peerStable
+              case proposal of
+                NodeCreateRecoveryRecorded candidate
+                  | kindNodeCreateDaemon candidate == DockerDaemonObserved identifier identity -> do
+                      initial <- inspectDockerSessionKindNode session bootstrap (kindNodeCreateInput candidate) node
+                      caRead <- readDockerSessionKindNodeCa session node ca
+                      final <- inspectDockerSessionKindNode session bootstrap (kindNodeCreateInput candidate) node
+                      unchanged <- peerStable
+                      pure
+                        ( initial == Right (DockerNodeContainerMatching True)
+                            && caRead == Right DockerNodeConfigMatches
+                            && final == initial
+                            && unchanged
+                        )
+                _ -> pure False
+          after <- observeBinding
+          closing <- operationStable
+          pure (observed == DockerPeerCompleted (DockerConnectedInfoCompleted True) && after && closing)
+ where
+  -- The caller holds its lease throughout this read-only snapshot. Check its
+  -- admission at both boundaries. Each inner read still checks the relevant
+  -- root, file or Docker peer and compares the exact node and kubeconfig.
+  observeBinding = do
+    nodeMatches <-
+      matchesScopedWorkerNode node <$> observeNodeCreateUnderLease bootstrap operation (pure True)
+    current <- readKindKubeconfig bootstrap
+    configMatches <- either (const (pure False)) (sameKindKubeconfig config) current
+    pure (nodeMatches && configMatches)
+
 -- Local checkpoint readability is separate from daemon presence and from
 -- resource ownership or worker settlement.
 observeNodeConfigRecord

@@ -14,6 +14,8 @@ module Prodbox.Control.KindIntent
   , observeKindFamilyIntent
   , observeKindOwnerFamilyIntent
   , observeKindExternalFamilyIntent
+  , observeKindTeardownAdmission
+  , recordKindTeardownAdmission
   , recordKindVolumeIntent
   , observeKindVolumeIntent
   )
@@ -102,6 +104,13 @@ data KindIntentObservation
 data IntentProtocol = LegacyIntent | FamilyIntent | OwnerFamilyIntent
   deriving (Eq)
 
+data IntentPurpose = ReconcileIntent | TeardownAdmission
+  deriving (Eq)
+
+intentName :: IntentPurpose -> FilePath
+intentName ReconcileIntent = "kind-intent.json"
+intentName TeardownAdmission = "kind-teardown-admission.json"
+
 data IntentSelection = AnyIntent | AnyFamilyIntent | OwnerFamilyOnly | ExternalFamilyOnly
   deriving (Eq)
 
@@ -132,8 +141,22 @@ observeKindVolumeIntent bootstrap volume
 observeKindIntentFor :: BootstrapProjection -> Maybe KindVolume -> IO KindIntentObservation
 observeKindIntentFor bootstrap expectedVolume = observeKindIntentForMode bootstrap expectedVolume AnyIntent
 
-observeKindIntentForMode :: BootstrapProjection -> Maybe KindVolume -> IntentSelection -> IO KindIntentObservation
-observeKindIntentForMode bootstrap expectedVolume selection = do
+observeKindIntentForMode
+  :: BootstrapProjection -> Maybe KindVolume -> IntentSelection -> IO KindIntentObservation
+observeKindIntentForMode = observeIntentRecord ReconcileIntent
+
+-- A receipt only binds the durable decision to a scope. Its consumer must
+-- also hold the matching operation and keep Authority deployment fenced.
+observeKindTeardownAdmission :: BootstrapProjection -> IO KindIntentObservation
+observeKindTeardownAdmission bootstrap = observeIntentRecord TeardownAdmission bootstrap Nothing OwnerFamilyOnly
+
+observeIntentRecord
+  :: IntentPurpose
+  -> BootstrapProjection
+  -> Maybe KindVolume
+  -> IntentSelection
+  -> IO KindIntentObservation
+observeIntentRecord purpose bootstrap expectedVolume selection = do
   result <- withScopeRootDescriptor scope $ \root sameRoot -> do
     attempted <- try (inspect root sameRoot)
     pure $
@@ -157,7 +180,7 @@ observeKindIntentForMode bootstrap expectedVolume selection = do
           then pure KindIntentGenerationUnavailable
           else do
             result <- mask $ \restore -> do
-              opened <- try (Posix.openFdAt (Just root) "kind-intent.json" Posix.ReadOnly flags)
+              opened <- try (Posix.openFdAt (Just root) (intentName purpose) Posix.ReadOnly flags)
               case opened of
                 Left (failure :: IOException)
                   | isDoesNotExistError failure -> pure KindIntentMissing
@@ -179,7 +202,7 @@ observeKindIntentForMode bootstrap expectedVolume selection = do
                         after <- getFdStatus file
                         named <-
                           bracket
-                            (Posix.openFdAt (Just root) "kind-intent.json" Posix.ReadOnly flags)
+                            (Posix.openFdAt (Just root) (intentName purpose) Posix.ReadOnly flags)
                             Posix.closeFd
                             getFdStatus
                         pure $
@@ -209,18 +232,27 @@ observeKindIntentForMode bootstrap expectedVolume selection = do
       Left _ -> KindIntentInvalid
       Right operationId
         | not (validRootGeneration operationId) -> KindIntentInvalid
-        | selection /= ExternalFamilyOnly, expectedVolume == Nothing
-        , Aeson.decodeStrict' (kindIntentBytes bootstrap operationId rootStatus Nothing OwnerFamilyIntent) == Just value ->
+        | selection /= ExternalFamilyOnly
+        , expectedVolume == Nothing
+        , Aeson.decodeStrict'
+            (kindIntentBytes purpose bootstrap operationId rootStatus Nothing OwnerFamilyIntent)
+            == Just value ->
             KindIntentMatches operationId
-        | selection /= OwnerFamilyOnly, expectedVolume == Nothing
-        , Aeson.decodeStrict' (kindIntentBytes bootstrap operationId rootStatus Nothing FamilyIntent) == Just value ->
+        | selection /= OwnerFamilyOnly
+        , expectedVolume == Nothing
+        , Aeson.decodeStrict' (kindIntentBytes purpose bootstrap operationId rootStatus Nothing FamilyIntent)
+            == Just value ->
             KindIntentMatches operationId
         | selection == AnyIntent
-        , Aeson.decodeStrict' (kindIntentBytes bootstrap operationId rootStatus expectedVolume LegacyIntent) == Just value ->
+        , Aeson.decodeStrict'
+            (kindIntentBytes purpose bootstrap operationId rootStatus expectedVolume LegacyIntent)
+            == Just value ->
             KindIntentMatches operationId
-        | selection == AnyIntent, Nothing <- expectedVolume
+        | selection == AnyIntent
+        , Nothing <- expectedVolume
         , Right candidate <- recordedVolume value
-        , Aeson.decodeStrict' (kindIntentBytes bootstrap operationId rootStatus (Just candidate) LegacyIntent)
+        , Aeson.decodeStrict'
+            (kindIntentBytes purpose bootstrap operationId rootStatus (Just candidate) LegacyIntent)
             == Just value ->
             KindIntentVolumeMatches operationId candidate
         | otherwise -> KindIntentConflict
@@ -275,8 +307,27 @@ volumeMatchesBootstrap bootstrap volume =
   kindVolumeScope volume == bootstrapScope bootstrap
     && kindVolumeGeneration volume == Text.unpack (bootstrapRootGeneration bootstrap)
 
-recordKindIntentFor :: BootstrapProjection -> String -> Maybe KindVolume -> IntentProtocol -> IO KindIntentResult
-recordKindIntentFor bootstrap operationId expectedVolume protocol
+recordKindIntentFor
+  :: BootstrapProjection -> String -> Maybe KindVolume -> IntentProtocol -> IO KindIntentResult
+recordKindIntentFor = recordIntent ReconcileIntent
+
+-- The caller must hold the operation lease and obtain fresh early teardown
+-- admission before recording this decision.
+recordKindTeardownAdmission :: BootstrapProjection -> String -> IO KindIntentResult
+recordKindTeardownAdmission bootstrap operation = do
+  owner <- observeKindOwnerFamilyIntent bootstrap
+  if owner == KindIntentMatches operation
+    then recordIntent TeardownAdmission bootstrap operation Nothing OwnerFamilyIntent
+    else pure KindIntentUnobservable
+
+recordIntent
+  :: IntentPurpose
+  -> BootstrapProjection
+  -> String
+  -> Maybe KindVolume
+  -> IntentProtocol
+  -> IO KindIntentResult
+recordIntent purpose bootstrap operationId expectedVolume protocol
   | not (validRootGeneration operationId) = pure KindIntentInvalidOperation
   | otherwise = do
       outcome <- withScopeRootDescriptor scope $ \root sameRoot -> do
@@ -286,7 +337,7 @@ recordKindIntentFor bootstrap operationId expectedVolume protocol
  where
   scope = bootstrapScope bootstrap
   generation = Text.unpack (bootstrapRootGeneration bootstrap)
-  name = "kind-intent.json"
+  name = intentName purpose
   fileFlags =
     Posix.defaultFileFlags
       { Posix.nofollow = True
@@ -311,7 +362,7 @@ recordKindIntentFor bootstrap operationId expectedVolume protocol
         if generationState /= Right ScopeGenerationMatches
           then pure KindIntentWrongGeneration
           else do
-            let contents = kindIntentBytes bootstrap operationId rootStatus expectedVolume protocol
+            let contents = kindIntentBytes purpose bootstrap operationId rootStatus expectedVolume protocol
             mask $ \restore -> do
               created <- try (Posix.openFdAt (Just root) name Posix.WriteOnly fileFlags)
               case created of
@@ -365,14 +416,29 @@ recordKindIntentFor bootstrap operationId expectedVolume protocol
                     (_ :: Either IOException Bool) -> KindIntentIncomplete
 
 kindIntentBytes
-  :: BootstrapProjection -> String -> FileStatus -> Maybe KindVolume -> IntentProtocol -> ByteString.ByteString
-kindIntentBytes bootstrap operationId status expectedVolume protocol =
+  :: IntentPurpose
+  -> BootstrapProjection
+  -> String
+  -> FileStatus
+  -> Maybe KindVolume
+  -> IntentProtocol
+  -> ByteString.ByteString
+kindIntentBytes purpose bootstrap operationId status expectedVolume protocol =
   LazyByteString.toStrict $
     Aeson.encode $
       Aeson.object $
-        [ "schema_version" Aeson..= (case protocol of LegacyIntent -> maybe (1 :: Int) (const 2) expectedVolume; FamilyIntent -> 3; OwnerFamilyIntent -> 4)
+        [ "schema_version"
+            Aeson..= ( case protocol of
+                         LegacyIntent -> maybe (1 :: Int) (const 2) expectedVolume
+                         FamilyIntent -> 3
+                         OwnerFamilyIntent -> 4
+                     )
         , "operation_id" Aeson..= operationId
-        , "operation" Aeson..= ("kind-reconcile" :: String)
+        , "operation"
+            Aeson..= ( case purpose of
+                         ReconcileIntent -> "kind-reconcile"
+                         TeardownAdmission -> "kind-teardown-never-admitted" :: String
+                     )
         , "cluster" Aeson..= scopeKindName scope
         , "root_generation" Aeson..= generation
         , "root_device" Aeson..= toInteger (deviceID status)

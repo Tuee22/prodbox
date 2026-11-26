@@ -147,12 +147,17 @@ withNewConnectedKindNodeVolumeRemovalGuarded bootstrap operation settlementStabl
       case mkKindNodeVolumeIntent operation (DockerDaemonObserved identifier identity) of
         Nothing -> pure NodeVolumeRemovalActionInvalid
         Just intent -> do
-          proposal <- observeKindNodeVolumeIntent bootstrap intent stable
+          opening <- stable
+          proposal <-
+            if opening
+              then observeKindNodeVolumeIntent bootstrap intent (pure True)
+              else pure NodeVolumeIntentUnobservable
           case proposal of
             NodeVolumeIntentMatches -> do
-              attempt <- observeKindNodeVolumeAttempt bootstrap intent stable
+              attempt <- observeKindNodeVolumeAttempt bootstrap intent (pure True)
+              closing <- stable
               case attempt of
-                NodeVolumeAttemptMatches -> do
+                NodeVolumeAttemptMatches | closing -> do
                   volume <- inspectDockerSessionNodeVarVolume session bootstrap operation
                   if volume /= Right DockerNodeVarVolumeMatching
                     then pure NodeVolumeRemovalActionConfigurationRefused
@@ -164,14 +169,22 @@ withNewConnectedKindNodeVolumeRemovalGuarded bootstrap operation settlementStabl
                           case written of
                             NodeVolumeRemovalRecorded -> do
                               let markerStable = do
-                                    marker <- observeKindNodeVolumeRemoval bootstrap intent stable
+                                    before <- stable
+                                    marker <-
+                                      if before
+                                        then observeKindNodeVolumeRemoval bootstrap intent (pure True)
+                                        else pure NodeVolumeRemovalUnobservable
                                     if marker /= NodeVolumeRemovalMatches
                                       then pure False
                                       else do
                                         allowed <- admit session stable
                                         afterAdmission <- stable
                                         pure (allowed && afterAdmission)
-                              prior <- observeKindNodeVolumeRemovalReceipt bootstrap intent markerStable
+                              bound <- markerStable
+                              prior <-
+                                if bound
+                                  then observeKindNodeVolumeRemovalReceipt bootstrap intent (pure True)
+                                  else pure NodeVolumeRemovalReceiptUnobservable
                               case prior of
                                 NodeVolumeRemovalReceiptMissing -> do
                                   ready <- markerStable
@@ -187,5 +200,6 @@ withNewConnectedKindNodeVolumeRemovalGuarded bootstrap operation settlementStabl
                                 other -> pure (NodeVolumeRemovalActionReceiptRefused other)
                             other -> pure (NodeVolumeRemovalActionMarkerRefused other)
                         _ -> pure NodeVolumeRemovalActionAdmissionRefused
+                NodeVolumeAttemptMatches -> pure NodeVolumeRemovalActionChanged
                 other -> pure (NodeVolumeRemovalActionAttemptRefused other)
             other -> pure (NodeVolumeRemovalActionProposalRefused other)

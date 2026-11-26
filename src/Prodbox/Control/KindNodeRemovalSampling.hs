@@ -9,6 +9,7 @@ module Prodbox.Control.KindNodeRemovalSampling
   , classifyNodeRemovalReadback
   , observeNodeRemovalPositiveControl
   , nodeRemovalPositive
+  , nodeRemovalInventoryEmpty
   , sampleNodeRemoval
   ) where
 
@@ -115,6 +116,10 @@ nodeRemovalPositive identifier observed = case observed of
       && nodeRemovalNameIds sample == [identifier]
       && identifier `elem` nodeRemovalClusterIds sample
   _ -> False
+
+nodeRemovalInventoryEmpty :: NodeRemovalReadback -> Bool
+nodeRemovalInventoryEmpty observed =
+  observed == NodeRemovalReadbackSampled (NodeRemovalInventory False [] [])
 
 sampleNodeRemoval :: BootstrapProjection -> String -> IO (Maybe NodeRemovalInventory)
 sampleNodeRemoval bootstrap identifier = do

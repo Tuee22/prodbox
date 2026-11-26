@@ -4,19 +4,54 @@ module AdmissionHistoryTests (admissionHistorySuite) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (bracket)
+import Data.Aeson ((.=))
+import Data.Aeson qualified as Aeson
 import Data.ByteString qualified as ByteString
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.ByteString.Lazy qualified as LazyByteString
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as Map
+import Data.Text qualified as Text
 import Prodbox.Bootstrap.Broker.TokenReview
   ( BrokerTokenReviewResult (..)
   , BrokerTokenReviewUser (..)
   )
-import Prodbox.Control.AuthorityJournalClient (AdmissionSource (..), currentAdmission)
+import Prodbox.Config.BootstrapProjection
+  ( BootstrapDraft (..)
+  , BootstrapProjection
+  , bootstrapScope
+  , decodeOptionalBootstrapSource
+  , renderBootstrapDraft
+  )
+import Prodbox.Config.DeploymentScope
+  ( DeploymentEnvironment (Test)
+  , FreshScopeResult (FreshScopePrepared)
+  , deploymentScope
+  , prepareFreshScope
+  , scopeRoot
+  )
+import Prodbox.Control.AuthorityDeploy
+  ( RetainedAuthorityJournal (RetainedAuthorityJournalBound)
+  , observeRetainedAuthorityJournal
+  )
+import Prodbox.Control.AuthorityJournalClient
+  ( AdmissionSource (..)
+  , currentAdmission
+  , decodeAuthorityAdmission
+  )
 import Prodbox.ControlPlane.AdmissionJournalMirror
-  ( initialiseJournalMirror
+  ( JournalInitialization (..)
+  , JournalRemovalFence (..)
+  , initialiseJournalMirror
+  , initialiseRetainedJournalMirror
   , mirrorAdmissionRepository
+  , mirrorRetainedAdmissionRepository
+  , observeJournalInitialization
   , observeJournalMirror
+  , observeJournalRemovalFence
+  , observeRetainedJournalMirror
+  , recordJournalRemovalFence
   , renderMirror
+  , withJournalCustodyLease
   )
 import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   ( AuthorityAdmissionRepository (..)
@@ -26,6 +61,7 @@ import Prodbox.ControlPlane.AuthorityJournalReadServer
   ( bearerTokenOf
   , decideJournalReadAccess
   , journalReadAudience
+  , renderVerdictAnswer
   , verdictCode
   )
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
@@ -46,10 +82,14 @@ import System.Directory
   ( createDirectory
   , doesFileExist
   , getTemporaryDirectory
+  , removeDirectory
   , removeDirectoryRecursive
+  , removeFile
+  , renameFile
   )
 import System.FilePath ((</>))
-import System.Posix.Files (createSymbolicLink)
+import System.IO.Temp (withSystemTempDirectory)
+import System.Posix.Files (createSymbolicLink, deviceID, fileID, getSymbolicLinkStatus, setFileMode)
 import System.Posix.Process (getProcessID)
 import TestSupport (SuiteBuilder, assertMutationInvariant, describe, it, shouldBe)
 
@@ -57,36 +97,229 @@ admissionHistorySuite :: SuiteBuilder ()
 admissionHistorySuite = describe "admission history" $ do
   it
     "refuses a local fresh verdict when retained Authority state exists but its service is unavailable"
-    $ do
-      temporary <- getTemporaryDirectory
-      processId <- getProcessID
-      let directory = temporary </> ("admission-unavailable-" ++ show processId)
-      bracket (createDirectory directory) (const (removeDirectoryRecursive directory)) $ \() -> do
-        createDirectory (directory </> "authority-journal")
-        (verdict, source) <- currentAdmission directory
-        noChangeAllowed verdict `shouldBe` False
-        source `shouldBe` FromAuthority "not read"
-
-  it "does not treat a dangling retained Authority path as fresh" $ do
-    temporary <- getTemporaryDirectory
-    processId <- getProcessID
-    let directory = temporary </> ("admission-retained-link-" ++ show processId)
-    bracket (createDirectory directory) (const (removeDirectoryRecursive directory)) $ \() -> do
-      createSymbolicLink "missing" (directory </> "authority-journal")
-      (verdict, source) <- currentAdmission directory
+    $ withAdmissionScope
+    $ \bootstrap directory -> do
+      createDirectory (directory </> "authority-journal")
+      (verdict, source) <- currentAdmission bootstrap
       noChangeAllowed verdict `shouldBe` False
       source `shouldBe` FromAuthority "not read"
 
-  it "refuses a local fresh verdict when the control cluster cannot be observed" $ do
-    temporary <- getTemporaryDirectory
-    processId <- getProcessID
-    let directory = temporary </> ("admission-unobservable-" ++ show processId)
-    bracket (createDirectory directory) (const (removeDirectoryRecursive directory)) $ \() -> do
+  it "does not treat a dangling retained Authority path as fresh" $
+    withAdmissionScope $ \bootstrap directory -> do
+      createSymbolicLink "missing" (directory </> "authority-journal")
+      (verdict, source) <- currentAdmission bootstrap
+      noChangeAllowed verdict `shouldBe` False
+      source `shouldBe` FromAuthority "not read"
+
+  it "requires recovery after loss of a retained journal directory with a surviving binding" $
+    withAdmissionScope $ \bootstrap directory -> do
+      let journal = directory </> "authority-journal"
+          custody = directory </> "authority-journal-custody"
+          intent =
+            Aeson.object
+              [ "schema_version" .= (2 :: Int)
+              , "kind_name" .= ("prodbox-t-admission" :: Text.Text)
+              , "root_generation" .= Text.replicate 32 "b"
+              ]
+          privateRecord name value = do
+            let path = directory </> name
+            LazyByteString.writeFile path (Aeson.encode value)
+            setFileMode path 0o600
+          directoryIdentity path = do
+            observed <- getSymbolicLinkStatus path
+            pure (toInteger (deviceID observed), toInteger (fileID observed))
+      mapM_ (\path -> createDirectory path >> setFileMode path 0o700) [journal, custody]
+      journalId <- directoryIdentity journal
+      custodyId <- directoryIdentity custody
+      privateRecord "authority-journal-intent.json" intent
+      privateRecord
+        "authority-journal-binding.json"
+        (Aeson.object ["intent" .= intent, "journal" .= journalId, "custody" .= custodyId])
+      observeRetainedAuthorityJournal bootstrap >>= (`shouldBe` RetainedAuthorityJournalBound)
+      removeDirectory journal
+      (verdict, source) <- currentAdmission bootstrap
+      noChangeAllowed verdict `shouldBe` False
+      source `shouldBe` FromAuthority "not read"
+
+  it "refuses a local fresh verdict when the control cluster cannot be observed" $
+    withAdmissionScope $ \bootstrap directory -> do
       createDirectory (directory </> "control")
       writeFile (directory </> "control" </> "kubeconfig") "invalid kubeconfig"
-      (verdict, source) <- currentAdmission directory
+      (verdict, source) <- currentAdmission bootstrap
       noChangeAllowed verdict `shouldBe` False
       source `shouldBe` FromAuthority "not read"
+
+  it "accepts an admission answer only from the selected cluster" $ do
+    let observedAt = "2026-11-25T21:10:00Z"
+        reply = renderVerdictAnswer "prodbox-t-first" observedAt NeverAdmitted
+    decodeAuthorityAdmission "prodbox-t-first" reply `shouldBe` Right (NeverAdmitted, observedAt)
+    decodeAuthorityAdmission "prodbox-t-other" reply
+      `shouldBe` Left "the journal answer belongs to a different control cluster"
+    decodeAuthorityAdmission
+      "prodbox-t-first"
+      "{\"verdict\":\"never-admitted\",\"detail\":\"\",\"observed_at\":\"now\"}"
+      `shouldBe` Left "the Authority's answer lacks required journal metadata"
+
+  it "requires recovery when the journal disappears after its genesis reservation was used" $
+    withSystemTempDirectory "prodbox-journal-custody" $ \root -> do
+      aggregate <- either (fail . show) pure (initialCleanInstallAuthority 4 8)
+      let directory = root </> "journal"
+          custody = root </> "custody"
+          repository =
+            AuthorityAdmissionRepository
+              { readAuthorityAdmission = pure (Right (AuthorityAdmissionSnapshot () aggregate))
+              , compareAndSwapAuthorityAdmission = \() _ -> pure (Right ())
+              }
+      createDirectory directory
+      createDirectory custody
+      setFileMode custody 0o700
+      initialiseRetainedJournalMirror directory custody repository >>= (`shouldBe` Right ())
+      initialiseRetainedJournalMirror directory custody repository >>= (`shouldBe` Right ())
+      observeRetainedJournalMirror directory custody >>= (`shouldBe` JournalRead [])
+      let mirror = directory </> "admission.json"
+      original <- ByteString.readFile mirror
+      let reversed = "{\"schema_version\":1,\"operations\":[]}"
+          substituted = if original == reversed then "{\"operations\":[],\"schema_version\":1}" else reversed
+      ByteString.length substituted `shouldBe` ByteString.length original
+      ByteString.writeFile mirror substituted
+      changed <- observeRetainedJournalMirror directory custody
+      assertMutationInvariant
+        "lifecycle.modified_mirror_requires_recovery"
+        (not (noChangeAllowed (classifyAdmission changed)))
+      ByteString.writeFile mirror original
+      observeRetainedJournalMirror directory custody >>= (`shouldBe` JournalRead [])
+      removeFile (directory </> "genesis.json")
+      removeFile (directory </> "admission.json")
+      initialiseRetainedJournalMirror directory custody repository
+        >>= (`shouldBe` Left "the retained journal genesis reservation is missing or already used")
+      required <- observeRetainedJournalMirror directory custody
+      noChangeAllowed (classifyAdmission required) `shouldBe` False
+      doesFileExist (directory </> "genesis.json") >>= (`shouldBe` False)
+      doesFileExist (custody </> "genesis-attempt") >>= (`shouldBe` True)
+
+  it "excludes admission while a control removal is reserved and after its issuer exits" $
+    withSystemTempDirectory "prodbox-journal-removal" $ \root -> do
+      aggregate <- either (fail . show) pure (initialCleanInstallAuthority 4 8)
+      committed <- newIORef (0 :: Int)
+      let directory = root </> "journal"
+          custody = root </> "custody"
+          removal = "selected-generation-and-operation"
+          repository =
+            AuthorityAdmissionRepository
+              { readAuthorityAdmission = pure (Right (AuthorityAdmissionSnapshot () aggregate))
+              , compareAndSwapAuthorityAdmission = \() _ -> modifyIORef' committed (+ 1) >> pure (Right ())
+              }
+          mirrored = mirrorRetainedAdmissionRepository directory custody repository
+      createDirectory directory
+      createDirectory custody
+      setFileMode custody 0o700
+      initialiseRetainedJournalMirror directory custody repository >>= (`shouldBe` Right ())
+      accepted <- withJournalCustodyLease custody $ \held stable -> do
+        stable >>= (`shouldBe` True)
+        observeJournalRemovalFence held removal >>= (`shouldBe` JournalRemovalFenceAbsent)
+        compareAndSwapAuthorityAdmission mirrored () aggregate
+          >>= (`shouldBe` Left "retained-journal-lease-unavailable")
+        recordJournalRemovalFence held removal
+      accepted `shouldBe` Just True
+      compareAndSwapAuthorityAdmission mirrored () aggregate
+        >>= (`shouldBe` Left "retained-journal-or-admission-unavailable")
+      readIORef committed >>= (`shouldBe` 0)
+      reopened <- withJournalCustodyLease custody $ \held _ -> observeJournalRemovalFence held removal
+      reopened `shouldBe` Just JournalRemovalFenceMatches
+      foreignFence <- withJournalCustodyLease custody $ \held _ -> observeJournalRemovalFence held "different-operation"
+      foreignFence `shouldBe` Just JournalRemovalFenceUnconfirmed
+
+  it "settles an interrupted Authority commit only after exact aggregate read-back" $
+    withSystemTempDirectory "prodbox-armed-authority-commit" $ \root -> do
+      predecessor <- either (fail . show) pure (initialCleanInstallAuthority 4 8)
+      candidate <- either (fail . show) pure (initialCleanInstallAuthority 4 9)
+      committed <- newIORef (AuthorityAdmissionSnapshot (1 :: Int) predecessor)
+      available <- newIORef True
+      admissions <- newIORef (0 :: Int)
+      let directory = root </> "journal"
+          custody = root </> "custody"
+          armed = custody </> "admission-commit.cbor"
+          repository =
+            AuthorityAdmissionRepository
+              { readAuthorityAdmission = do
+                  readable <- readIORef available
+                  if readable then Right <$> readIORef committed else pure (Left "read unavailable")
+              , compareAndSwapAuthorityAdmission = \_ _ -> do
+                  modifyIORef' admissions (+ 1)
+                  writeIORef available False
+                  pure (Left "lost commit reply")
+              }
+          mirrored = mirrorRetainedAdmissionRepository directory custody repository
+          restart = initialiseRetainedJournalMirror directory custody repository
+      createDirectory directory
+      createDirectory custody
+      setFileMode custody 0o700
+      restart >>= (`shouldBe` Right ())
+      compareAndSwapAuthorityAdmission mirrored 1 candidate
+        >>= ( `shouldBe`
+                Left "lost commit reply; the exact armed Authority commit is unconfirmed; recovery is required"
+            )
+      during <- observeRetainedJournalMirror directory custody
+      noChangeAllowed (classifyAdmission during) `shouldBe` False
+      writeIORef available True
+      -- These states have the same admission projection. The predecessor
+      -- observation cannot acknowledge the possible delayed commit.
+      restart
+        >>= (`shouldBe` Left "the exact armed Authority commit is unconfirmed; recovery is required")
+      doesFileExist armed >>= (`shouldBe` True)
+      compareAndSwapAuthorityAdmission mirrored 1 candidate
+        >>= (`shouldBe` Left "retained-journal-or-admission-unavailable")
+      writeIORef committed (AuthorityAdmissionSnapshot 2 candidate)
+      restart >>= (`shouldBe` Right ())
+      doesFileExist armed >>= (`shouldBe` False)
+      readAuthorityAdmission mirrored >>= (`shouldBe` Right (AuthorityAdmissionSnapshot 2 candidate))
+      compareAndSwapAuthorityAdmission mirrored 2 candidate >>= (`shouldBe` Right ())
+      readIORef admissions >>= (`shouldBe` 1)
+
+  it "resumes a native journal initialization only at its original mount and Authority state" $
+    withSystemTempDirectory "prodbox-armed-journal-initialization" $ \root -> do
+      original <- either (fail . show) pure (initialCleanInstallAuthority 4 8)
+      substitute <- either (fail . show) pure (initialCleanInstallAuthority 4 9)
+      readAttempts <- newIORef (0 :: Int)
+      state <- newIORef original
+      let directory = root </> "journal"
+          custody = root </> "custody"
+          otherJournal = root </> "other-journal"
+          arm = custody </> "genesis-operation.cbor"
+          repository =
+            AuthorityAdmissionRepository
+              { readAuthorityAdmission = do
+                  modifyIORef' readAttempts (+ 1)
+                  attempt <- readIORef readAttempts
+                  if attempt == 2
+                    then pure (Left "process interrupted after arming")
+                    else Right . AuthorityAdmissionSnapshot () <$> readIORef state
+              , compareAndSwapAuthorityAdmission = \() _ -> pure (Left "genesis must not submit an admission")
+              }
+          restart = initialiseRetainedJournalMirror directory custody repository
+      mapM_ createDirectory [directory, custody, otherJournal]
+      setFileMode custody 0o700
+      restart
+        >>= (`shouldBe` Left "the Authority journal initialization no longer matches its backing admission")
+      originalRecord <- ByteString.readFile arm
+      observed <- observeJournalInitialization directory custody
+      case observed of
+        JournalInitializationArmed operation -> do
+          observeRetainedJournalMirror directory custody
+            >>= (`shouldBe` JournalRead [(operation, OperationUnresolved)])
+          observeJournalInitialization otherJournal custody >>= (`shouldBe` JournalInitializationUnconfirmed)
+          writeIORef state substitute
+          restart
+            >>= (`shouldBe` Left "the Authority journal initialization no longer matches its backing admission")
+          ByteString.readFile arm >>= (`shouldBe` originalRecord)
+          writeIORef state original
+          restart >>= (`shouldBe` Right ())
+          restart >>= (`shouldBe` Right ())
+          ByteString.readFile arm >>= (`shouldBe` originalRecord)
+          observeJournalInitialization directory custody
+            >>= (`shouldBe` JournalInitializationComplete operation)
+          observeRetainedJournalMirror directory custody >>= (`shouldBe` JournalRead [])
+        _ -> fail ("expected the original armed journal initialization: " ++ show observed)
 
   it "reports an empty, successfully read journal as never admitted" $ do
     classifyAdmission (JournalRead []) `shouldBe` NeverAdmitted
@@ -213,6 +446,21 @@ admissionHistorySuite = describe "admission history" $ do
       initialised `shouldBe` Right ()
       after <- observeJournalMirror directory
       classifyAdmission after `shouldBe` NeverAdmitted
+      let genesis = directory </> "genesis.json"
+          retainedGenesis = directory </> "retained-genesis.json"
+      renameFile genesis retainedGenesis
+      writeFile genesis "corrupt"
+      rejected <- observeJournalMirror directory
+      noChangeAllowed (classifyAdmission rejected) `shouldBe` False
+      initialiseJournalMirror directory base
+        >>= (`shouldBe` Left "the retained journal genesis is invalid or unobservable; recovery is required")
+      readFile genesis >>= (`shouldBe` "corrupt")
+      removeFile genesis
+      createSymbolicLink retainedGenesis genesis
+      linked <- observeJournalMirror directory
+      noChangeAllowed (classifyAdmission linked) `shouldBe` False
+      removeFile genesis
+      renameFile retainedGenesis genesis
       -- a corrupt mirror is unobservable, never empty
       writeFile (directory </> "admission.json") "not json"
       corrupt <- observeJournalMirror directory
@@ -344,3 +592,34 @@ admissionHistorySuite = describe "admission history" $ do
           ( classifyAdmission observed /= NeverAdmitted
               && not (noChangeAllowed (classifyAdmission observed))
           )
+
+withAdmissionScope :: (BootstrapProjection -> FilePath -> IO ()) -> IO ()
+withAdmissionScope action = withSystemTempDirectory "prodbox-admission-test" $ \anchor -> do
+  let draft =
+        BootstrapDraft
+          { draftProjectAnchor = Text.pack anchor
+          , draftRuntimeSocket = "/var/run/docker.sock"
+          , draftEnvironment = "test"
+          , draftDeploymentId = "admission"
+          , draftRootGeneration = Text.replicate 32 "b"
+          , draftApiPort = 26443
+          , draftNodeImage = "kindest/node@" <> digest
+          , draftHttpHostPort = 28080
+          , draftHttpNodePort = 30080
+          , draftHttpsHostPort = 28443
+          , draftHttpsNodePort = 30443
+          , draftListenAddress = "127.0.0.1"
+          , draftNodePath = "artifacts/node.tar"
+          , draftNodeDigest = digest
+          , draftNodeMaximumBytes = 1048576
+          , draftKindPath = "artifacts/kind"
+          , draftKindDigest = digest
+          , draftKindMaximumBytes = 1048576
+          }
+      digest = "sha256:" <> Text.replicate 64 "a"
+  scope <- either (fail . show) pure (deploymentScope anchor Test "admission" 26443)
+  prepareFreshScope scope (replicate 32 'b') >>= (`shouldBe` FreshScopePrepared)
+  decoded <- decodeOptionalBootstrapSource (anchor </> "selected.dhall") (renderBootstrapDraft draft)
+  case decoded of
+    Right (Just bootstrap) -> action bootstrap (scopeRoot (bootstrapScope bootstrap))
+    other -> fail (show other)

@@ -3,13 +3,16 @@
 module ScenarioEvidenceTests (scenarioEvidenceSuite) where
 
 import Control.Concurrent.Async (concurrently)
-import Control.Exception (bracket)
+import Control.Exception (IOException, bracket, try)
 import Control.Monad (forM_)
+import Data.Aeson ((.=))
+import Data.Aeson qualified as Aeson
 import Data.Bits ((.&.))
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as ByteString8
+import Data.ByteString.Lazy qualified as LazyBytes
 import Data.Either (isRight)
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
 import Data.Maybe (isJust)
 import Data.Text (Text)
@@ -18,7 +21,24 @@ import Data.Text.Encoding qualified as TextEncoding
 import Data.Text.IO qualified as TextIO
 import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Config.DeploymentScope (DeploymentEnvironment (Test), deploymentScope)
-import Prodbox.Subprocess (BoundedSubprocessLimits (..), ProcessOutput (..), Subprocess (..), captureSubprocessBounded)
+import Prodbox.Control.KindArchiveTransaction
+  ( ArchiveTransactionRecovery (..)
+  , authorityArchiveRecordName
+  , confirmPublishedAuthorityArchive
+  , kindArchivePendingAbsent
+  , observeActiveAuthorityFence
+  , publishKindArchive
+  , recoverKindArchive
+  , retireArchivedAuthorityFence
+  )
+import Prodbox.Control.TestRunCleanup (resumeTestRunCleanup)
+import Prodbox.Subprocess
+  ( BoundedSubprocessLimits (..)
+  , ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessBounded
+  )
+import Prodbox.Test.MutationDependencies (PreparedMutationDependencies (..))
 import Prodbox.Test.MutationExecutor
   ( MutationBindingObservation (..)
   , MutationContainerIdObservation (..)
@@ -29,21 +49,28 @@ import Prodbox.Test.MutationExecutor
   , MutationLaunchInvocation (..)
   , changedInvocationDiagnostic
   , inspectMutationCampaign
-  , mutationIsolationCommand
   , mutationContainerArguments
   , mutationInventoryDiagnostic
+  , mutationIsolationCommand
   , observeMutationContainerId
   , observeMutationContainerReceipt
   , prepareCampaignRoot
+  , readMutationOutputMember
   , recordCampaignIdentity
-  , withPreparedCampaignRoot
   , recordMutationContainerReceipt
   , validMutationMounts
   , withBoundMutationDirectories
   , withCampaignMutationDirectories
+  , withPreparedCampaignRoot
   , withRecordedMutationLaunch
   )
 import Prodbox.Test.MutationOutcome
+import Prodbox.Test.MutationOutputInventory
+  ( MutationOutputObservation (MutationOutputObserved)
+  , mutationOutputLimits
+  , observeMutationOutputInventory
+  , removeObservedMutationOutput
+  )
 import Prodbox.Test.MutationSnapshot
 import Prodbox.Test.MutationSnapshotObserve
 import Prodbox.Test.MutationSnapshotWrite
@@ -58,6 +85,7 @@ import Prodbox.Test.Qualification.SourceIdentity
   , WorktreeState (WorktreeDirty)
   , mkGitHead
   , mkSourceIdentity
+  , sourceManifestDigest
   )
 import Prodbox.Test.Qualification.SourceManifest
   ( SourceCaptureLimits (..)
@@ -72,6 +100,7 @@ import System.Directory
   ( createDirectory
   , createDirectoryIfMissing
   , doesDirectoryExist
+  , doesPathExist
   , listDirectory
   , makeAbsolute
   , removeFile
@@ -82,10 +111,14 @@ import System.FilePath (takeFileName, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Posix.Files
   ( createLink
+  , createNamedPipe
   , createSymbolicLink
+  , deviceID
+  , fileID
   , fileMode
   , getFileStatus
   , linkCount
+  , removeLink
   , setFileMode
   )
 import System.Posix.IO qualified as Posix
@@ -108,9 +141,13 @@ scenarioEvidenceSuite = describe "scenario evidence comparison" $ do
         privateText = "sensitive-output-not-for-diagnostics"
         buildDiagnostic = changedInvocationDiagnostic "mutant-build" Nothing (Just (ExitFailure 2, privateText, ""))
         combined = [diagnostic, MutationInventoryFailed "mutant-test" (ExitFailure 7), buildDiagnostic]
-    diagnostic `shouldBe`
-      MutationInvocationChanged "mutant-test" (Just (ExitFailure 1))
-        (Just (TestAssertionFailures 1 [assertion])) 0 (ByteString.length transcript)
+    diagnostic
+      `shouldBe` MutationInvocationChanged
+        "mutant-test"
+        (Just (ExitFailure 1))
+        (Just (TestAssertionFailures 1 [assertion]))
+        0
+        (ByteString.length transcript)
     (privateText `ByteString8.isInfixOf` ByteString8.pack (show combined)) `shouldBe` False
     changedInvocationDiagnostic "baseline-build" Nothing Nothing
       `shouldBe` MutationInvocationChanged "baseline-build" Nothing Nothing 0 0
@@ -127,21 +164,168 @@ scenarioEvidenceSuite = describe "scenario evidence comparison" $ do
     let source = "/private/campaign/source"
         output = "/private/campaign/output"
         cidFile = "/private/campaign/container.cid"
-        arguments = mutationContainerArguments "/operator" "1000:1000" source output cidFile "case" "true"
+        dependencyRoot = "/private/campaign/dependencies"
+        copied = dependencyRoot ++ "/store"
+        mounted = "/operator/.cabal/store"
+        config = dependencyRoot ++ "/cabal.config"
+        dependencies =
+          PreparedMutationDependencies
+            dependencyRoot
+            copied
+            mounted
+            config
+            (hashPublicEvidence "plan")
+            (hashPublicEvidence "content")
+        arguments =
+          mutationContainerArguments
+            dependencies
+            "prodbox-mutdisk-example"
+            "/operator"
+            "1000:1000"
+            source
+            output
+            cidFile
+            "case"
+            "true"
     ((source ++ ":" ++ source ++ ":ro") `elem` arguments) `shouldBe` True
-    ((output ++ ":" ++ output) `elem` arguments) `shouldBe` True
+    ( ["--mount", "type=volume,source=prodbox-mutdisk-example,target=" ++ output ++ ",volume-nocopy"]
+        `isInfixOf` arguments
+      )
+      `shouldBe` True
+    ("--read-only" `elem` arguments) `shouldBe` True
     (("HOME=" ++ output ++ "/.isolated-home") `elem` arguments) `shouldBe` True
     (("CABAL_DIR=" ++ output ++ "/.isolated-cabal") `elem` arguments) `shouldBe` True
+    (("CABAL_CONFIG=" ++ config) `elem` arguments) `shouldBe` True
+    ((copied ++ ":" ++ mounted ++ ":ro") `elem` arguments) `shouldBe` True
     (["--network", "none"] `isInfixOf` arguments) `shouldBe` True
+    (["--entrypoint", "/usr/bin/env"] `isInfixOf` arguments) `shouldBe` True
+    (["-i", "HOME=" ++ output ++ "/.isolated-home"] `isInfixOf` arguments) `shouldBe` True
     (["--cidfile", cidFile] `isInfixOf` arguments) `shouldBe` True
     ("--pull=never" `elem` arguments) `shouldBe` True
-    any (isInfixOf "/operator/.cabal") arguments `shouldBe` False
+    any (isInfixOf "/operator/.cabal") (filter (/= copied ++ ":" ++ mounted ++ ":ro") arguments)
+      `shouldBe` False
     validMutationMounts "/operator" source output `shouldBe` True
     validMutationMounts "/operator" source source `shouldBe` False
     validMutationMounts "/operator" source (source ++ "/child") `shouldBe` False
     validMutationMounts "/operator" (source ++ ":escape") output `shouldBe` False
     validMutationMounts "/operator" "/operator/.ghcup/bin" output `shouldBe` False
     validMutationMounts "/operator" "/usr/private" output `shouldBe` False
+  it "restores an interrupted archive and refuses a foreign staged entry" $
+    withSystemTempDirectory "prodbox-retained-kind-archive" $ \root -> do
+      let oldOperation = replicate 32 'a'
+          generation = "prepared root generation"
+          first = "kind-network-intent.json"
+          names = [first, "kind-intent.json", "kind-teardown-admission.json"]
+          live = "control/kubeconfig" : names
+          archive = root </> "history" </> oldOperation
+          staging = root </> "kind-archive-pending"
+          allowed operation name = operation == oldOperation && name `elem` names
+          inodes directory = traverse (fmap fileID . getFileStatus . (directory </>))
+      createDirectory (root </> "control")
+      forM_ live $ \name -> do
+        ByteString.writeFile (root </> name) "private archive fixture"
+        setFileMode (root </> name) 0o600
+      original <- inodes root live
+      bracket (Posix.openFd root Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd $ \held -> do
+        checks <- newIORef (0 :: Int)
+        let interruptAfterFirstMove = atomicModifyIORef' checks (\count -> (count + 1, count < 2))
+            recover selected = recoverKindArchive held (pure True) selected allowed
+        attempted <-
+          try (publishKindArchive held interruptAfterFirstMove generation oldOperation names True)
+        isRight (attempted :: Either IOException [FilePath]) `shouldBe` False
+        doesPathExist (root </> first) `shouldReturn` False
+        doesPathExist (staging </> first) `shouldReturn` True
+        doesPathExist archive `shouldReturn` False
+        kindArchivePendingAbsent held `shouldReturn` False
+        recover "unrelated generation" `shouldReturn` ArchiveTransactionUnconfirmed
+        createSymbolicLink (root </> "control/kubeconfig") (staging </> "foreign")
+        recover generation `shouldReturn` ArchiveTransactionUnconfirmed
+        doesPathExist (staging </> first) `shouldReturn` True
+        removeLink (staging </> "foreign")
+        recover generation `shouldReturn` ArchiveTransactionRestored
+        kindArchivePendingAbsent held `shouldReturn` True
+        inodes root live `shouldReturn` original
+        _ <- publishKindArchive held (pure True) generation oldOperation names True
+        inodes archive ("retired-kubeconfig" : names) `shouldReturn` original
+        mapM_ (\name -> doesPathExist (root </> name) `shouldReturn` False) live
+  it "retains the Authority fence until a completed kind archive confirms the same operation" $
+    withSystemTempDirectory "prodbox-authority-kind-archive" $ \root -> do
+      let original = replicate 32 'b'
+          generation = "scope generation"
+          records = ["kind-intent.json", authorityArchiveRecordName]
+          custody = root </> "authority-journal-custody"
+          active = custody </> "control-removal.json"
+          retired = custody </> ("control-removal-" ++ original ++ ".json")
+          expected = Aeson.String "exact matched Authority removal"
+          encoded = LazyBytes.toStrict (Aeson.encode expected)
+          allowed _ name = name `elem` records
+          open path = Posix.openFd path Posix.ReadOnly Posix.defaultFileFlags
+      createDirectory custody
+      setFileMode custody 0o700
+      forM_ [root </> "kind-intent.json", root </> authorityArchiveRecordName, active] $ \file -> do
+        ByteString.writeFile file encoded
+        setFileMode file 0o600
+      originalInode <- fileID <$> getFileStatus active
+      bracket (open root) Posix.closeFd $ \held ->
+        bracket (open custody) Posix.closeFd $ \authority -> do
+          let prove operation value =
+                confirmPublishedAuthorityArchive held (pure True) generation operation (allowed operation) value
+          prove original expected `shouldReturn` False
+          ByteString.readFile active `shouldReturn` encoded
+          _ <- publishKindArchive held (pure True) generation original records False
+          prove original (Aeson.String "foreign removal") `shouldReturn` False
+          prove (replicate 32 'c') expected `shouldReturn` False
+          prove original expected `shouldReturn` True
+          retireArchivedAuthorityFence authority (pure True) original expected `shouldReturn` True
+          fmap (either (const (Just Aeson.Null)) id) (observeActiveAuthorityFence authority)
+            `shouldReturn` Nothing
+          ByteString.readFile retired `shouldReturn` encoded
+          fmap fileID (getFileStatus retired) `shouldReturn` originalInode
+  it "reads a private compiled member through Cabal's readable directories" $
+    withSystemTempDirectory "prodbox-mutation-output-member" $ \root -> do
+      let nested = root </> "build"
+          file = nested </> "binary"
+          relative = "build" </> "binary"
+      createDirectory nested
+      setFileMode nested 0o755
+      ByteString.writeFile file "bounded binary fixture"
+      setFileMode file 0o700
+      bracket (Posix.openFd root Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd $ \held -> do
+        readMutationOutputMember held (pure True) relative 1024 `shouldReturn` Just "bounded binary fixture"
+        readMutationOutputMember held (pure True) relative 1 `shouldReturn` Nothing
+        setFileMode nested 0o775
+        readMutationOutputMember held (pure True) relative 1024 `shouldReturn` Nothing
+  it "removes only an unchanged, inventoried mutation output tree" $
+    withSystemTempDirectory "prodbox-mutation-output-removal" $ \directory -> do
+      let output = directory </> "output"
+          nested = output </> "objects"
+          original = nested </> "original"
+          foreignFile = directory </> "foreign"
+          changed = output </> "added"
+          flags = Posix.defaultFileFlags {Posix.nofollow = True, Posix.directory = True, Posix.cloexec = True}
+          privateFile path bytes = ByteString.writeFile path bytes >> setFileMode path 0o600
+      createDirectoryIfMissing True nested
+      mapM_ (`setFileMode` 0o700) [directory, output, nested]
+      privateFile original "local output"
+      privateFile foreignFile "other fixture"
+      limits <- maybe (fail "invalid inventory limits") pure (mutationOutputLimits 64 65536 8 5000000)
+      bracket (Posix.openFd directory Posix.ReadOnly flags) Posix.closeFd $ \parent -> do
+        let observe = bracket (Posix.openFd output Posix.ReadOnly flags) Posix.closeFd $ \root -> do
+              result <- observeMutationOutputInventory limits root
+              case result of
+                MutationOutputObserved inventory -> pure inventory
+                other -> fail (show other)
+        first <- observe
+        createSymbolicLink foreignFile changed
+        removeObservedMutationOutput limits parent "output" first (pure True) `shouldReturn` False
+        ByteString.readFile original `shouldReturn` "local output"
+        ByteString.readFile foreignFile `shouldReturn` "other fixture"
+        removeFile changed
+        current <- observe
+        removeObservedMutationOutput limits parent "output" current (pure False) `shouldReturn` False
+        removeObservedMutationOutput limits parent "output" current (pure True) `shouldReturn` True
+        doesDirectoryExist output `shouldReturn` False
+        ByteString.readFile foreignFile `shouldReturn` "other fixture"
   it "holds the mutation roots and preserves the result when a root is replaced" $
     withSystemTempDirectory "prodbox-mutation-bindings" $ \directory -> do
       let source = directory </> "source"
@@ -162,6 +346,56 @@ scenarioEvidenceSuite = describe "scenario evidence comparison" $ do
         pure (23 :: Int)
       observed `shouldBe` MutationBindingsChanged 23
       doesDirectoryExist saved `shouldReturn` True
+  it "finds no registered test cleanup when the test parent is absent" $
+    withSystemTempDirectory "prodbox-missing-test-parent" $ \project ->
+      resumeTestRunCleanup project "1875125470176424" `shouldReturn` Right False
+  it "resumes a test-root quarantine only for its registered inode" $
+    withSystemTempDirectory "prodbox-retired-test-run" $ \project -> do
+      let run = "run-" ++ replicate 32 'a'
+          parent = project </> ".test-data"
+          original = parent </> run
+          quarantine = parent </> (".cleanup-" ++ run ++ "-root")
+          admitted = parent </> (".cleanup-" ++ run ++ "-admitted.json")
+          moved = parent </> (".cleanup-" ++ run ++ "-quarantined.json")
+          sibling = parent </> "another-run"
+          bridge = original </> ("kind-worker-" ++ replicate 32 'c') </> "bridge"
+      createDirectoryIfMissing True (original </> "owned-data")
+      createDirectoryIfMissing True bridge
+      createNamedPipe (bridge </> "request") 0o600
+      createDirectory sibling
+      mapM_ (`setFileMode` 0o700) [parent, original, sibling]
+      setFileMode (original </> "owned-data") 0o755
+      ByteString.writeFile (original </> "owned-data" </> "owned") "retired fixture"
+      setFileMode (original </> "owned-data" </> "owned") 0o644
+      ByteString.writeFile (sibling </> "untouched") "separate fixture"
+      createSymbolicLink (sibling </> "untouched") (original </> "owned-data" </> "retired-link")
+      info <- getFileStatus original
+      let record inode =
+            Aeson.object
+              [ "schema_version" .= (1 :: Int)
+              , "kind" .= ("settled-test-run" :: String)
+              , "run_id" .= run
+              , "root_generation" .= replicate 32 'b'
+              , "kind_operation" .= replicate 32 'c'
+              , "scenario_evidence_run" .= replicate 32 'd'
+              , "root_identity" .= (toInteger (deviceID info), inode)
+              ]
+          writeClaim inode = Aeson.encodeFile admitted (record inode) >> setFileMode admitted 0o600
+      resumeTestRunCleanup project run `shouldReturn` Right False
+      writeClaim (toInteger (fileID info) + 1)
+      renameDirectory original quarantine
+      refused <- resumeTestRunCleanup project run
+      refused `shouldSatisfy` either (const True) (const False)
+      doesDirectoryExist quarantine `shouldReturn` True
+      doesPathExist moved `shouldReturn` False
+      writeClaim (toInteger (fileID info))
+      resumeTestRunCleanup project run `shouldReturn` Right True
+      doesPathExist original `shouldReturn` False
+      doesPathExist quarantine `shouldReturn` False
+      doesPathExist admitted `shouldReturn` True
+      doesPathExist moved `shouldReturn` True
+      ByteString.readFile (sibling </> "untouched") `shouldReturn` "separate fixture"
+      resumeTestRunCleanup project run `shouldReturn` Right True
   it "refuses a symlinked mutation output before the action runs" $
     withSystemTempDirectory "prodbox-mutation-bindings" $ \directory -> do
       let source = directory </> "source"
@@ -186,15 +420,51 @@ scenarioEvidenceSuite = describe "scenario evidence comparison" $ do
       bracket (Posix.openFd directory Posix.ReadOnly flags) Posix.closeFd $ \parent ->
         bracket (Posix.openFd source Posix.ReadOnly flags) Posix.closeFd $ \sourceFd ->
           bracket (Posix.openFd output Posix.ReadOnly flags) Posix.closeFd $ \outputFd -> do
-            withRecordedMutationLaunch parent sourceFd outputFd "prodbox-mutant-case" "baseline-build" "true" 120 (pure True) (writeIORef called True >> pure (17 :: Int))
+            withRecordedMutationLaunch
+              parent
+              sourceFd
+              outputFd
+              "prodbox-mutant-case"
+              "baseline-build"
+              "true"
+              120
+              (pure True)
+              (writeIORef called True >> pure (17 :: Int))
               `shouldReturn` MutationLaunchReturned 17
             readIORef called `shouldReturn` True
             writeIORef called False
-            withRecordedMutationLaunch parent sourceFd outputFd "prodbox-mutant-case" "baseline-build" "true" 120 (pure True) (writeIORef called True >> pure (17 :: Int))
+            withRecordedMutationLaunch
+              parent
+              sourceFd
+              outputFd
+              "prodbox-mutant-case"
+              "baseline-build"
+              "true"
+              120
+              (pure True)
+              (writeIORef called True >> pure (17 :: Int))
               `shouldReturn` MutationLaunchDenied MutationLaunchIntentExists
-            withRecordedMutationLaunch parent sourceFd outputFd "prodbox-mutant-case" "../bad" "true" 120 (pure True) (writeIORef called True >> pure (17 :: Int))
+            withRecordedMutationLaunch
+              parent
+              sourceFd
+              outputFd
+              "prodbox-mutant-case"
+              "../bad"
+              "true"
+              120
+              (pure True)
+              (writeIORef called True >> pure (17 :: Int))
               `shouldReturn` MutationLaunchDenied MutationLaunchIntentRefused
-            withRecordedMutationLaunch parent sourceFd outputFd "prodbox-mutant-case" "mutant-build" "true" 120 (pure False) (writeIORef called True >> pure (17 :: Int))
+            withRecordedMutationLaunch
+              parent
+              sourceFd
+              outputFd
+              "prodbox-mutant-case"
+              "mutant-build"
+              "true"
+              120
+              (pure False)
+              (writeIORef called True >> pure (17 :: Int))
               `shouldReturn` MutationLaunchDenied MutationLaunchIntentRefused
             readIORef called `shouldReturn` False
       names <- filter (isPrefixOf ".mutation-launch-") <$> listDirectory directory
@@ -204,7 +474,9 @@ scenarioEvidenceSuite = describe "scenario evidence comparison" $ do
           bytes `shouldSatisfy` ByteString8.isInfixOf "\"stage\":\"baseline-build\""
           bytes `shouldSatisfy` ByteString8.isInfixOf "\"socket\":\"/run/docker.sock\""
           bytes `shouldSatisfy` ByteString8.isInfixOf "\"timeout_seconds\":120"
-          bytes `shouldSatisfy` ByteString8.isInfixOf "\"command_sha256\":\"b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b\""
+          bytes
+            `shouldSatisfy` ByteString8.isInfixOf
+              "\"command_sha256\":\"b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b\""
           status <- getFileStatus (directory </> name)
           (fileMode status .&. 0o777) `shouldBe` 0o600
           linkCount status `shouldBe` 1
@@ -237,13 +509,31 @@ scenarioEvidenceSuite = describe "scenario evidence comparison" $ do
                   `shouldReturn` MutationContainerIdObserved identifier
                 observeMutationContainerReceipt parent sourceFd outputFd label stage "true" 120 (pure True)
                   `shouldReturn` MutationContainerReceiptMissing
-                recordMutationContainerReceipt parent sourceFd outputFd label stage "true" 120 identifier (pure True)
+                recordMutationContainerReceipt
+                  parent
+                  sourceFd
+                  outputFd
+                  label
+                  stage
+                  "true"
+                  120
+                  identifier
+                  (pure True)
                   `shouldReturn` MutationContainerReceiptRecorded
                 observeMutationContainerReceipt parent sourceFd outputFd label stage "true" 120 (pure True)
                   `shouldReturn` MutationContainerReceiptObserved identifier
                 observeMutationContainerReceipt parent sourceFd outputFd label stage "different" 120 (pure True)
                   `shouldReturn` MutationContainerReceiptConflict
-                recordMutationContainerReceipt parent sourceFd outputFd label stage "true" 120 identifier (pure True)
+                recordMutationContainerReceipt
+                  parent
+                  sourceFd
+                  outputFd
+                  label
+                  stage
+                  "true"
+                  120
+                  identifier
+                  (pure True)
                   `shouldReturn` MutationContainerReceiptExists
                 receipts <- filter (isSuffixOf ".receipt.json") <$> listDirectory directory
                 case receipts of
@@ -272,7 +562,16 @@ scenarioEvidenceSuite = describe "scenario evidence comparison" $ do
             writeFile foreignCid (replicate 64 'b')
             setFileMode foreignCid 0o644
             called <- newIORef False
-            withRecordedMutationLaunch parent sourceFd outputFd label otherStage "true" 120 (pure True) (writeIORef called True)
+            withRecordedMutationLaunch
+              parent
+              sourceFd
+              outputFd
+              label
+              otherStage
+              "true"
+              120
+              (pure True)
+              (writeIORef called True)
               `shouldReturn` MutationLaunchBindingUnstable
             readIORef called `shouldReturn` False
             readFile foreignCid `shouldReturn` replicate 64 'b'
@@ -300,38 +599,87 @@ scenarioEvidenceSuite = describe "scenario evidence comparison" $ do
       bracket (Posix.openFd root Posix.ReadOnly flags) Posix.closeFd $ \parent ->
         bracket (Posix.openFd source Posix.ReadOnly flags) Posix.closeFd $ \sourceFd ->
           bracket (Posix.openFd output Posix.ReadOnly flags) Posix.closeFd $ \outputFd -> do
-            withRecordedMutationLaunch parent sourceFd outputFd label stage mutationIsolationCommand 120 (pure True) (pure ())
+            withRecordedMutationLaunch
+              parent
+              sourceFd
+              outputFd
+              label
+              stage
+              mutationIsolationCommand
+              120
+              (pure True)
+              (pure ())
               `shouldReturn` MutationLaunchReturned ()
             writeFile cid identifier
             setFileMode cid 0o600
-            recordMutationContainerReceipt parent sourceFd outputFd label stage mutationIsolationCommand 120 identifier (pure True)
+            recordMutationContainerReceipt
+              parent
+              sourceFd
+              outputFd
+              label
+              stage
+              mutationIsolationCommand
+              120
+              identifier
+              (pure True)
               `shouldReturn` MutationContainerReceiptRecorded
             let historicalStage = "baseline-build"
                 historicalCommand = "older retained build command"
                 historicalStem = take 32 (ByteString8.unpack (hexSha256 (ByteString8.pack (label ++ "\NUL" ++ historicalStage))))
                 historicalCid = root </> (".mutation-launch-" ++ historicalStem ++ ".cid")
-            withRecordedMutationLaunch parent sourceFd outputFd label historicalStage historicalCommand 120 (pure True) (pure ())
+            withRecordedMutationLaunch
+              parent
+              sourceFd
+              outputFd
+              label
+              historicalStage
+              historicalCommand
+              120
+              (pure True)
+              (pure ())
               `shouldReturn` MutationLaunchReturned ()
             writeFile historicalCid historicalId
             setFileMode historicalCid 0o600
-            recordMutationContainerReceipt parent sourceFd outputFd label historicalStage historicalCommand 120 historicalId (pure True)
+            recordMutationContainerReceipt
+              parent
+              sourceFd
+              outputFd
+              label
+              historicalStage
+              historicalCommand
+              120
+              historicalId
+              (pure True)
               `shouldReturn` MutationContainerReceiptRecorded
       inspected <- inspectMutationCampaign directory runId
       case inspected of
         Right lines' -> do
           any (isInfixOf ("MutationContainerReceiptObserved \"" ++ identifier ++ "\"")) lines' `shouldBe` True
           any (isInfixOf "M01 isolation") lines' `shouldBe` True
-          any (\line -> historicalId `isInfixOf` line && "binding matches current implementation False" `isInfixOf` line) lines' `shouldBe` True
+          any
+            ( \line -> historicalId `isInfixOf` line && "binding matches current implementation False" `isInfixOf` line
+            )
+            lines'
+            `shouldBe` True
         Left failure -> fail failure
       executable <- makeAbsolute ".build/prodbox"
-      public <- captureSubprocessBounded
-        (BoundedSubprocessLimits 1 65536 65536 30000000)
-        (Subprocess executable ["test", "status", runId] (Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")]) (Just directory))
+      public <-
+        captureSubprocessBounded
+          (BoundedSubprocessLimits 1 65536 65536 30000000)
+          ( Subprocess
+              executable
+              ["test", "status", runId]
+              (Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")])
+              (Just directory)
+          )
       case public of
         Right result -> do
           processExitCode result `shouldBe` ExitFailure 1
           (identifier `isInfixOf` processStdout result) `shouldBe` True
-          ("Worker settlement, Docker state and workspace cleanup were not observed." `isInfixOf` processStdout result) `shouldBe` True
+          ( "Worker settlement, Docker state and workspace cleanup were not observed."
+              `isInfixOf` processStdout result
+            )
+            `shouldBe` True
         Left failure -> fail (show failure)
       ByteString.writeFile (root </> (".mutation-launch-" ++ stem ++ ".json")) "invalid"
       conflicted <- inspectMutationCampaign directory runId
@@ -351,14 +699,53 @@ scenarioEvidenceSuite = describe "scenario evidence comparison" $ do
         second <- recordCampaignIdentity rootFd "12345" source stable
         pure (first, second)
       result `shouldBe` Just (True, False)
+      status <- getFileStatus root
+      let name = ".mutation-case-" ++ take 32 (ByteString8.unpack (hexSha256 "M01")) ++ ".json"
+          outcome version detail =
+            Aeson.object
+              [ "schema_version" Aeson..= (version :: Int)
+              , "kind" Aeson..= ("mutation-case-outcome" :: String)
+              , "case" Aeson..= ("M01" :: String)
+              , "run_id" Aeson..= ("12345" :: String)
+              , "root_device" Aeson..= show (deviceID status)
+              , "root_inode" Aeson..= show (fileID status)
+              , "source_manifest" Aeson..= sourceManifestDigest source
+              , "dependency_plan" Aeson..= publicEvidenceDigestText (hashPublicEvidence "plan")
+              , "dependency_content" Aeson..= publicEvidenceDigestText (hashPublicEvidence "content")
+              , "outcome" Aeson..= ("MutationKilled" :: String)
+              , "expected" Aeson..= ("MutationKilled" :: String)
+              , "qualified" Aeson..= True
+              , "detail" Aeson..= (detail :: String)
+              ]
+          writeOutcome version detail =
+            ByteString.writeFile (root </> name) (LazyBytes.toStrict (Aeson.encode (outcome version detail)))
+          observed = "M01 local case result MutationKilled, qualified at execution True"
+          unconfirmed = "M01 local case record invalid or bound to another campaign"
+          unreadable = "M01 local case record unobservable"
+          completeDetail = replicate 4300 'x'
+          readsOutcome expected =
+            inspectMutationCampaign directory "12345" >>= (`shouldSatisfy` either (const False) (elem expected))
+      writeOutcome 1 "legacy short result"
+      setFileMode (root </> name) 0o600
       inspected <- inspectMutationCampaign directory "12345"
       case inspected of
-        Right lines' -> any (isInfixOf "Campaign creation record: source manifest") lines' `shouldBe` True
+        Right lines' -> do
+          any (isInfixOf "Campaign creation record: source manifest") lines' `shouldBe` True
+          (observed `elem` lines') `shouldBe` True
         Left failure -> fail failure
+      writeOutcome 1 completeDetail
+      readsOutcome unconfirmed
+      writeOutcome 2 completeDetail
+      readsOutcome observed
+      writeOutcome 2 (replicate 17000 'x')
+      readsOutcome unreadable
+      writeOutcome 2 completeDetail
       ByteString.writeFile (root </> ".mutation-campaign.json") "{}"
       tampered <- inspectMutationCampaign directory "12345"
       case tampered of
-        Right lines' -> any (isInfixOf "Campaign creation record invalid") lines' `shouldBe` True
+        Right lines' -> do
+          any (isInfixOf "Campaign creation record invalid") lines' `shouldBe` True
+          (unreadable `elem` lines') `shouldBe` True
         Left failure -> fail failure
   it "refuses a launch from a replacement campaign and preserves a changed result" $
     withSystemTempDirectory "prodbox-campaign-binding" $ \directory -> do
@@ -419,16 +806,40 @@ scenarioEvidenceSuite = describe "scenario evidence comparison" $ do
           _ -> ""
         sections = Text.splitOn "The reviewed M01 overlapping-root variant" phase1
     case sections of
-      [m02, m01] -> forM_ [(M01OverlappingRoots, m01), (M01ArtifactBytes, m01), (M01UnconfirmedNode, m01), (M01UnknownRecreate, m01), (M01FailedRemoval, m01), (M02MissingReport, m02)] $ \(mutation, section) -> do
-        source <- captureSourceCandidate "." [] (reviewedSourcePath mutation) >>= either (fail . show) pure
-        prepared <-
-          either (fail . show) pure (prepareReviewedMutation mutation (sourceCandidateBytes source))
-        forM_
-          [ reviewedSourceDigest mutation
-          , publicEvidenceDigestText (reviewedPatchDigest mutation)
-          , publicEvidenceDigestText (preparedMutantDigest prepared)
-          ]
-          (\digest -> section `shouldSatisfy` Text.isInfixOf digest)
+      [m02, m01] -> forM_
+        [ (M01OverlappingRoots, m01)
+        , (M01ArtifactBytes, m01)
+        , (M01UnconfirmedNode, m01)
+        , (M01UnknownRecreate, m01)
+        , (M01ExternalFamily, m01)
+        , (M01FailedRemoval, m01)
+        , (M01ForeignControl, m01)
+        , (M01UnboundReceipt, m01)
+        , (M01ForeignControllerReceipt, m01)
+        , (M01WrongControllerNode, m01)
+        , (M01ForeignNamespaceCleanup, m01)
+        , (M01ReplacedNamespace, m01)
+        , (M01ForeignScope, m01)
+        , (M01ForeignNetwork, m01)
+        , (M01UnownedPull, m01)
+        , (M01AuthorityUnobservable, m01)
+        , (M01AuthorityFence, m01)
+        , (M01ReceiptOnlyRemoval, m01)
+        , (M02MissingReport, m02)
+        , (M02StaleSource, m02)
+        , (M02WrongScope, m02)
+        , (M02FabricatedSuccess, m02)
+        ]
+        $ \(mutation, section) -> do
+          source <- captureSourceCandidate "." [] (reviewedSourcePath mutation) >>= either (fail . show) pure
+          prepared <-
+            either (fail . show) pure (prepareReviewedMutation mutation (sourceCandidateBytes source))
+          forM_
+            [ reviewedSourceDigest mutation
+            , publicEvidenceDigestText (reviewedPatchDigest mutation)
+            , publicEvidenceDigestText (preparedMutantDigest prepared)
+            ]
+            (\digest -> section `shouldSatisfy` Text.isInfixOf digest)
       _ -> fail "missing or repeated Phase 1 mutation binding sections"
 
   it "keeps the Phase 2 mutation bindings aligned with the reviewed candidates" $ do
@@ -456,16 +867,23 @@ scenarioEvidenceSuite = describe "scenario evidence comparison" $ do
             (body : _) -> body
             _ -> ""
           _ -> ""
-    forM_ [M04UnknownAsFresh, M04MissingAsFresh, M05PendingNoChange, M04MirrorGenesisAsFresh] $ \mutation -> do
-      source <- captureSourceCandidate "." [] (reviewedSourcePath mutation) >>= either (fail . show) pure
-      prepared <-
-        either (fail . show) pure (prepareReviewedMutation mutation (sourceCandidateBytes source))
-      forM_
-        [ reviewedSourceDigest mutation
-        , publicEvidenceDigestText (reviewedPatchDigest mutation)
-        , publicEvidenceDigestText (preparedMutantDigest prepared)
-        ]
-        (\digest -> section `shouldSatisfy` Text.isInfixOf digest)
+    forM_
+      [ M04UnknownAsFresh
+      , M04MissingAsFresh
+      , M05PendingNoChange
+      , M04MirrorGenesisAsFresh
+      , M04IgnoreMirrorCommitment
+      ]
+      $ \mutation -> do
+        source <- captureSourceCandidate "." [] (reviewedSourcePath mutation) >>= either (fail . show) pure
+        prepared <-
+          either (fail . show) pure (prepareReviewedMutation mutation (sourceCandidateBytes source))
+        forM_
+          [ reviewedSourceDigest mutation
+          , publicEvidenceDigestText (reviewedPatchDigest mutation)
+          , publicEvidenceDigestText (preparedMutantDigest prepared)
+          ]
+          (\digest -> section `shouldSatisfy` Text.isInfixOf digest)
 
   it "prepares the one reviewed M02 source change only from its pinned preimage" $ do
     source <-
@@ -1210,8 +1628,11 @@ scenarioEvidenceSuite = describe "scenario evidence comparison" $ do
           ]
     mapM_
       ( \stale -> do
-          compareScenarioEvidence binding required (Just report {reportBinding = stale}) (Just independent)
-            `shouldBe` Left EvidenceReportBindingMismatch
+          assertMutationInvariant
+            "evidence.rejects_unbound_result"
+            ( compareScenarioEvidence binding required (Just report {reportBinding = stale}) (Just independent)
+                == Left EvidenceReportBindingMismatch
+            )
           compareScenarioEvidence
             binding
             required
@@ -1223,12 +1644,15 @@ scenarioEvidenceSuite = describe "scenario evidence comparison" $ do
 
   it "rejects a fabricated success and preserves failed or unobservable outcomes" $ do
     (binding, required, report, independent) <- fixture
-    compareScenarioEvidence
-      binding
-      required
-      (Just report)
-      (Just independent {independentPrimary = PrimaryFailed})
-      `shouldBe` Left EvidenceOutcomeMismatch
+    assertMutationInvariant
+      "evidence.rejects_unbound_result"
+      ( compareScenarioEvidence
+          binding
+          required
+          (Just report)
+          (Just independent {independentPrimary = PrimaryFailed})
+          == Left EvidenceOutcomeMismatch
+      )
     compareScenarioEvidence
       binding
       required

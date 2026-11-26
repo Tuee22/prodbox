@@ -127,6 +127,7 @@ import Prodbox.Bootstrap.Broker.Program
   , BootstrapStatus (..)
   , BrokerCapabilityRefs
   , PkiIssueRequest
+  , VaultPkiIssueReceipt (..)
   , VaultPkiStatus (..)
   , mkBrokerCapabilityRefs
   , mkPkiIssueRequest
@@ -876,7 +877,12 @@ fakeInMemoryResult call record replyStatus = case call of
       )
   InMemoryVaultPkiStatus _ -> Right VaultPkiBaselineReady
   InMemoryVaultPkiIssueTestCertificate _ permit _ ->
-    Right (fakeMutationReceipt (vaultEffectPermitActionDigest permit) replyStatus)
+    Right
+      ( VaultPkiIssueReceipt
+          (fakeMutationReceipt (vaultEffectPermitActionDigest permit) replyStatus)
+          "01:23"
+          (fakeDigest 'c')
+      )
   InMemoryVaultResetAmbiguousInitialization _ permit _ _ ->
     Right (fakeMutationReceipt (storeMutationPermitActionDigest permit) replyStatus)
   InMemoryChildCustodyPrepare _ _ binding requestDigest actionDigest -> do

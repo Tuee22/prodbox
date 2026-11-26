@@ -186,7 +186,9 @@ check mode fixture@(Fixture cfg req record) = case mode of
         count <- readIORef calls
         writeIORef calls (count + 1)
         pure (count == 0)
-      assert "changed admission allowed input retirement" (refused Reaper.InputRetirementAdmissionChanged refusedResult)
+      assert
+        "changed admission allowed input retirement"
+        (refused Reaper.InputRetirementAdmissionChanged refusedResult)
       assertUnprepared fixture
       assert "changed admission removed configuration" =<< doesPathExist cfg
       assert "changed admission removed request" =<< doesPathExist req

@@ -8,6 +8,10 @@
 
 > **Purpose**: Bind Phase 1 acceptance and mutation observations to tested inputs and preserve their limitations.
 
+This report describes the historical run at `0747a33`. Phase 1 was
+reopened. The current recovery, recreation, simultaneous-scope and
+mutation dispositions are in the [active phase](../phase_01_cli_contexts_kind_and_evidence.md).
+
 ## Scope and identity
 
 The scenarios ran on the single development host against its real Docker daemon and a throwaway kind cluster per run; no cloud account, Vault, domain or provider credential was used or read, and `test-secrets.dhall` was neither read nor copied. The public binary was built from the worktree on top of commit `0747a33`; its SHA-256 at the last gate was `0eac058bdbede23ed7c799061316d40c0469a692b1e28631c499c73f994a6039`. Per-run identity (source manifest digest, binary digest, kind tool and node-archive digests, boot id, operation id and absolute deadlines) is bound inside each stored report under `<project>/.build/scenario-evidence/<run>/` and validated by `validateStoredScenarioReport`; those directories are scratch outputs and are not retained here.

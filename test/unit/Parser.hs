@@ -41,12 +41,15 @@ import Prodbox.CLI.Command
   , IntegrationSuite (..)
   , LintCommand (..)
   , NativeCommand (..)
+  , OperationCommand (..)
   , PerRunPruneTarget (..)
   , PlanOptions (..)
   , TestCommand (..)
   , TestScope (..)
   , UsersCommand (..)
   , VaultCommand (..)
+  , VaultMaintenanceCommand (..)
+  , VaultPkiCommand (..)
   , WorkloadCommand (..)
   )
 import Prodbox.CLI.Parser
@@ -93,9 +96,10 @@ parserSuite =
       "every leaf example roundtrips to its registered command path"
       leafParserRoundtripProperty
     mapM_ happyCase (collectLeafExamples commandRegistry)
-    it "the new control surface offers no cascade flag on any leaf" $
+    it "ordinary deletion and local control reject the cascade flag" $
       [ commandPath
-      | (commandPath@("control" : _), exampleSpec) <- collectLeafExamples commandRegistry
+      | (commandPath, exampleSpec) <- collectLeafExamples commandRegistry
+      , take 1 commandPath `elem` [["delete"], ["control"]]
       , isRight (parseArgs (exampleCommand exampleSpec ++ ["--cascade"]))
       ]
         `shouldBe` []
@@ -104,6 +108,23 @@ parserSuite =
     it "preserves the explicit global configuration selection" $
       parseArgs ["--config", "/tmp/run.dhall", "config", "validate"]
         `shouldBe` Right (Options False (Just "/tmp/run.dhall") (RunNative (NativeConfig ConfigValidate)))
+    it "retains the explicit Docker socket on the fresh Phase 1 command" $
+      parseArgs ["test", "run", "phase-01", "--runtime-socket", "/tmp/clean/docker.sock"]
+        `shouldBe` Right
+          ( Options
+              False
+              Nothing
+              ( RunNative
+                  ( NativeTest
+                      ( TestCommand
+                          (TestRunAtRuntimeSocket "phase-01" "/tmp/clean/docker.sock")
+                          (CoverageFlags False Nothing)
+                          SubstrateHomeLocal
+                          False
+                      )
+                  )
+              )
+          )
     it "limits --record-profile to the gateway-pods validation" $ do
       parseArgs ["test", "integration", "gateway-pods", "--record-profile"]
         `shouldBe` Right
@@ -370,8 +391,35 @@ commandPathOfRequest request =
   case request of
     RunTestList -> ["test", "list"]
     RunTestStatus _ -> ["test", "status"]
+    RunTestCleanup _ -> ["test", "cleanup"]
     RunControlStatus -> ["control", "status"]
     RunControlLifecycleStatus -> ["control", "lifecycle-status"]
+    RunLifecycleStatus -> ["status"]
+    RunPlanDelete -> ["plan", "delete"]
+    RunPlanReconcile -> ["plan", "reconcile"]
+    RunOperations operation ->
+      "operations" : case operation of
+        ListOperations -> ["list"]
+        ShowOperation _ -> ["show"]
+        ResumeOperation _ -> ["resume"]
+        CancelOperation _ -> ["cancel"]
+    RunScopedVaultPki action ->
+      [ "admin"
+      , "vault"
+      , "pki"
+      , case action of
+          ObserveVaultPki -> "status"
+          IssueVaultTestCertificate -> "issue-test-cert"
+      ]
+    RunScopedVaultMaintenance action ->
+      [ "admin"
+      , "vault"
+      , case action of
+          ObserveScopedVault -> "status"
+          RotateScopedUnlockBundle _ -> "rotate-unlock-bundle"
+          RotateScopedTransitKey _ _ -> "rotate-transit-key"
+          ResetScopedVaultInitialization _ -> "reset-ambiguous-initialization"
+      ]
     RunOrdinaryDelete -> ["delete"]
     RunControlAuthorityDeploy -> ["control", "authority-deploy"]
     RunControlPlan -> ["control", "plan"]
@@ -525,6 +573,7 @@ commandPathOfRequest request =
             : case testScope testCommand of
               TestInit _ -> ["init"]
               TestRun _ -> ["run"]
+              TestRunAtRuntimeSocket _ _ -> ["run"]
               TestAll -> ["all"]
               TestLint -> ["lint"]
               TestUnit -> ["unit"]

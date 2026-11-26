@@ -18,6 +18,7 @@ module Prodbox.Control.KindLease
   , withNewKindOwnerFamilyOperation
   , withRecoveredKindOperation
   , withRecoveredKindOperationUntil
+  , retryBusyKindOperationUntil
   , KindLeaseHandoff (..)
   , awaitKindLeaseHandoff
   , prepareNewKindVolumeDirectory
@@ -49,12 +50,12 @@ import Prodbox.Config.KindVolume (KindVolume, KindVolumePreparation)
 import Prodbox.Control.KindIntent
   ( KindIntentObservation (..)
   , KindIntentResult (..)
-  , observeKindIntent
   , observeKindFamilyIntent
+  , observeKindIntent
   , observeKindOwnerFamilyIntent
   , observeKindVolumeIntent
-  , recordKindIntent
   , recordKindFamilyIntent
+  , recordKindIntent
   , recordKindOwnerFamilyIntent
   , recordKindVolumeIntent
   )
@@ -159,23 +160,37 @@ withRecoveredKindOperation bootstrap operationId =
 -- callback starts its own bounds and settlement govern it; this helper never
 -- times it out or repeats it. Unobservable and changed states fail closed.
 withRecoveredKindOperationUntil
-  :: Word64 -> BootstrapProjection -> String -> (IO Bool -> IO value)
+  :: Word64
+  -> BootstrapProjection
+  -> String
+  -> (IO Bool -> IO value)
   -> IO (KindOperationOutcome value)
-withRecoveredKindOperationUntil ending bootstrap operation action = go
+withRecoveredKindOperationUntil ending bootstrap operation action =
+  retryBusyKindOperationUntil ending (withRecoveredKindOperation bootstrap operation action)
+
+-- Only the explicit pre-callback lease refusal can be retried. Each action
+-- owns its effect and cleanup bounds after acquiring the lease.
+retryBusyKindOperationUntil
+  :: Word64 -> IO (KindOperationOutcome value) -> IO (KindOperationOutcome value)
+retryBusyKindOperationUntil ending action = go
  where
   go = do
     now <- getMonotonicTimeNSec
-    if now >= ending then pure (KindOperationRefused (KindOperationLeaseRefused KindLeaseDeadlineExpired)) else do
-      result <- withRecoveredKindOperation bootstrap operation action
-      case result of
-        KindOperationRefused (KindOperationLeaseRefused KindLeaseBusy) -> do
-          after <- getMonotonicTimeNSec
-          if after >= ending then pure (KindOperationRefused (KindOperationLeaseRefused KindLeaseDeadlineExpired))
-            else do
-              let remaining = (ending - after) `div` 1000
-              if remaining == 0 then pure (KindOperationRefused (KindOperationLeaseRefused KindLeaseDeadlineExpired))
-                else threadDelay (fromIntegral (min 50000 remaining)) >> go
-        _ -> pure result
+    if now >= ending
+      then pure (KindOperationRefused (KindOperationLeaseRefused KindLeaseDeadlineExpired))
+      else do
+        result <- action
+        case result of
+          KindOperationRefused (KindOperationLeaseRefused KindLeaseBusy) -> do
+            after <- getMonotonicTimeNSec
+            if after >= ending
+              then pure (KindOperationRefused (KindOperationLeaseRefused KindLeaseDeadlineExpired))
+              else do
+                let remaining = (ending - after) `div` 1000
+                if remaining == 0
+                  then pure (KindOperationRefused (KindOperationLeaseRefused KindLeaseDeadlineExpired))
+                  else threadDelay (fromIntegral (min 50000 remaining)) >> go
+          _ -> pure result
 
 data KindLeaseHandoff
   = KindLeaseHandoffReady
@@ -204,15 +219,17 @@ awaitKindLeaseHandoff ending bootstrap operation ownerStable = do
  where
   loop = do
     owner <- ownerStable
-    if not owner then pure KindLeaseHandoffUnstable else do
-      observed <- withRecoveredKindOperation bootstrap operation $ \stable -> (&&) <$> stable <*> ownerStable
-      case observed of
-        KindOperationRefused (KindOperationLeaseRefused KindLeaseBusy) -> threadDelay 50000 >> loop
-        KindOperationCallbackReturned True -> do
-          final <- ownerStable
-          pure (if final then KindLeaseHandoffReady else KindLeaseHandoffUnstable)
-        KindOperationCallbackReturned False -> pure KindLeaseHandoffUnstable
-        _ -> pure (KindLeaseHandoffRefused observed)
+    if not owner
+      then pure KindLeaseHandoffUnstable
+      else do
+        observed <- withRecoveredKindOperation bootstrap operation $ \stable -> (&&) <$> stable <*> ownerStable
+        case observed of
+          KindOperationRefused (KindOperationLeaseRefused KindLeaseBusy) -> threadDelay 50000 >> loop
+          KindOperationCallbackReturned True -> do
+            final <- ownerStable
+            pure (if final then KindLeaseHandoffReady else KindLeaseHandoffUnstable)
+          KindOperationCallbackReturned False -> pure KindLeaseHandoffUnstable
+          _ -> pure (KindLeaseHandoffRefused observed)
 
 -- | Record the exact volume before entering the callback. This is not a
 -- lifecycle admission permit or proof that an earlier worker settled.

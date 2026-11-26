@@ -46,14 +46,20 @@ module Prodbox.Control.KindNodeCreateIntent
   , KindNodeRemoveControlWrite (..)
   , recordKindNodeRemoveControl
   , observeKindNodeRemoveControl
+  , KindNodeRemovePass (..)
   , KindNodeRemoveAttemptWrite (..)
   , KindNodeRemoveAttemptObservation (..)
   , recordKindNodeRemoveAttempt
   , observeKindNodeRemoveAttempt
+  , recordKindNodeRemoveRecoveryAttempt
+  , observeKindNodeRemoveRecoveryPredecessor
+  , observeKindNodeRemoveAttemptFor
   , KindNodeRemoveResultWrite (..)
   , KindNodeRemoveResultObservation (..)
   , recordKindNodeRemoveResult
   , observeKindNodeRemoveResult
+  , recordKindNodeRemoveResultFor
+  , observeKindNodeRemoveResultFor
   , KindAbsencePlan
   , KindAbsencePlanRecovery (..)
   , mkKindAbsencePlan
@@ -105,8 +111,8 @@ import Prodbox.Config.DeploymentScope
   )
 import Prodbox.Config.KindPlan (KindNodeCreateInput (..), kindNodeCreateBody)
 import Prodbox.Control.DockerConnectedInfo
-  ( DockerNodeConfigWriteResult (..)
-  , DockerImageVolumes (..)
+  ( DockerImageVolumes (..)
+  , DockerNodeConfigWriteResult (..)
   , DockerNodeContainerCreateResult (..)
   , DockerNodeContainerRemoveResult (..)
   , DockerNodeContainerStartResult (..)
@@ -126,8 +132,8 @@ import Prodbox.Control.KindNodeRemovalSampling
   , nodeRemovalPositive
   , observeNodeRemovalPositiveControl
   )
-import System.IO.Error (isAlreadyExistsError, isDoesNotExistError, isEOFError)
 import System.FilePath.Posix (isAbsolute, normalise, splitDirectories)
+import System.IO.Error (isAlreadyExistsError, isDoesNotExistError, isEOFError)
 import System.Posix.Files qualified as Files
 import System.Posix.IO qualified as Posix
 import System.Posix.IO.ByteString qualified as PosixBytes
@@ -1629,6 +1635,9 @@ data KindNodeRemoveAttemptObservation
   | NodeRemoveAttemptUnobservable
   deriving (Eq, Show)
 
+data KindNodeRemovePass = InitialNodeRemoval | RetryNodeRemoval
+  deriving (Eq, Show)
+
 recordKindNodeRemoveAttempt
   :: BootstrapProjection -> KindNodeCreateIntent -> String -> IO Bool -> IO KindNodeRemoveAttemptWrite
 recordKindNodeRemoveAttempt bootstrap intent identifier stable = do
@@ -1653,25 +1662,71 @@ recordKindNodeRemoveAttempt bootstrap intent identifier stable = do
       recordAfterControl = do
         let controlStable = do
               before <- stable
-              current <- observeKindNodeRemoveControl bootstrap intent identifier stable
+              current <- observeKindNodeRemoveControl bootstrap intent identifier (pure True)
               after <- stable
               pure (before && current == NodeRemoveControlMatches && after)
-        recordNodeRemoveAttemptAfterControl bootstrap intent identifier controlStable
+        recordNodeRemoveAttemptAfterControl InitialNodeRemoval bootstrap intent identifier controlStable
     _ -> pure (NodeRemoveAttemptPriorUnconfirmed prior)
 
-recordNodeRemoveAttemptAfterControl
+-- The retry has a distinct durable location and is admitted only for the
+-- same still-present container after an independent positive inventory.
+recordKindNodeRemoveRecoveryAttempt
   :: BootstrapProjection -> KindNodeCreateIntent -> String -> IO Bool -> IO KindNodeRemoveAttemptWrite
-recordNodeRemoveAttemptAfterControl bootstrap intent identifier stable = do
+recordKindNodeRemoveRecoveryAttempt bootstrap intent identifier stable = do
+  admitted <- eligible
+  if not admitted
+    then pure NodeRemoveAttemptRefused
+    else do
+      positive <-
+        observeNodeRemovalPositiveControl bootstrap (kindNodeCreateDaemon intent) identifier eligible
+      if nodeRemovalPositive identifier positive
+        then recordNodeRemoveAttemptAfterControl RetryNodeRemoval bootstrap intent identifier eligible
+        else pure (NodeRemoveAttemptPositiveControlRefused positive)
+ where
+  eligible = do
+    before <- stable
+    predecessor <-
+      if before
+        then observeKindNodeRemoveRecoveryPredecessor bootstrap intent identifier
+        else pure False
+    after <- stable
+    pure (predecessor && after)
+
+observeKindNodeRemoveRecoveryPredecessor
+  :: BootstrapProjection -> KindNodeCreateIntent -> String -> IO Bool
+observeKindNodeRemoveRecoveryPredecessor bootstrap intent identifier = do
+  original <- observeKindNodeRemoveAttempt bootstrap intent identifier (pure True)
+  control <- observeKindNodeRemoveControl bootstrap intent identifier (pure True)
+  result <- observeKindNodeRemoveResult bootstrap intent identifier (pure True)
+  pure
+    ( original == NodeRemoveAttemptMatches
+        && control == NodeRemoveControlMatches
+        && result == NodeRemoveResultMissing
+    )
+
+recordNodeRemoveAttemptAfterControl
+  :: KindNodeRemovePass
+  -> BootstrapProjection
+  -> KindNodeCreateIntent
+  -> String
+  -> IO Bool
+  -> IO KindNodeRemoveAttemptWrite
+recordNodeRemoveAttemptAfterControl pass bootstrap intent identifier stable = do
   touched <- newIORef False
   outcome <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
     checked <- try $ do
-      ready <- removePreconditions bootstrap intent identifier stable sameRoot
+      admitted <- stable
+      ready <-
+        if admitted
+          then removePreconditions bootstrap intent identifier (pure True) sameRoot
+          else pure False
       rootStatus <- Files.getFdStatus root
-      let bytes = removeAttemptBytes bootstrap intent identifier rootStatus
-      if not ready || BS.length bytes > 8192
+      let bytes = removeAttemptBytesFor pass bootstrap intent identifier rootStatus
+      beforeWrite <- if ready then stable else pure False
+      if not beforeWrite || BS.length bytes > 8192
         then pure NodeRemoveAttemptRefused
         else mask $ \restore -> do
-          created <- try (Posix.openFdAt (Just root) removeAttemptName Posix.WriteOnly createFlags)
+          created <- try (Posix.openFdAt (Just root) (removeAttemptNameFor pass) Posix.WriteOnly createFlags)
           case created of
             Left failure | isAlreadyExistsError failure -> pure NodeRemoveAttemptAlreadyExists
             Left (_ :: IOException) -> pure NodeRemoveAttemptRefused
@@ -1684,9 +1739,10 @@ recordNodeRemoveAttemptAfterControl bootstrap intent identifier stable = do
               case written of
                 Left (_ :: IOException) -> pure NodeRemoveAttemptIncomplete
                 Right () -> do
-                  observed <- observeKindNodeRemoveAttempt bootstrap intent identifier stable
+                  observed <- observeKindNodeRemoveAttemptFor pass bootstrap intent identifier (pure True)
+                  after <- stable
                   pure
-                    ( if observed == NodeRemoveAttemptMatches
+                    ( if after && observed == NodeRemoveAttemptMatches
                         then NodeRemoveAttemptRecorded
                         else NodeRemoveAttemptIncomplete
                     )
@@ -1709,7 +1765,16 @@ observeKindNodeRemoveAttempt
   -> String
   -> IO Bool
   -> IO KindNodeRemoveAttemptObservation
-observeKindNodeRemoveAttempt bootstrap intent identifier stable = do
+observeKindNodeRemoveAttempt = observeKindNodeRemoveAttemptFor InitialNodeRemoval
+
+observeKindNodeRemoveAttemptFor
+  :: KindNodeRemovePass
+  -> BootstrapProjection
+  -> KindNodeCreateIntent
+  -> String
+  -> IO Bool
+  -> IO KindNodeRemoveAttemptObservation
+observeKindNodeRemoveAttemptFor pass bootstrap intent identifier stable = do
   outcome <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
     checked <- try $ do
       ready <- removePreconditions bootstrap intent identifier stable sameRoot
@@ -1718,7 +1783,7 @@ observeKindNodeRemoveAttempt bootstrap intent identifier stable = do
         else do
           owner <- getEffectiveUserID
           rootStatus <- Files.getFdStatus root
-          opened <- try (Posix.openFdAt (Just root) removeAttemptName Posix.ReadOnly readFlags)
+          opened <- try (Posix.openFdAt (Just root) (removeAttemptNameFor pass) Posix.ReadOnly readFlags)
           case opened of
             Left failure | isDoesNotExistError failure -> do
               still <- removePreconditions bootstrap intent identifier stable sameRoot
@@ -1734,7 +1799,7 @@ observeKindNodeRemoveAttempt bootstrap intent identifier stable = do
                   after <- Files.getFdStatus held
                   named <-
                     bracket
-                      (Posix.openFdAt (Just root) removeAttemptName Posix.ReadOnly readFlags)
+                      (Posix.openFdAt (Just root) (removeAttemptNameFor pass) Posix.ReadOnly readFlags)
                       Posix.closeFd
                       Files.getFdStatus
                   still <- removePreconditions bootstrap intent identifier stable sameRoot
@@ -1743,7 +1808,7 @@ observeKindNodeRemoveAttempt bootstrap intent identifier stable = do
                       then NodeRemoveAttemptUnobservable
                       else case ( Aeson.eitherDecodeStrict' bytes
                                 , decoded
-                                , Aeson.eitherDecodeStrict' (removeAttemptBytes bootstrap intent identifier rootStatus)
+                                , Aeson.eitherDecodeStrict' (removeAttemptBytesFor pass bootstrap intent identifier rootStatus)
                                 ) of
                         (Right value, Right checkedValue, Right wanted)
                           | value == checkedValue ->
@@ -1793,9 +1858,14 @@ mkKindAbsencePlan intent target (DockerImageVolumes volumes)
   | not (all validVolume volumes) = Nothing
   | otherwise = Just (KindAbsencePlan intent target volumes)
  where
-  validVolume path = isAbsolute path && normalise path == path && path /= "/" && last path /= '/'
-    && length path <= 4096 && all (`notElem` ['\0', '\n', '\r']) path
-    && all (`notElem` [".", ".."]) (splitDirectories path)
+  validVolume path =
+    isAbsolute path
+      && normalise path == path
+      && path /= "/"
+      && last path /= '/'
+      && length path <= 4096
+      && all (`notElem` ['\0', '\n', '\r']) path
+      && all (`notElem` [".", ".."]) (splitDirectories path)
 
 -- Recover the image declaration from the original attempt record, never from
 -- the current image or Docker inventory. A missing local record is not proof
@@ -1816,21 +1886,27 @@ recoverKindAbsencePlan bootstrap operation stable = do
     outcome <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
       checked <- try $ do
         ready <- removePreconditions bootstrap intent target stable sameRoot
-        if not ready then pure (Left False) else do
-          owner <- getEffectiveUserID
-          opened <- try (Posix.openFdAt (Just root) (absenceStageName AbsenceCreateAttempt) Posix.ReadOnly readFlags)
-          case opened of
-            Left failure | isDoesNotExistError failure -> do
-              still <- removePreconditions bootstrap intent target stable sameRoot
-              pure (Left still)
-            Left (_ :: IOException) -> pure (Left False)
-            Right file -> bracket (pure file) Posix.closeFd $ \held -> do
-              status <- Files.getFdStatus held
-              if not (safeFile owner status) then pure (Left False) else do
-                bytes <- readBounded held
-                pure $ case Aeson.eitherDecodeStrict' bytes >>= parseEither (Aeson.withObject "absence plan" (.: "image_volumes")) of
-                  Right volumes -> maybe (Left False) Right (mkKindAbsencePlan intent target (DockerImageVolumes volumes))
-                  Left _ -> Left False
+        if not ready
+          then pure (Left False)
+          else do
+            owner <- getEffectiveUserID
+            opened <-
+              try (Posix.openFdAt (Just root) (absenceStageName AbsenceCreateAttempt) Posix.ReadOnly readFlags)
+            case opened of
+              Left failure | isDoesNotExistError failure -> do
+                still <- removePreconditions bootstrap intent target stable sameRoot
+                pure (Left still)
+              Left (_ :: IOException) -> pure (Left False)
+              Right file -> bracket (pure file) Posix.closeFd $ \held -> do
+                status <- Files.getFdStatus held
+                if not (safeFile owner status)
+                  then pure (Left False)
+                  else do
+                    bytes <- readBounded held
+                    pure $ case Aeson.eitherDecodeStrict' bytes
+                      >>= parseEither (Aeson.withObject "absence plan" (.: "image_volumes")) of
+                      Right volumes -> maybe (Left False) Right (mkKindAbsencePlan intent target (DockerImageVolumes volumes))
+                      Left _ -> Left False
       pure (either (const (Left False)) id (checked :: Either IOException (Either Bool KindAbsencePlan)))
     case outcome of
       Just (Right (Left True)) -> pure AbsencePlanMissing
@@ -1858,14 +1934,20 @@ data KindAbsenceStage
 data KindAbsenceWrite = AbsenceRecorded | AbsenceAlreadyExists | AbsenceRefused | AbsenceIncomplete
   deriving (Eq, Show)
 
-data KindAbsenceObservation = AbsenceMissing | AbsenceMatches | AbsenceConflict | AbsenceInvalid | AbsenceUnobservable
+data KindAbsenceObservation
+  = AbsenceMissing
+  | AbsenceMatches
+  | AbsenceConflict
+  | AbsenceInvalid
+  | AbsenceUnobservable
   deriving (Eq, Show)
 
 data KindAbsenceIdObservation = AbsenceIdObserved !String | AbsenceIdUnconfirmed
   deriving (Eq, Show)
 
 data KindAbsenceFootprintObservation
-  = AbsenceFootprintObserved ![(FilePath, String)] | AbsenceFootprintUnconfirmed
+  = AbsenceFootprintObserved ![(FilePath, String)]
+  | AbsenceFootprintUnconfirmed
   deriving (Eq, Show)
 
 data KindAbsenceVolumeResultObservation
@@ -1883,16 +1965,17 @@ data KindAbsenceControlResultObservation
   deriving (Eq, Show)
 
 absenceStageName :: KindAbsenceStage -> FilePath
-absenceStageName stage = "kind-node-absence-control-" ++ case stage of
-  AbsenceCreateAttempt -> "create-attempt.json"
-  AbsenceCreateResult _ -> "create-result.json"
-  AbsenceControlIdentified _ -> "identified.json"
-  AbsenceFootprintRecorded _ _ -> "footprint.json"
-  AbsenceControlSampled _ _ -> "sampled.json"
-  AbsenceRemoveAttempt _ _ -> "remove-attempt.json"
-  AbsenceRemoveResult {} -> "remove-result.json"
-  AbsenceVolumeRemoveAttempt _ _ volume -> "volume-" ++ volume ++ "-attempt.json"
-  AbsenceVolumeRemoveResult _ _ volume _ -> "volume-" ++ volume ++ "-result.json"
+absenceStageName stage =
+  "kind-node-absence-control-" ++ case stage of
+    AbsenceCreateAttempt -> "create-attempt.json"
+    AbsenceCreateResult _ -> "create-result.json"
+    AbsenceControlIdentified _ -> "identified.json"
+    AbsenceFootprintRecorded _ _ -> "footprint.json"
+    AbsenceControlSampled _ _ -> "sampled.json"
+    AbsenceRemoveAttempt _ _ -> "remove-attempt.json"
+    AbsenceRemoveResult {} -> "remove-result.json"
+    AbsenceVolumeRemoveAttempt _ _ volume -> "volume-" ++ volume ++ "-attempt.json"
+    AbsenceVolumeRemoveResult _ _ volume _ -> "volume-" ++ volume ++ "-result.json"
 
 absencePrevious :: KindAbsenceStage -> Maybe KindAbsenceStage
 absencePrevious stage = case stage of
@@ -1931,14 +2014,16 @@ absenceFootprint stage = case stage of
   AbsenceVolumeRemoveResult _ volumes _ _ -> Just volumes
 
 validAbsenceStage :: KindAbsencePlan -> KindAbsenceStage -> Bool
-validAbsenceStage (KindAbsencePlan _ target declared) stage = validResult && validFootprint && validVolume && case absenceControlId stage of
-  Nothing -> True
-  Just identifier -> identifier /= target && validImageId ("sha256:" ++ identifier)
+validAbsenceStage (KindAbsencePlan _ target declared) stage =
+  validResult && validFootprint && validVolume && case absenceControlId stage of
+    Nothing -> True
+    Just identifier -> identifier /= target && validImageId ("sha256:" ++ identifier)
  where
   validResult = case stage of
-    AbsenceCreateResult result -> validCreateResult result && case result of
-      DockerNodeContainerCreateReply 201 (Just identifier) -> identifier /= target
-      _ -> True
+    AbsenceCreateResult result ->
+      validCreateResult result && case result of
+        DockerNodeContainerCreateReply 201 (Just identifier) -> identifier /= target
+        _ -> True
     AbsenceRemoveResult _ _ result -> validRemoveResult result
     AbsenceVolumeRemoveResult _ _ _ result -> case result of
       DockerNodeVarRemoveNotStarted -> True
@@ -1951,51 +2036,64 @@ validAbsenceStage (KindAbsencePlan _ target declared) stage = validResult && val
     _ -> True
   validFootprint = case absenceFootprint stage of
     Nothing -> True
-    Just volumes -> map fst volumes == declared
-      && length (map snd volumes) == length (nub (map snd volumes))
-      && all (validImageId . ("sha256:" ++) . snd) volumes
+    Just volumes ->
+      map fst volumes == declared
+        && length (map snd volumes) == length (nub (map snd volumes))
+        && all (validImageId . ("sha256:" ++) . snd) volumes
 
-absenceStageValue :: BootstrapProjection -> KindAbsencePlan -> KindAbsenceStage -> Files.FileStatus -> Aeson.Value
-absenceStageValue bootstrap (KindAbsencePlan intent target volumes) stage root = Aeson.object $
-  [ "schema_version" Aeson..= (1 :: Int)
-  , "kind" Aeson..= ("kind-node-absence-control" :: String)
-  , "stage" Aeson..= absenceStageName stage
-  , "node_create_result" Aeson..= TextEncoding.decodeUtf8
-      (resultBytes bootstrap intent (DockerNodeContainerCreateReply 201 (Just target)) root)
-  , "control_name" Aeson..= (scopeKindName (bootstrapScope bootstrap) ++ "-absence-control")
-  , "control_label" Aeson..= ("io.prodbox.absence-control=" ++ nodeCreateOperation (kindNodeCreateInput intent))
-  , "image_volumes" Aeson..= volumes
-  , "control_id" Aeson..= absenceControlId stage
-  , "anonymous_volumes" Aeson..= absenceFootprint stage
-  , "create_transport" Aeson..= case stage of
-      AbsenceCreateResult result -> Just (createResultValue result)
-      _ -> Nothing
-  , "remove_transport" Aeson..= case stage of
-      AbsenceRemoveResult _ _ result -> Just (removeResultValue result)
-      _ -> Nothing
-  ] ++ case stage of
-    AbsenceVolumeRemoveAttempt _ _ volume -> ["volume_id" Aeson..= volume]
-    AbsenceVolumeRemoveResult _ _ volume result ->
-      [ "volume_id" Aeson..= volume
-      , "volume_transport" Aeson..= case result of
-          DockerNodeVarRemoveNotStarted -> Aeson.object ["state" Aeson..= ("not-started" :: String)]
-          DockerNodeVarRemoveUnconfirmed -> Aeson.object ["state" Aeson..= ("unconfirmed" :: String)]
-          DockerNodeVarRemoveReply status -> Aeson.object ["state" Aeson..= ("reply" :: String), "status" Aeson..= status]
-      ]
-    _ -> []
+absenceStageValue
+  :: BootstrapProjection -> KindAbsencePlan -> KindAbsenceStage -> Files.FileStatus -> Aeson.Value
+absenceStageValue bootstrap (KindAbsencePlan intent target volumes) stage root =
+  Aeson.object $
+    [ "schema_version" Aeson..= (1 :: Int)
+    , "kind" Aeson..= ("kind-node-absence-control" :: String)
+    , "stage" Aeson..= absenceStageName stage
+    , "node_create_result"
+        Aeson..= TextEncoding.decodeUtf8
+          (resultBytes bootstrap intent (DockerNodeContainerCreateReply 201 (Just target)) root)
+    , "control_name" Aeson..= (scopeKindName (bootstrapScope bootstrap) ++ "-absence-control")
+    , "control_label"
+        Aeson..= ("io.prodbox.absence-control=" ++ nodeCreateOperation (kindNodeCreateInput intent))
+    , "image_volumes" Aeson..= volumes
+    , "control_id" Aeson..= absenceControlId stage
+    , "anonymous_volumes" Aeson..= absenceFootprint stage
+    , "create_transport" Aeson..= case stage of
+        AbsenceCreateResult result -> Just (createResultValue result)
+        _ -> Nothing
+    , "remove_transport" Aeson..= case stage of
+        AbsenceRemoveResult _ _ result -> Just (removeResultValue result)
+        _ -> Nothing
+    ]
+      ++ case stage of
+        AbsenceVolumeRemoveAttempt _ _ volume -> ["volume_id" Aeson..= volume]
+        AbsenceVolumeRemoveResult _ _ volume result ->
+          [ "volume_id" Aeson..= volume
+          , "volume_transport" Aeson..= case result of
+              DockerNodeVarRemoveNotStarted -> Aeson.object ["state" Aeson..= ("not-started" :: String)]
+              DockerNodeVarRemoveUnconfirmed -> Aeson.object ["state" Aeson..= ("unconfirmed" :: String)]
+              DockerNodeVarRemoveReply status -> Aeson.object ["state" Aeson..= ("reply" :: String), "status" Aeson..= status]
+          ]
+        _ -> []
 
 absencePreconditions :: BootstrapProjection -> KindAbsencePlan -> IO Bool -> IO Bool -> IO Bool
 absencePreconditions bootstrap (KindAbsencePlan intent target _) = removePreconditions bootstrap intent target
 
 -- A sample recorded after a removal attempt cannot attest that the control
 -- was visible before cleanup. Existing samples remain readable on recovery.
-absenceStageFence :: BootstrapProjection -> KindAbsencePlan -> KindAbsenceStage -> IO Bool -> IO Bool
+absenceStageFence
+  :: BootstrapProjection -> KindAbsencePlan -> KindAbsenceStage -> IO Bool -> IO Bool
 absenceStageFence bootstrap plan stage stable = case stage of
   AbsenceControlSampled identifier volumes ->
-    (== AbsenceMissing) <$> observeKindAbsenceStage bootstrap plan (AbsenceRemoveAttempt identifier volumes) stable
+    (== AbsenceMissing)
+      <$> observeKindAbsenceStage bootstrap plan (AbsenceRemoveAttempt identifier volumes) stable
   AbsenceVolumeRemoveAttempt identifier volumes _ -> do
     sampled <- observeKindAbsenceStage bootstrap plan (AbsenceControlSampled identifier volumes) stable
-    created <- observeKindAbsenceStage bootstrap plan (AbsenceCreateResult (DockerNodeContainerCreateReply 201 (Just identifier))) stable
+    created <-
+      observeKindAbsenceStage
+        bootstrap
+        plan
+        (AbsenceCreateResult (DockerNodeContainerCreateReply 201 (Just identifier)))
+        stable
     pure (sampled == AbsenceMatches && created == AbsenceMatches)
   _ -> pure True
 
@@ -2008,39 +2106,43 @@ recordKindAbsenceStage bootstrap plan stage stable
         Nothing -> pure True
         Just previous -> (== AbsenceMatches) <$> observeKindAbsenceStage bootstrap plan previous stable
       permitted <- absenceStageFence bootstrap plan stage stable
-      if not (prior && permitted) then pure AbsenceRefused else do
-        touched <- newIORef False
-        outcome <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
-          checked <- try $ do
-            ready <- absencePreconditions bootstrap plan stable sameRoot
-            rootStatus <- Files.getFdStatus root
-            priorCurrent <- case absencePrevious stage of
-              Nothing -> pure True
-              Just previous -> (== AbsenceMatches) <$> observeKindAbsenceStage bootstrap plan previous stable
-            stillPermitted <- absenceStageFence bootstrap plan stage stable
-            let bytes = BL.toStrict (Aeson.encode (absenceStageValue bootstrap plan stage rootStatus))
-            if not ready || not priorCurrent || not stillPermitted || BS.length bytes > 8192 then pure AbsenceRefused else mask $ \restore -> do
-              opened <- try (Posix.openFdAt (Just root) (absenceStageName stage) Posix.WriteOnly createFlags)
-              case opened of
-                Left failure | isAlreadyExistsError failure -> pure AbsenceAlreadyExists
-                Left (_ :: IOException) -> pure AbsenceRefused
-                Right file -> do
-                  writeIORef touched True
-                  written <- try $ bracket (pure file) Posix.closeFd $ \held -> restore $ do
-                    writeAll held bytes
-                    fileSynchronise held
-                    fileSynchronise root
-                  case written of
-                    Left (_ :: IOException) -> pure AbsenceIncomplete
-                    Right () -> do
-                      observed <- restore (observeKindAbsenceStage bootstrap plan stage stable)
-                      pure (if observed == AbsenceMatches then AbsenceRecorded else AbsenceIncomplete)
-          pure (either (const AbsenceRefused) id (checked :: Either IOException KindAbsenceWrite))
-        changed <- readIORef touched
-        pure $ case outcome of
-          Just (Right result) | result /= AbsenceRefused -> result
-          _ | changed -> AbsenceIncomplete
-          _ -> AbsenceRefused
+      if not (prior && permitted)
+        then pure AbsenceRefused
+        else do
+          touched <- newIORef False
+          outcome <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
+            checked <- try $ do
+              ready <- absencePreconditions bootstrap plan stable sameRoot
+              rootStatus <- Files.getFdStatus root
+              priorCurrent <- case absencePrevious stage of
+                Nothing -> pure True
+                Just previous -> (== AbsenceMatches) <$> observeKindAbsenceStage bootstrap plan previous stable
+              stillPermitted <- absenceStageFence bootstrap plan stage stable
+              let bytes = BL.toStrict (Aeson.encode (absenceStageValue bootstrap plan stage rootStatus))
+              if not ready || not priorCurrent || not stillPermitted || BS.length bytes > 8192
+                then pure AbsenceRefused
+                else mask $ \restore -> do
+                  opened <- try (Posix.openFdAt (Just root) (absenceStageName stage) Posix.WriteOnly createFlags)
+                  case opened of
+                    Left failure | isAlreadyExistsError failure -> pure AbsenceAlreadyExists
+                    Left (_ :: IOException) -> pure AbsenceRefused
+                    Right file -> do
+                      writeIORef touched True
+                      written <- try $ bracket (pure file) Posix.closeFd $ \held -> restore $ do
+                        writeAll held bytes
+                        fileSynchronise held
+                        fileSynchronise root
+                      case written of
+                        Left (_ :: IOException) -> pure AbsenceIncomplete
+                        Right () -> do
+                          observed <- restore (observeKindAbsenceStage bootstrap plan stage stable)
+                          pure (if observed == AbsenceMatches then AbsenceRecorded else AbsenceIncomplete)
+            pure (either (const AbsenceRefused) id (checked :: Either IOException KindAbsenceWrite))
+          changed <- readIORef touched
+          pure $ case outcome of
+            Just (Right result) | result /= AbsenceRefused -> result
+            _ | changed -> AbsenceIncomplete
+            _ -> AbsenceRefused
 observeKindAbsenceStage
   :: BootstrapProjection -> KindAbsencePlan -> KindAbsenceStage -> IO Bool -> IO KindAbsenceObservation
 observeKindAbsenceStage bootstrap plan stage stable
@@ -2049,59 +2151,85 @@ observeKindAbsenceStage bootstrap plan stage stable
       previous <- case absencePrevious stage of
         Nothing -> pure True
         Just prior -> (== AbsenceMatches) <$> observeKindAbsenceStage bootstrap plan prior stable
-      if not previous then pure AbsenceUnobservable else do
-        outcome <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
-          checked <- try $ do
-            ready <- absencePreconditions bootstrap plan stable sameRoot
-            rootStatus <- Files.getFdStatus root
-            if not ready then pure AbsenceUnobservable else do
-              owner <- getEffectiveUserID
-              opened <- try (Posix.openFdAt (Just root) (absenceStageName stage) Posix.ReadOnly readFlags)
-              case opened of
-                Left failure | isDoesNotExistError failure -> do
-                  still <- absencePreconditions bootstrap plan stable sameRoot
-                  pure (if still then AbsenceMissing else AbsenceUnobservable)
-                Left (_ :: IOException) -> pure AbsenceUnobservable
-                Right file -> bracket (pure file) Posix.closeFd $ \held -> do
-                  before <- Files.getFdStatus held
-                  if not (safeFile owner before) then pure AbsenceUnobservable else do
-                    bytes <- readBounded held
-                    decoded <- decodeBoundedYamlValue bytes
-                    after <- Files.getFdStatus held
-                    named <- bracket (Posix.openFdAt (Just root) (absenceStageName stage) Posix.ReadOnly readFlags) Posix.closeFd Files.getFdStatus
-                    still <- absencePreconditions bootstrap plan stable sameRoot
-                    pure $ if not (still && sameVersion before after && sameVersion after named)
-                      then AbsenceUnobservable else case (Aeson.eitherDecodeStrict' bytes, decoded) of
-                        (Right value, Right validated) | value == validated ->
-                          if value == absenceStageValue bootstrap plan stage rootStatus then AbsenceMatches else AbsenceConflict
-                        _ -> AbsenceInvalid
-          pure (either (const AbsenceUnobservable) id (checked :: Either IOException KindAbsenceObservation))
-        afterPrevious <- case absencePrevious stage of
-          Nothing -> pure True
-          Just prior -> (== AbsenceMatches) <$> observeKindAbsenceStage bootstrap plan prior stable
-        pure $ if not afterPrevious then AbsenceUnobservable else case outcome of
-          Just (Right result) -> result
-          _ -> AbsenceUnobservable
+      if not previous
+        then pure AbsenceUnobservable
+        else do
+          outcome <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
+            checked <- try $ do
+              ready <- absencePreconditions bootstrap plan stable sameRoot
+              rootStatus <- Files.getFdStatus root
+              if not ready
+                then pure AbsenceUnobservable
+                else do
+                  owner <- getEffectiveUserID
+                  opened <- try (Posix.openFdAt (Just root) (absenceStageName stage) Posix.ReadOnly readFlags)
+                  case opened of
+                    Left failure | isDoesNotExistError failure -> do
+                      still <- absencePreconditions bootstrap plan stable sameRoot
+                      pure (if still then AbsenceMissing else AbsenceUnobservable)
+                    Left (_ :: IOException) -> pure AbsenceUnobservable
+                    Right file -> bracket (pure file) Posix.closeFd $ \held -> do
+                      before <- Files.getFdStatus held
+                      if not (safeFile owner before)
+                        then pure AbsenceUnobservable
+                        else do
+                          bytes <- readBounded held
+                          decoded <- decodeBoundedYamlValue bytes
+                          after <- Files.getFdStatus held
+                          named <-
+                            bracket
+                              (Posix.openFdAt (Just root) (absenceStageName stage) Posix.ReadOnly readFlags)
+                              Posix.closeFd
+                              Files.getFdStatus
+                          still <- absencePreconditions bootstrap plan stable sameRoot
+                          pure $
+                            if not (still && sameVersion before after && sameVersion after named)
+                              then AbsenceUnobservable
+                              else case (Aeson.eitherDecodeStrict' bytes, decoded) of
+                                (Right value, Right validated)
+                                  | value == validated ->
+                                      if value == absenceStageValue bootstrap plan stage rootStatus
+                                        then AbsenceMatches
+                                        else AbsenceConflict
+                                _ -> AbsenceInvalid
+            pure (either (const AbsenceUnobservable) id (checked :: Either IOException KindAbsenceObservation))
+          afterPrevious <- case absencePrevious stage of
+            Nothing -> pure True
+            Just prior -> (== AbsenceMatches) <$> observeKindAbsenceStage bootstrap plan prior stable
+          pure $
+            if not afterPrevious
+              then AbsenceUnobservable
+              else case outcome of
+                Just (Right result) -> result
+                _ -> AbsenceUnobservable
 
 -- Extract a candidate ID only from a bounded file, then re-observe the exact
 -- bound stage under the lease. Missing and invalid files never imply absence.
-recoverKindAbsenceControlId :: BootstrapProjection -> KindAbsencePlan -> IO Bool -> IO KindAbsenceIdObservation
+recoverKindAbsenceControlId
+  :: BootstrapProjection -> KindAbsencePlan -> IO Bool -> IO KindAbsenceIdObservation
 recoverKindAbsenceControlId bootstrap plan stable = do
   outcome <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
     checked <- try $ do
       ready <- absencePreconditions bootstrap plan stable sameRoot
-      if not ready then pure Nothing else do
-        owner <- getEffectiveUserID
-        opened <- try (Posix.openFdAt (Just root) (absenceStageName (AbsenceControlIdentified "")) Posix.ReadOnly readFlags)
-        case opened of
-          Left (_ :: IOException) -> pure Nothing
-          Right file -> bracket (pure file) Posix.closeFd $ \held -> do
-            status <- Files.getFdStatus held
-            if not (safeFile owner status) then pure Nothing else do
-              bytes <- readBounded held
-              pure $ case Aeson.eitherDecodeStrict' bytes >>= parseEither (Aeson.withObject "absence control" (.: "control_id")) of
-                Right identifier -> Just identifier
-                Left _ -> Nothing
+      if not ready
+        then pure Nothing
+        else do
+          owner <- getEffectiveUserID
+          opened <-
+            try
+              (Posix.openFdAt (Just root) (absenceStageName (AbsenceControlIdentified "")) Posix.ReadOnly readFlags)
+          case opened of
+            Left (_ :: IOException) -> pure Nothing
+            Right file -> bracket (pure file) Posix.closeFd $ \held -> do
+              status <- Files.getFdStatus held
+              if not (safeFile owner status)
+                then pure Nothing
+                else do
+                  bytes <- readBounded held
+                  pure $ case Aeson.eitherDecodeStrict' bytes
+                    >>= parseEither (Aeson.withObject "absence control" (.: "control_id")) of
+                    Right identifier -> Just identifier
+                    Left _ -> Nothing
     pure (either (const Nothing) id (checked :: Either IOException (Maybe String)))
   case outcome of
     Just (Right (Just identifier)) -> do
@@ -2117,27 +2245,45 @@ recoverKindAbsenceFootprint bootstrap plan identifier stable = do
   outcome <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
     checked <- try $ do
       ready <- absencePreconditions bootstrap plan stable sameRoot
-      if not ready then pure Nothing else do
-        owner <- getEffectiveUserID
-        opened <- try (Posix.openFdAt (Just root) (absenceStageName (AbsenceFootprintRecorded "" [])) Posix.ReadOnly readFlags)
-        case opened of
-          Left (_ :: IOException) -> pure Nothing
-          Right file -> bracket (pure file) Posix.closeFd $ \held -> do
-            status <- Files.getFdStatus held
-            if not (safeFile owner status) then pure Nothing else do
-              bytes <- readBounded held
-              pure $ case Aeson.eitherDecodeStrict' bytes >>= parseEither (Aeson.withObject "absence control" (.: "anonymous_volumes")) of
-                Right volumes -> Just volumes
-                Left _ -> Nothing
+      if not ready
+        then pure Nothing
+        else do
+          owner <- getEffectiveUserID
+          opened <-
+            try
+              ( Posix.openFdAt
+                  (Just root)
+                  (absenceStageName (AbsenceFootprintRecorded "" []))
+                  Posix.ReadOnly
+                  readFlags
+              )
+          case opened of
+            Left (_ :: IOException) -> pure Nothing
+            Right file -> bracket (pure file) Posix.closeFd $ \held -> do
+              status <- Files.getFdStatus held
+              if not (safeFile owner status)
+                then pure Nothing
+                else do
+                  bytes <- readBounded held
+                  pure $ case Aeson.eitherDecodeStrict' bytes
+                    >>= parseEither (Aeson.withObject "absence control" (.: "anonymous_volumes")) of
+                    Right volumes -> Just volumes
+                    Left _ -> Nothing
     pure (either (const Nothing) id (checked :: Either IOException (Maybe [(FilePath, String)])))
   case outcome of
     Just (Right (Just volumes)) -> do
-      observed <- observeKindAbsenceStage bootstrap plan (AbsenceFootprintRecorded identifier volumes) stable
-      pure (if observed == AbsenceMatches then AbsenceFootprintObserved volumes else AbsenceFootprintUnconfirmed)
+      observed <-
+        observeKindAbsenceStage bootstrap plan (AbsenceFootprintRecorded identifier volumes) stable
+      pure
+        (if observed == AbsenceMatches then AbsenceFootprintObserved volumes else AbsenceFootprintUnconfirmed)
     _ -> pure AbsenceFootprintUnconfirmed
 
 recoverKindAbsenceControlResult
-  :: BootstrapProjection -> KindAbsencePlan -> String -> [(FilePath, String)] -> IO Bool
+  :: BootstrapProjection
+  -> KindAbsencePlan
+  -> String
+  -> [(FilePath, String)]
+  -> IO Bool
   -> IO KindAbsenceControlResultObservation
 recoverKindAbsenceControlResult bootstrap plan identifier volumes stable = do
   let stage result = AbsenceRemoveResult identifier volumes result
@@ -2154,7 +2300,11 @@ recoverKindAbsenceControlResult bootstrap plan identifier volumes stable = do
           case candidate of
             Just value -> do
               exact <- observeKindAbsenceStage bootstrap plan (stage value) stable
-              pure (if exact == AbsenceMatches then AbsenceControlResultObserved value else AbsenceControlResultUnconfirmed)
+              pure
+                ( if exact == AbsenceMatches
+                    then AbsenceControlResultObserved value
+                    else AbsenceControlResultUnconfirmed
+                )
             Nothing -> pure AbsenceControlResultUnconfirmed
         _ -> pure AbsenceControlResultUnconfirmed
     _ -> pure AbsenceControlResultUnconfirmed
@@ -2163,33 +2313,47 @@ recoverKindAbsenceControlResult bootstrap plan identifier volumes stable = do
     outcome <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
       checked <- try $ do
         ready <- absencePreconditions bootstrap plan stable sameRoot
-        if not ready then pure Nothing else do
-          owner <- getEffectiveUserID
-          opened <- try (Posix.openFdAt (Just root) (absenceStageName stage) Posix.ReadOnly readFlags)
-          case opened of
-            Left (_ :: IOException) -> pure Nothing
-            Right file -> bracket (pure file) Posix.closeFd $ \held -> do
-              status <- Files.getFdStatus held
-              if not (safeFile owner status) then pure Nothing else do
-                bytes <- readBounded held
-                pure $ either (const Nothing) Just (Aeson.eitherDecodeStrict' bytes >>= parseEither parseTransport)
-      pure (either (const Nothing) id (checked :: Either IOException (Maybe DockerNodeContainerRemoveResult)))
+        if not ready
+          then pure Nothing
+          else do
+            owner <- getEffectiveUserID
+            opened <- try (Posix.openFdAt (Just root) (absenceStageName stage) Posix.ReadOnly readFlags)
+            case opened of
+              Left (_ :: IOException) -> pure Nothing
+              Right file -> bracket (pure file) Posix.closeFd $ \held -> do
+                status <- Files.getFdStatus held
+                if not (safeFile owner status)
+                  then pure Nothing
+                  else do
+                    bytes <- readBounded held
+                    pure $ either (const Nothing) Just (Aeson.eitherDecodeStrict' bytes >>= parseEither parseTransport)
+      pure
+        (either (const Nothing) id (checked :: Either IOException (Maybe DockerNodeContainerRemoveResult)))
     pure $ case outcome of Just (Right candidate) -> candidate; _ -> Nothing
   parseTransport = Aeson.withObject "absence control result" $ \object -> do
     transport <- object .: "remove_transport"
-    Aeson.withObject "control transport" (\fields -> do
-      state <- fields .: "state"
-      case (state :: String) of
-        "not-started" -> pure DockerNodeContainerRemoveNotStarted
-        "unconfirmed" -> pure DockerNodeContainerRemoveUnconfirmed
-        "reply" -> DockerNodeContainerRemoveReply <$> fields .: "status"
-        _ -> fail "invalid control transport state") transport
+    Aeson.withObject
+      "control transport"
+      ( \fields -> do
+          state <- fields .: "state"
+          case (state :: String) of
+            "not-started" -> pure DockerNodeContainerRemoveNotStarted
+            "unconfirmed" -> pure DockerNodeContainerRemoveUnconfirmed
+            "reply" -> DockerNodeContainerRemoveReply <$> fields .: "status"
+            _ -> fail "invalid control transport state"
+      )
+      transport
 
 -- Decode a candidate result only to re-observe the exact bound record. A
 -- missing attempt, a missing result and malformed/unreadable data remain
 -- distinct; none of them establishes provider settlement or permits retry.
 recoverKindAbsenceVolumeResult
-  :: BootstrapProjection -> KindAbsencePlan -> String -> [(FilePath, String)] -> String -> IO Bool
+  :: BootstrapProjection
+  -> KindAbsencePlan
+  -> String
+  -> [(FilePath, String)]
+  -> String
+  -> IO Bool
   -> IO KindAbsenceVolumeResultObservation
 recoverKindAbsenceVolumeResult bootstrap plan identifier volumes volume stable = do
   let attempt = AbsenceVolumeRemoveAttempt identifier volumes volume
@@ -2207,7 +2371,11 @@ recoverKindAbsenceVolumeResult bootstrap plan identifier volumes volume stable =
           case candidate of
             Just value -> do
               exact <- observeKindAbsenceStage bootstrap plan (stage value) stable
-              pure (if exact == AbsenceMatches then AbsenceVolumeResultObserved value else AbsenceVolumeResultUnconfirmed)
+              pure
+                ( if exact == AbsenceMatches
+                    then AbsenceVolumeResultObserved value
+                    else AbsenceVolumeResultUnconfirmed
+                )
             Nothing -> pure AbsenceVolumeResultUnconfirmed
         _ -> pure AbsenceVolumeResultUnconfirmed
     _ -> pure AbsenceVolumeResultUnconfirmed
@@ -2216,27 +2384,35 @@ recoverKindAbsenceVolumeResult bootstrap plan identifier volumes volume stable =
     outcome <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
       checked <- try $ do
         ready <- absencePreconditions bootstrap plan stable sameRoot
-        if not ready then pure Nothing else do
-          owner <- getEffectiveUserID
-          opened <- try (Posix.openFdAt (Just root) (absenceStageName stage) Posix.ReadOnly readFlags)
-          case opened of
-            Left (_ :: IOException) -> pure Nothing
-            Right file -> bracket (pure file) Posix.closeFd $ \held -> do
-              status <- Files.getFdStatus held
-              if not (safeFile owner status) then pure Nothing else do
-                bytes <- readBounded held
-                pure $ either (const Nothing) Just (Aeson.eitherDecodeStrict' bytes >>= parseEither parseTransport)
+        if not ready
+          then pure Nothing
+          else do
+            owner <- getEffectiveUserID
+            opened <- try (Posix.openFdAt (Just root) (absenceStageName stage) Posix.ReadOnly readFlags)
+            case opened of
+              Left (_ :: IOException) -> pure Nothing
+              Right file -> bracket (pure file) Posix.closeFd $ \held -> do
+                status <- Files.getFdStatus held
+                if not (safeFile owner status)
+                  then pure Nothing
+                  else do
+                    bytes <- readBounded held
+                    pure $ either (const Nothing) Just (Aeson.eitherDecodeStrict' bytes >>= parseEither parseTransport)
       pure (either (const Nothing) id (checked :: Either IOException (Maybe DockerNodeVarRemoveResult)))
     pure $ case outcome of Just (Right candidate) -> candidate; _ -> Nothing
   parseTransport = Aeson.withObject "absence volume result" $ \object -> do
     transport <- object .: "volume_transport"
-    Aeson.withObject "volume transport" (\fields -> do
-      state <- fields .: "state"
-      case (state :: String) of
-        "not-started" -> pure DockerNodeVarRemoveNotStarted
-        "unconfirmed" -> pure DockerNodeVarRemoveUnconfirmed
-        "reply" -> DockerNodeVarRemoveReply <$> fields .: "status"
-        _ -> fail "invalid volume transport state") transport
+    Aeson.withObject
+      "volume transport"
+      ( \fields -> do
+          state <- fields .: "state"
+          case (state :: String) of
+            "not-started" -> pure DockerNodeVarRemoveNotStarted
+            "unconfirmed" -> pure DockerNodeVarRemoveUnconfirmed
+            "reply" -> DockerNodeVarRemoveReply <$> fields .: "status"
+            _ -> fail "invalid volume transport state"
+      )
+      transport
 
 removeControlBytes
   :: BootstrapProjection -> KindNodeCreateIntent -> String -> Files.FileStatus -> BS.ByteString
@@ -2270,12 +2446,21 @@ removePreconditions bootstrap intent identifier stable sameRoot = do
 
 removeAttemptBytes
   :: BootstrapProjection -> KindNodeCreateIntent -> String -> Files.FileStatus -> BS.ByteString
-removeAttemptBytes bootstrap intent identifier root =
+removeAttemptBytes = removeAttemptBytesFor InitialNodeRemoval
+
+removeAttemptBytesFor
+  :: KindNodeRemovePass
+  -> BootstrapProjection
+  -> KindNodeCreateIntent
+  -> String
+  -> Files.FileStatus
+  -> BS.ByteString
+removeAttemptBytesFor pass bootstrap intent identifier root =
   BL.toStrict $
     Aeson.encode $
       Aeson.object
         [ "schema_version" Aeson..= (1 :: Int)
-        , "kind" Aeson..= ("kind-node-remove-attempt" :: String)
+        , "kind" Aeson..= removeAttemptKind pass
         , "create_result"
             Aeson..= TextEncoding.decodeUtf8
               (resultBytes bootstrap intent (DockerNodeContainerCreateReply 201 (Just identifier)) root)
@@ -2303,19 +2488,34 @@ recordKindNodeRemoveResult
   -> DockerNodeContainerRemoveResult
   -> IO Bool
   -> IO KindNodeRemoveResultWrite
-recordKindNodeRemoveResult bootstrap intent identifier result stable
+recordKindNodeRemoveResult = recordKindNodeRemoveResultFor InitialNodeRemoval
+
+recordKindNodeRemoveResultFor
+  :: KindNodeRemovePass
+  -> BootstrapProjection
+  -> KindNodeCreateIntent
+  -> String
+  -> DockerNodeContainerRemoveResult
+  -> IO Bool
+  -> IO KindNodeRemoveResultWrite
+recordKindNodeRemoveResultFor pass bootstrap intent identifier result stable
   | not (validRemoveResult result) = pure NodeRemoveResultRefused
   | otherwise = do
       touched <- newIORef False
       outcome <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
         checked <- try $ do
-          ready <- removeResultPreconditions bootstrap intent identifier stable sameRoot
+          admitted <- stable
+          ready <-
+            if admitted
+              then removeResultPreconditions pass bootstrap intent identifier (pure True) sameRoot
+              else pure False
           rootStatus <- Files.getFdStatus root
-          let bytes = removeResultBytes bootstrap intent identifier result rootStatus
-          if not ready || BS.length bytes > 8192
+          let bytes = removeResultBytes pass bootstrap intent identifier result rootStatus
+          beforeWrite <- if ready then stable else pure False
+          if not beforeWrite || BS.length bytes > 8192
             then pure NodeRemoveResultRefused
             else mask $ \restore -> do
-              created <- try (Posix.openFdAt (Just root) removeResultName Posix.WriteOnly createFlags)
+              created <- try (Posix.openFdAt (Just root) (removeResultNameFor pass) Posix.WriteOnly createFlags)
               case created of
                 Left failure | isAlreadyExistsError failure -> pure NodeRemoveResultAlreadyExists
                 Left (_ :: IOException) -> pure NodeRemoveResultRefused
@@ -2328,9 +2528,10 @@ recordKindNodeRemoveResult bootstrap intent identifier result stable
                   case written of
                     Left (_ :: IOException) -> pure NodeRemoveResultIncomplete
                     Right () -> do
-                      observed <- observeKindNodeRemoveResult bootstrap intent identifier stable
+                      observed <- observeKindNodeRemoveResultFor pass bootstrap intent identifier (pure True)
+                      after <- stable
                       pure
-                        ( if observed == NodeRemoveResultObserved result
+                        ( if after && observed == NodeRemoveResultObserved result
                             then NodeRemoveResultRecorded
                             else NodeRemoveResultIncomplete
                         )
@@ -2352,19 +2553,28 @@ observeKindNodeRemoveResult
   -> String
   -> IO Bool
   -> IO KindNodeRemoveResultObservation
-observeKindNodeRemoveResult bootstrap intent identifier stable = do
+observeKindNodeRemoveResult = observeKindNodeRemoveResultFor InitialNodeRemoval
+
+observeKindNodeRemoveResultFor
+  :: KindNodeRemovePass
+  -> BootstrapProjection
+  -> KindNodeCreateIntent
+  -> String
+  -> IO Bool
+  -> IO KindNodeRemoveResultObservation
+observeKindNodeRemoveResultFor pass bootstrap intent identifier stable = do
   outcome <- timeout 10000000 $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot -> do
     checked <- try $ do
-      ready <- removeResultPreconditions bootstrap intent identifier stable sameRoot
+      ready <- removeResultPreconditions pass bootstrap intent identifier stable sameRoot
       if not ready
         then pure NodeRemoveResultUnobservable
         else do
           owner <- getEffectiveUserID
           rootStatus <- Files.getFdStatus root
-          opened <- try (Posix.openFdAt (Just root) removeResultName Posix.ReadOnly readFlags)
+          opened <- try (Posix.openFdAt (Just root) (removeResultNameFor pass) Posix.ReadOnly readFlags)
           case opened of
             Left failure | isDoesNotExistError failure -> do
-              still <- removeResultPreconditions bootstrap intent identifier stable sameRoot
+              still <- removeResultPreconditions pass bootstrap intent identifier stable sameRoot
               pure (if still then NodeRemoveResultMissing else NodeRemoveResultUnobservable)
             Left (_ :: IOException) -> pure NodeRemoveResultUnobservable
             Right file -> bracket (pure file) Posix.closeFd $ \held -> do
@@ -2377,14 +2587,14 @@ observeKindNodeRemoveResult bootstrap intent identifier stable = do
                   after <- Files.getFdStatus held
                   named <-
                     bracket
-                      (Posix.openFdAt (Just root) removeResultName Posix.ReadOnly readFlags)
+                      (Posix.openFdAt (Just root) (removeResultNameFor pass) Posix.ReadOnly readFlags)
                       Posix.closeFd
                       Files.getFdStatus
-                  still <- removeResultPreconditions bootstrap intent identifier stable sameRoot
+                  still <- removeResultPreconditions pass bootstrap intent identifier stable sameRoot
                   pure $
                     if not (still && sameVersion initial after && sameVersion after named)
                       then NodeRemoveResultUnobservable
-                      else decodeRemoveResult bootstrap intent identifier rootStatus bytes decoded
+                      else decodeRemoveResult pass bootstrap intent identifier rootStatus bytes decoded
     pure
       ( either
           (const NodeRemoveResultUnobservable)
@@ -2396,14 +2606,20 @@ observeKindNodeRemoveResult bootstrap intent identifier stable = do
     _ -> NodeRemoveResultUnobservable
 
 removeResultPreconditions
-  :: BootstrapProjection -> KindNodeCreateIntent -> String -> IO Bool -> IO Bool -> IO Bool
-removeResultPreconditions bootstrap intent identifier stable sameRoot = do
+  :: KindNodeRemovePass
+  -> BootstrapProjection
+  -> KindNodeCreateIntent
+  -> String
+  -> IO Bool
+  -> IO Bool
+  -> IO Bool
+removeResultPreconditions pass bootstrap intent identifier stable sameRoot = do
   before <- stable
   root <- sameRoot
   if not (before && root)
     then pure False
     else do
-      parent <- observeKindNodeRemoveAttempt bootstrap intent identifier (pure True)
+      parent <- observeKindNodeRemoveAttemptFor pass bootstrap intent identifier (pure True)
       afterRoot <- sameRoot
       after <- stable
       pure (parent == NodeRemoveAttemptMatches && afterRoot && after)
@@ -2414,20 +2630,23 @@ validRemoveResult DockerNodeContainerRemoveUnconfirmed = True
 validRemoveResult (DockerNodeContainerRemoveReply status) = status >= 100 && status <= 599
 
 removeResultBytes
-  :: BootstrapProjection
+  :: KindNodeRemovePass
+  -> BootstrapProjection
   -> KindNodeCreateIntent
   -> String
   -> DockerNodeContainerRemoveResult
   -> Files.FileStatus
   -> BS.ByteString
-removeResultBytes bootstrap intent identifier result root =
+removeResultBytes pass bootstrap intent identifier result root =
   BL.toStrict $
     Aeson.encode $
       Aeson.object
         [ "schema_version" Aeson..= (1 :: Int)
-        , "kind" Aeson..= ("kind-node-remove-result" :: String)
+        , "kind" Aeson..= removeResultKind pass
         , "attempt"
-            Aeson..= (Aeson.decodeStrict' (removeAttemptBytes bootstrap intent identifier root) :: Maybe Aeson.Value)
+            Aeson..= ( Aeson.decodeStrict' (removeAttemptBytesFor pass bootstrap intent identifier root)
+                         :: Maybe Aeson.Value
+                     )
         , "transport" Aeson..= removeResultValue result
         ]
 
@@ -2438,16 +2657,17 @@ removeResultValue result = case result of
   DockerNodeContainerRemoveReply status -> Aeson.object ["state" Aeson..= ("reply" :: String), "status" Aeson..= status]
 
 decodeRemoveResult
-  :: BootstrapProjection
+  :: KindNodeRemovePass
+  -> BootstrapProjection
   -> KindNodeCreateIntent
   -> String
   -> Files.FileStatus
   -> BS.ByteString
   -> Either failure Aeson.Value
   -> KindNodeRemoveResultObservation
-decodeRemoveResult bootstrap intent identifier root bytes checked = case (Aeson.eitherDecodeStrict' bytes, checked) of
+decodeRemoveResult pass bootstrap intent identifier root bytes checked = case (Aeson.eitherDecodeStrict' bytes, checked) of
   (Right value, Right validated) | value == validated -> case parseEither parser value of
-    Right result | validRemoveResult result -> case Aeson.eitherDecodeStrict' (removeResultBytes bootstrap intent identifier result root) of
+    Right result | validRemoveResult result -> case Aeson.eitherDecodeStrict' (removeResultBytes pass bootstrap intent identifier result root) of
       Right wanted | value == wanted -> NodeRemoveResultObserved result
       _ -> NodeRemoveResultConflict
     _ -> NodeRemoveResultInvalid
@@ -2540,11 +2760,19 @@ startResultName = "kind-node-start-result.json"
 removeControlName :: FilePath
 removeControlName = "kind-node-remove-positive-control.json"
 
-removeAttemptName :: FilePath
-removeAttemptName = "kind-node-remove-attempt.json"
+removeAttemptKind :: KindNodeRemovePass -> String
+removeAttemptKind InitialNodeRemoval = "kind-node-remove-attempt"
+removeAttemptKind RetryNodeRemoval = "kind-node-remove-retry-attempt"
 
-removeResultName :: FilePath
-removeResultName = "kind-node-remove-result.json"
+removeResultKind :: KindNodeRemovePass -> String
+removeResultKind InitialNodeRemoval = "kind-node-remove-result"
+removeResultKind RetryNodeRemoval = "kind-node-remove-retry-result"
+
+removeAttemptNameFor :: KindNodeRemovePass -> FilePath
+removeAttemptNameFor pass = removeAttemptKind pass ++ ".json"
+
+removeResultNameFor :: KindNodeRemovePass -> FilePath
+removeResultNameFor pass = removeResultKind pass ++ ".json"
 
 readFlags, createFlags :: Posix.OpenFileFlags
 readFlags = Posix.defaultFileFlags {Posix.nofollow = True, Posix.cloexec = True, Posix.nonBlock = True}

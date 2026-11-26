@@ -9,6 +9,8 @@ module Prodbox.Control.KindNodeVolumeReadback
   , parseNodeVolumeInventory
   , classifyNodeVolumeReadback
   , observeIndependentNodeVolume
+  , observeRecordedNodeVolumeAbsent
+  , priorVolumeRemovalRecorded
   ) where
 
 import Control.Exception (IOException, try)
@@ -22,21 +24,58 @@ import Prodbox.Config.BootstrapProjection
   , bootstrapRuntimeSocket
   )
 import Prodbox.Config.KindPlan (kindNodeVarVolumeName)
+import Prodbox.Control.DockerConnectedInfo
+  ( DockerConnectedInfo (..)
+  , DockerConnectedInfoResult (..)
+  , DockerNodeVarRemoveResult (DockerNodeVarRemoveReply)
+  , DockerNodeVarVolumeObservation (DockerNodeVarVolumeNotFound)
+  , inspectDockerSessionNodeVarVolume
+  , withConnectedDockerInfo
+  )
 import Prodbox.Control.DockerIdentity
   ( DockerDaemonObservation (..)
   , observeDockerDaemon
   , readDocker
   )
+import Prodbox.Control.DockerPeer (DockerPeer (..), DockerPeerResult (..))
 import Prodbox.Control.ImageIdObservation (validImageId)
 import Prodbox.Control.KindLease (KindOperationOutcome, withRecoveredKindOperation)
 import Prodbox.Control.KindNodeVolumeIntent
   ( KindNodeVolumeIntentObservation (NodeVolumeIntentMatches)
   , KindNodeVolumeRemovalObservation (NodeVolumeRemovalMatches)
+  , KindNodeVolumeRemovalReceiptObservation (NodeVolumeRemovalReceiptObserved)
   , mkKindNodeVolumeIntent
   , observeKindNodeVolumeIntent
   , observeKindNodeVolumeRemoval
+  , observeKindNodeVolumeRemovalReceipt
   )
 import System.Timeout (timeout)
+
+priorVolumeRemovalRecorded :: KindNodeVolumeRemovalReceiptObservation -> Bool
+priorVolumeRemovalRecorded observed = case observed of
+  NodeVolumeRemovalReceiptObserved (DockerNodeVarRemoveReply 204) -> True
+  _ -> False
+
+-- | Confirm the bound removal receipt and the exact Docker volume read.
+-- The caller supplies the held operation and retirement admission check.
+observeRecordedNodeVolumeAbsent :: BootstrapProjection -> String -> (IO Bool -> IO Bool) -> IO Bool
+observeRecordedNodeVolumeAbsent bootstrap operation admitted = do
+  observed <- withConnectedDockerInfo 30000000 (bootstrapRuntimeSocket bootstrap) inspectVolume
+  pure (observed == DockerPeerCompleted (DockerConnectedInfoCompleted True))
+ where
+  inspectVolume session (DockerConnectedInfo daemon (DockerPeer _ _ _ identity)) peerStable = do
+    let held = admitted peerStable
+    case mkKindNodeVolumeIntent operation (DockerDaemonObserved daemon identity) of
+      Nothing -> pure False
+      Just intent -> do
+        before <- held
+        if not before
+          then pure False
+          else do
+            receipt <- observeKindNodeVolumeRemovalReceipt bootstrap intent (pure True)
+            volume <- inspectDockerSessionNodeVarVolume session bootstrap operation
+            closing <- held
+            pure (priorVolumeRemovalRecorded receipt && volume == Right DockerNodeVarVolumeNotFound && closing)
 
 data NodeVolumeInventory = NodeVolumeInventory
   { nodeVolumeListed :: !Bool

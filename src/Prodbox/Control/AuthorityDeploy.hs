@@ -10,40 +10,240 @@
 -- container log is reported so the next precondition can be read directly.
 module Prodbox.Control.AuthorityDeploy
   ( deployAuthority
+  , deployAuthorityWithAdmission
   , authorityNamespace
+  , RetainedAuthorityJournal (..)
+  , observeRetainedAuthorityJournal
+  , retainedAuthorityCustody
   ) where
 
 import Control.Concurrent (threadDelay)
+import Control.Exception (IOException, bracket, try)
+import Data.Aeson ((.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types qualified as AesonTypes
+import Data.Bits ((.&.))
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.List (isInfixOf)
 import Data.Text qualified as Text
 import Prodbox.Config.BootstrapProjection
   ( BootstrapProjection
+  , bootstrapRootGeneration
   , bootstrapRuntimeSocket
   , bootstrapScope
   )
-import Prodbox.Config.DeploymentScope (scopeKindName, scopeRoot)
+import Prodbox.Config.DeploymentScope
+  ( ScopeGenerationObservation (ScopeGenerationMatches)
+  , observeScopeGeneration
+  , scopeKindName
+  , scopeRoot
+  , withScopeRootDescriptor
+  )
 import Prodbox.Control.BrokerDeploy (runtimeImageTag, runtimeRepository)
+import Prodbox.Control.KindArchiveTransaction (kindArchivePendingAbsent)
+import Prodbox.Control.KindIntent
+  ( KindIntentObservation (KindIntentMissing)
+  , observeKindTeardownAdmission
+  )
+import Prodbox.Control.KindLease (KindLeaseOutcome (KindLeaseCompleted), withKindLease)
+import Prodbox.Control.KindNodeBootstrap
+  ( JournalRecordObservation (..)
+  , observeJournalRecord
+  , writeJournalRecord
+  )
 import Prodbox.Control.ManagementPolicy (managementNamespace)
+import Prodbox.Control.ManagementRestore (managementRestoreIdle)
 import Prodbox.Control.ServiceSupport (ServiceStep (..), run)
+import Prodbox.ControlPlane.AdmissionJournalMirror
+  ( JournalRemovalFence (JournalRemovalFenceAbsent)
+  , journalCustodyMountDirectory
+  , journalMountDirectory
+  , observeJournalRemovalFence
+  , withJournalCustodyLease
+  )
 import Prodbox.ControlPlane.AuthorityJournalReadServer (journalReadServiceAccount)
 import Prodbox.ControlPlane.ListenPort (authorityJournalReadPort, controlPlaneListenPort)
 import Prodbox.Lib.ChartPlatform (ResolvedCustomImage (..), valuesForLifecycleAuthority)
 import Prodbox.Minio.ObjectStoreTypes (defaultObjectStoreBucket)
-import System.Directory (createDirectoryIfMissing)
 import System.FilePath ((</>))
-import System.Posix.Files (setFileMode)
+import System.IO.Error (isDoesNotExistError)
+import System.Posix.Directory qualified as PosixDirectory
+import System.Posix.Files (FileStatus, deviceID, fileID, fileMode, fileOwner, getFdStatus)
+import System.Posix.IO qualified as Posix
+import System.Posix.Types (Fd (..))
+import System.Posix.Unistd (fileSynchronise)
+import System.Posix.User (getEffectiveGroupID, getEffectiveUserID)
+import System.Timeout (timeout)
 
 authorityNamespace :: String
 authorityNamespace = "lifecycle-authority"
 
 deployAuthority :: BootstrapProjection -> IO [ServiceStep]
-deployAuthority bootstrap = do
+deployAuthority bootstrap = deployAuthorityWithAdmission bootstrap (pure True)
+
+deployAuthorityWithAdmission :: BootstrapProjection -> IO Bool -> IO [ServiceStep]
+deployAuthorityWithAdmission bootstrap authorized = do
+  outcome <- withKindLease bootstrap $ \stable -> do
+    checkpoint <- observeKindTeardownAdmission bootstrap
+    archive <- withScopeRootDescriptor (bootstrapScope bootstrap) $ \root sameRoot ->
+      (&&) <$> kindArchivePendingAbsent root <*> sameRoot
+    idle <- managementRestoreIdle bootstrap
+    held <- stable
+    admitted <- authorized
+    if checkpoint == KindIntentMissing && archive == Right True && idle && held && admitted
+      then do
+        journal <- prepareRetainedJournal bootstrap
+        ready <- stable
+        if journal && ready
+          then do
+            permitted <- withJournalCustodyLease (retainedAuthorityCustody bootstrap) $ \custody custodyStable -> do
+              fence <- observeJournalRemovalFence custody ByteString.empty
+              valid <- (&&) <$> custodyStable <*> stable
+              retained <- observeRetainedAuthorityJournal bootstrap
+              pure (fence == JournalRemovalFenceAbsent && valid && retained == RetainedAuthorityJournalBound)
+            if permitted == Just True
+              then deployUnderLease bootstrap
+              else
+                pure
+                  [ ServiceStep
+                      "authority-admission"
+                      False
+                      "a control removal is retained or the journal lease is unavailable"
+                  ]
+          else pure [ServiceStep "authority-journal" False "the retained journal root could not be confirmed"]
+      else
+        pure
+          [ ServiceStep "authority-admission" False "the selected Authority deployment admission is unconfirmed"
+          ]
+  pure $ case outcome of
+    Right (KindLeaseCompleted steps) -> steps
+    _ ->
+      [ ServiceStep
+          "authority-admission"
+          False
+          "the scope lease or deployment closing observation is unconfirmed"
+      ]
+
+data RetainedAuthorityJournal
+  = RetainedAuthorityJournalAbsent
+  | RetainedAuthorityJournalReserved
+  | RetainedAuthorityJournalBound
+  | RetainedAuthorityJournalUnconfirmed
+  deriving (Eq, Show)
+
+journalDirectoryName, journalCustodyName, journalIntentName, journalBindingName :: FilePath
+journalDirectoryName = "authority-journal"
+journalCustodyName = "authority-journal-custody"
+journalIntentName = "authority-journal-intent.json"
+journalBindingName = "authority-journal-binding.json"
+
+retainedAuthorityCustody :: BootstrapProjection -> FilePath
+retainedAuthorityCustody bootstrap = scopeRoot (bootstrapScope bootstrap) </> journalCustodyName
+
+journalIntent :: BootstrapProjection -> Aeson.Value
+journalIntent bootstrap =
+  Aeson.object
+    [ "schema_version" .= (2 :: Int)
+    , "kind_name" .= scopeKindName (bootstrapScope bootstrap)
+    , "root_generation" .= bootstrapRootGeneration bootstrap
+    ]
+
+journalBinding :: BootstrapProjection -> FileStatus -> FileStatus -> Aeson.Value
+journalBinding bootstrap directory custody =
+  Aeson.object
+    [ "intent" .= journalIntent bootstrap
+    , "journal" .= directoryIdentity directory
+    , "custody" .= directoryIdentity custody
+    ]
+
+directoryIdentity :: FileStatus -> (Integer, Integer)
+directoryIdentity status = (toInteger (deviceID status), toInteger (fileID status))
+
+journalDirectoryFlags :: Posix.OpenFileFlags
+journalDirectoryFlags =
+  Posix.defaultFileFlags {Posix.nofollow = True, Posix.cloexec = True, Posix.directory = True}
+
+observeRetainedAuthorityJournal :: BootstrapProjection -> IO RetainedAuthorityJournal
+observeRetainedAuthorityJournal bootstrap = do
+  let scope = bootstrapScope bootstrap
+  observed <- timeout 15000000 $ withScopeRootDescriptor scope $ \root sameRoot -> do
+    intent <- observeJournalRecord bootstrap journalIntentName
+    binding <- observeJournalRecord bootstrap journalBindingName
+    let observeDirectory name = do
+          let open = Posix.openFdAt (Just root) name Posix.ReadOnly journalDirectoryFlags
+          try $ bracket open Posix.closeFd $ \directory -> do
+            original <- getFdStatus directory
+            named <- bracket open Posix.closeFd getFdStatus
+            pure (if directoryIdentity original == directoryIdentity named then Just named else Nothing)
+    status <- observeDirectory journalDirectoryName
+    custody <- observeDirectory journalCustodyName
+    generation <- observeScopeGeneration scope (Text.unpack (bootstrapRootGeneration bootstrap))
+    confirmed <- sameRoot
+    owner <- getEffectiveUserID
+    let safeDirectory entry = fileOwner entry == owner && fileMode entry .&. 0o7777 == 0o700
+    pure $ case (confirmed && generation == Right ScopeGenerationMatches, intent, binding, status, custody) of
+      (True, JournalRecordMissing, JournalRecordMissing, Left failure, Left custodyFailure)
+        | isDoesNotExistError failure && isDoesNotExistError custodyFailure ->
+            RetainedAuthorityJournalAbsent
+      (True, JournalRecordObserved intended, JournalRecordMissing, Left failure, Left custodyFailure)
+        | intended == journalIntent bootstrap
+        , isDoesNotExistError failure && isDoesNotExistError custodyFailure ->
+            RetainedAuthorityJournalReserved
+      ( True
+        , JournalRecordObserved intended
+        , JournalRecordObserved bound
+        , Right (Just directory)
+        , Right (Just floorDirectory)
+        )
+          | intended == journalIntent bootstrap
+          , bound == journalBinding bootstrap directory floorDirectory
+          , safeDirectory directory
+          , safeDirectory floorDirectory ->
+              RetainedAuthorityJournalBound
+      _ -> RetainedAuthorityJournalUnconfirmed
+  pure $ case observed of
+    Just (Right result) -> result
+    _ -> RetainedAuthorityJournalUnconfirmed
+
+-- Reserve both retained directories before applying the Authority. The binding
+-- survives loss of either directory so deploy cannot silently recreate it.
+prepareRetainedJournal :: BootstrapProjection -> IO Bool
+prepareRetainedJournal bootstrap = do
+  initial <- observeRetainedAuthorityJournal bootstrap
+  case initial of
+    RetainedAuthorityJournalBound -> pure True
+    RetainedAuthorityJournalUnconfirmed -> pure False
+    RetainedAuthorityJournalReserved -> bindDirectories
+    RetainedAuthorityJournalAbsent -> do
+      written <- writeJournalRecord bootstrap journalIntentName (journalIntent bootstrap)
+      reserved <- observeRetainedAuthorityJournal bootstrap
+      if written && reserved == RetainedAuthorityJournalReserved then bindDirectories else pure False
+ where
+  bindDirectories = do
+    prepared <- withScopeRootDescriptor (bootstrapScope bootstrap) $ \root@(Fd descriptor) sameRoot -> do
+      created <- try $ do
+        let create name = do
+              PosixDirectory.createDirectory ("/proc/self/fd" </> show descriptor </> name) 0o700
+              bracket
+                (Posix.openFdAt (Just root) name Posix.ReadOnly journalDirectoryFlags)
+                Posix.closeFd
+                $ \directory -> fileSynchronise directory >> getFdStatus directory
+        journal <- create journalDirectoryName
+        custody <- create journalCustodyName
+        fileSynchronise root
+        held <- sameRoot
+        if held
+          then writeJournalRecord bootstrap journalBindingName (journalBinding bootstrap journal custody)
+          else pure False
+      pure (either (const False) id (created :: Either IOException Bool))
+    confirmed <- observeRetainedAuthorityJournal bootstrap
+    pure (prepared == Right True && confirmed == RetainedAuthorityJournalBound)
+
+deployUnderLease :: BootstrapProjection -> IO [ServiceStep]
+deployUnderLease bootstrap = do
   let scope = bootstrapScope bootstrap
       root = scopeRoot scope
       kubeconfig = root </> "control" </> "kubeconfig"
@@ -56,11 +256,9 @@ deployAuthority bootstrap = do
           "/usr/bin/kubectl"
           (["--kubeconfig", kubeconfig, "--request-timeout=60s"] ++ arguments)
           input
-  -- The retained journal directory is operator-created (a kubelet-created one
-  -- would be root-owned and block unprivileged cleanup of the retained root).
-  createDirectoryIfMissing False (root </> "authority-journal")
-  setFileMode (root </> "authority-journal") 0o700
   tag <- runtimeImageTag
+  uid <- getEffectiveUserID
+  gid <- getEffectiveGroupID
   identified <- docker ["inspect", "--format", "{{.Id}}", tag]
   case identified of
     Right (0, out, _) -> do
@@ -86,7 +284,11 @@ deployAuthority bootstrap = do
                     "vault.vault.svc.cluster.local"
                     ("vault." ++ managementNamespace ++ ".svc.cluster.local")
                     dhall
-            applied <- kubectl 90 ["apply", "-f", "-"] (ByteString8.pack (manifest tag patched))
+            applied <-
+              kubectl
+                90
+                ["apply", "-f", "-"]
+                (ByteString8.pack (manifest tag patched (toInteger uid) (toInteger gid)))
             case applied of
               Right (0, _, _) -> do
                 seeded <- seedStore kubectl
@@ -145,8 +347,8 @@ replaceAll needle replacement = go
         replacement ++ go (drop (length needle) text)
     | otherwise = c : go rest
 
-manifest :: String -> String -> String
-manifest tag dhall =
+manifest :: String -> String -> Integer -> Integer -> String
+manifest tag dhall uid gid =
   unlines
     [ "apiVersion: v1"
     , "kind: Namespace"
@@ -184,6 +386,7 @@ manifest tag dhall =
           ++ "\"}}"
       , "    spec:"
       , "      serviceAccountName: prodbox-lifecycle-authority"
+      , "      securityContext: {runAsUser: " ++ show uid ++ ", runAsGroup: " ++ show gid ++ "}"
       , "      containers:"
       , "      - name: lifecycle-authority"
       , "        image: " ++ tag
@@ -198,10 +401,16 @@ manifest tag dhall =
       , "        resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {cpu: 500m, memory: 512Mi}}"
       , "        volumeMounts:"
       , "        - {name: config, mountPath: /etc/lifecycle-authority/config, readOnly: true}"
-      , "        - {name: journal, mountPath: /var/lib/prodbox/lifecycle-authority-journal}"
+      , "        - {name: journal, mountPath: " ++ journalMountDirectory ++ "}"
+      , "        - {name: journal-custody, mountPath: " ++ journalCustodyMountDirectory ++ "}"
       , "      volumes:"
       , "      - {name: config, configMap: {name: lifecycle-authority-config}}"
-      , "      - {name: journal, hostPath: {path: /var/lib/prodbox/authority-journal, type: Directory}}"
+      , "      - {name: journal, hostPath: {path: "
+          ++ ("/var/lib/prodbox" </> journalDirectoryName)
+          ++ ", type: Directory}}"
+      , "      - {name: journal-custody, hostPath: {path: "
+          ++ ("/var/lib/prodbox" </> journalCustodyName)
+          ++ ", type: Directory}}"
       , "---"
       , "apiVersion: v1"
       , "kind: Service"

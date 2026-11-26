@@ -12,7 +12,10 @@ module Prodbox.Config.KindPlan
   , kindPlanNodeImage
   , kindPlanMappings
   , matchesObservedKindNodeRun
+  , KindNodeRuntimeMode (..)
   , kindNodeRunArguments
+  , kindNodeRunArgumentsFor
+  , kindNodeCreateMode
   , KindNodeCreateInput (..)
   , kindNodeVarVolumeName
   , kindNodeVarVolumeNameForScope
@@ -81,16 +84,26 @@ kindPlanMappings plan = (httpMapping plan, httpsMapping plan)
 -- bind the supplied digests to the operation, admit the effect, and settle
 -- and read back the resulting container. Matching argv is not authority.
 matchesObservedKindNodeRun :: KindPlan -> String -> String -> [String] -> Bool
-matchesObservedKindNodeRun plan kindDigest localImage arguments =
+matchesObservedKindNodeRun = matchesObservedKindNodeRunFor KindNodeRootful
+
+data KindNodeRuntimeMode = KindNodeRootful | KindNodeRootless
+  deriving (Eq, Show)
+
+matchesObservedKindNodeRunFor
+  :: KindNodeRuntimeMode -> KindPlan -> String -> String -> [String] -> Bool
+matchesObservedKindNodeRunFor runtime plan kindDigest localImage arguments =
   kindDigest == "sha256:50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54"
     && isCanonicalSha256Digest localImage
     && ':' `notElem` scopeRoot (kindPlanScope plan)
-    && arguments == kindNodeRunArguments plan localImage
+    && arguments == kindNodeRunArgumentsFor runtime plan localImage
 
 -- | The exact Docker argv the observed v0.32.0 provider uses for the node. It
 -- names no resource and grants no authority; the node proposal records it.
 kindNodeRunArguments :: KindPlan -> String -> [String]
-kindNodeRunArguments plan localImage = expected
+kindNodeRunArguments = kindNodeRunArgumentsFor KindNodeRootful
+
+kindNodeRunArgumentsFor :: KindNodeRuntimeMode -> KindPlan -> String -> [String]
+kindNodeRunArgumentsFor runtime plan localImage = expected
  where
   scope = kindPlanScope plan
   cluster = scopeKindName scope
@@ -127,14 +140,16 @@ kindNodeRunArguments plan localImage = expected
     , "--restart=on-failure:1"
     , "--init=false"
     , "--cgroupns=private"
-    , "--volume=" ++ scopeRoot scope ++ ":/var/lib/prodbox"
-    , publish (httpMapping plan)
-    , publish (httpsMapping plan)
-    , "--publish=127.0.0.1:" ++ show (scopeApiPort scope) ++ ":6443/TCP"
-    , "-e"
-    , "KUBECONFIG=/etc/kubernetes/admin.conf"
-    , localImage
     ]
+      ++ [part | runtime == KindNodeRootless, part <- ["--device", "/dev/fuse"]]
+      ++ [ "--volume=" ++ scopeRoot scope ++ ":/var/lib/prodbox"
+         , publish (httpMapping plan)
+         , publish (httpsMapping plan)
+         , "--publish=127.0.0.1:" ++ show (scopeApiPort scope) ++ ":6443/TCP"
+         , "-e"
+         , "KUBECONFIG=/etc/kubernetes/admin.conf"
+         , localImage
+         ]
   publish mapping =
     "--publish="
       ++ host (Text.unpack (ipLiteralText (publicationListenAddress mapping)))
@@ -156,6 +171,22 @@ data KindNodeCreateInput = KindNodeCreateInput
   , nodeCreateArguments :: ![String]
   }
   deriving (Eq, Show)
+
+-- The stored argument vector determines its schema, and the caller compares
+-- this result with the actual connected daemon before the first send.
+kindNodeCreateMode :: KindPlan -> KindNodeCreateInput -> Maybe KindNodeRuntimeMode
+kindNodeCreateMode plan input
+  | matches KindNodeRootful = Just KindNodeRootful
+  | matches KindNodeRootless = Just KindNodeRootless
+  | otherwise = Nothing
+ where
+  matches runtime =
+    matchesObservedKindNodeRunFor
+      runtime
+      plan
+      (nodeCreateToolDigest input)
+      (nodeCreateImageId input)
+      (nodeCreateArguments input)
 
 -- | Derive the node's Docker volume name from the selected identity and its
 -- exact generation and operation. This does not create or claim the volume.
@@ -202,17 +233,10 @@ kindNodeVarVolumeCreateBody plan generation operation = do
 -- remain caller obligations; this projection is not an effect permit.
 kindNodeCreateBody :: KindPlan -> KindNodeCreateInput -> Maybe Value
 kindNodeCreateBody plan input
-  | not
-      ( matchesObservedKindNodeRun
-          plan
-          (nodeCreateToolDigest input)
-          (nodeCreateImageId input)
-          (nodeCreateArguments input)
-      ) =
-      Nothing
   | not (isCanonicalSha256Digest ("sha256:" ++ nodeCreateNetworkId input)) = Nothing
-  | otherwise =
-      body <$> kindNodeVarVolumeName plan (nodeCreateGeneration input) (nodeCreateOperation input)
+  | otherwise = do
+      runtime <- kindNodeCreateMode plan input
+      body runtime <$> kindNodeVarVolumeName plan (nodeCreateGeneration input) (nodeCreateOperation input)
  where
   scope = kindPlanScope plan
   cluster = scopeKindName scope
@@ -227,7 +251,7 @@ kindNodeCreateBody plan input
              ]
          ]
   apiBinding = [object ["HostIp" .= ("127.0.0.1" :: String), "HostPort" .= show (scopeApiPort scope)]]
-  body volumeName =
+  body runtime volumeName =
     object
       [ "Hostname" .= node
       , "Image" .= nodeCreateImageId input
@@ -245,20 +269,32 @@ kindNodeCreateBody plan input
       , "ExposedPorts" .= object (map exposed mappings ++ ["6443/tcp" .= object []])
       , "HostConfig"
           .= object
-            [ "Binds"
-                .= ( [volumeName ++ ":/var", "/lib/modules:/lib/modules:ro", scopeRoot scope ++ ":/var/lib/prodbox"]
-                       :: [String]
-                   )
-            , "NetworkMode" .= nodeCreateNetworkId input
-            , "PortBindings" .= object (map binding mappings ++ ["6443/tcp" .= apiBinding])
-            , "RestartPolicy" .= object ["Name" .= ("on-failure" :: String), "MaximumRetryCount" .= (1 :: Int)]
-            , "Privileged" .= True
-            , "SecurityOpt" .= (["seccomp=unconfined", "apparmor=unconfined"] :: [String])
-            , "Tmpfs" .= object ["/tmp" .= ("" :: String), "/run" .= ("" :: String)]
-            , "CgroupnsMode" .= ("private" :: String)
-            , "Init" .= False
-            ]
+            ( [ "Binds"
+                  .= ( [volumeName ++ ":/var", "/lib/modules:/lib/modules:ro", scopeRoot scope ++ ":/var/lib/prodbox"]
+                         :: [String]
+                     )
+              , "NetworkMode" .= nodeCreateNetworkId input
+              , "PortBindings" .= object (map binding mappings ++ ["6443/tcp" .= apiBinding])
+              , "RestartPolicy" .= object ["Name" .= ("on-failure" :: String), "MaximumRetryCount" .= (1 :: Int)]
+              , "Privileged" .= True
+              , "SecurityOpt" .= (["seccomp=unconfined", "apparmor=unconfined"] :: [String])
+              , "Tmpfs" .= object ["/tmp" .= ("" :: String), "/run" .= ("" :: String)]
+              , "CgroupnsMode" .= ("private" :: String)
+              , "Init" .= False
+              ]
+                ++ devices runtime
+            )
       ]
+  devices KindNodeRootful = []
+  devices KindNodeRootless =
+    [ "Devices"
+        .= [ object
+               [ "PathOnHost" .= ("/dev/fuse" :: String)
+               , "PathInContainer" .= ("/dev/fuse" :: String)
+               , "CgroupPermissions" .= ("rwm" :: String)
+               ]
+           ]
+    ]
 
 kindPlan
   :: DeploymentScope

@@ -181,6 +181,7 @@ import Prodbox.Bootstrap.Broker.Program
   ( BootstrapMutationReceipt (..)
   , BootstrapStatus (..)
   , PkiIssueRequest
+  , VaultPkiIssueReceipt (..)
   , VaultPkiStatus (..)
   , mkBrokerCapabilityRefs
   , pkiIssueCommonName
@@ -2778,7 +2779,7 @@ issueVaultPkiTestCertificate
   :: BootstrapBrokerSettings
   -> BootstrapVaultEffectPermit
   -> PkiIssueRequest
-  -> IO (Either EngineBoundaryError BootstrapMutationReceipt)
+  -> IO (Either EngineBoundaryError VaultPkiIssueReceipt)
 issueVaultPkiTestCertificate settings permit issue =
   withVaultBatchRole settings bootstrapPkiOperatorRole $ \login -> do
     issued <-
@@ -2789,13 +2790,21 @@ issueVaultPkiTestCertificate settings permit issue =
         (pkiIssueCommonName issue)
         (Text.pack (show (pkiIssueTtlSeconds issue)) <> "s")
     pure $ case issued of
-      Right _ ->
-        Right
-          BootstrapMutationReceipt
-            { bootstrapMutationDigest = vaultEffectPermitActionDigest permit
-            , bootstrapMutationChanged = True
-            }
-      Left _ -> Left (EngineBoundaryUnavailable "Vault PKI test-certificate issuance failed")
+      Right certificate ->
+        case mkArtifactDigest (lowerHexBytes (SHA256.hash (Vault.verifiedPkiCertificateDer certificate))) of
+          Left _ -> Left (EngineBoundaryUnavailable "Vault PKI certificate commitment could not be recorded")
+          Right fingerprint ->
+            Right
+              VaultPkiIssueReceipt
+                { pkiIssueMutation =
+                    BootstrapMutationReceipt
+                      { bootstrapMutationDigest = vaultEffectPermitActionDigest permit
+                      , bootstrapMutationChanged = True
+                      }
+                , pkiIssueSerial = Vault.verifiedPkiCertificateSerial certificate
+                , pkiIssueCertificateDigest = fingerprint
+                }
+      Left _ -> Left (EngineBoundaryUnavailable "Vault PKI test-certificate issuance or read-back failed")
  where
   address = Vault.VaultAddress (brokerVaultAddress settings)
 

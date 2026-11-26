@@ -30,6 +30,7 @@ module Prodbox.CLI.Command
   , NativeCommand (..)
   , NukeOptions (..)
   , NukeLocalDataDisposition (..)
+  , OperationCommand (..)
   , parseNukeLocalDataDisposition
   , Plan (..)
   , PolicyTier (..)
@@ -45,6 +46,9 @@ module Prodbox.CLI.Command
   , UsersCommand (..)
   , UsersListStatus (..)
   , VaultCommand (..)
+  , VaultMaintenanceCommand (..)
+  , VaultOperationConfirmation (..)
+  , VaultPkiCommand (..)
   , WorkloadCommand (..)
   , WorkloadOptions (..)
   , validateCoverage
@@ -82,6 +86,12 @@ data CommandRequest
   = RunNative NativeCommand
   | RunControlStatus
   | RunControlLifecycleStatus
+  | RunLifecycleStatus
+  | RunPlanDelete
+  | RunPlanReconcile
+  | RunOperations !OperationCommand
+  | RunScopedVaultPki !VaultPkiCommand
+  | RunScopedVaultMaintenance !VaultMaintenanceCommand
   | RunOrdinaryDelete
   | RunControlAuthorityDeploy
   | RunControlPlan
@@ -104,8 +114,32 @@ data CommandRequest
   | RunInternalKindFamilyController !HostControllerArguments
   | RunTestList
   | RunTestStatus String
+  | RunTestCleanup String
   | ShowCommands CommandListingFormat
   | ShowHelp [String]
+  deriving (Eq, Show)
+
+data OperationCommand
+  = ListOperations
+  | ShowOperation !String
+  | ResumeOperation !String
+  | CancelOperation !String
+  deriving (Eq, Show)
+
+data VaultPkiCommand = ObserveVaultPki | IssueVaultTestCertificate
+  deriving (Eq, Show)
+
+data VaultOperationConfirmation = VaultOperationConfirmation
+  { vaultConfirmationGeneration :: !Text
+  , vaultConfirmationOperation :: !Text
+  }
+  deriving (Eq, Show)
+
+data VaultMaintenanceCommand
+  = ObserveScopedVault
+  | RotateScopedUnlockBundle !VaultOperationConfirmation
+  | RotateScopedTransitKey !Text !VaultOperationConfirmation
+  | ResetScopedVaultInitialization !VaultOperationConfirmation
   deriving (Eq, Show)
 
 data CommandListingFormat
@@ -568,6 +602,7 @@ data TestCommand = TestCommand
 data TestScope
   = TestInit Bool
   | TestRun String
+  | TestRunAtRuntimeSocket String FilePath
   | TestAll
   | TestLint
   | TestUnit

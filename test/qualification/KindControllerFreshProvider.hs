@@ -26,14 +26,34 @@ runCase mismatch = withSystemTempDirectory "prodbox-fresh-provider" $ \anchor ->
       generation = replicate 32 'b'
       operation = replicate 32 'd'
       request = replicate 64 'a'
-      config = "{ bootstrap = { schema_version = 1, project_anchor = \"" ++ anchor ++ "\", runtime_socket = \"" ++ anchor ++ "/missing.sock\", environment = \"test\", deployment_id = \"fixture\", root_generation = \"" ++ generation ++ "\", api_port = 26443, node_image = \"kindest/node@sha256:" ++ replicate 64 'a' ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" } }"
-      status = captureSubprocessWithInputBounded (BoundedSubprocessLimits 1 65536 65536 30000000) B.empty (Subprocess "./.build/prodbox" ["--config", selected, "control", "status"] (Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")]) Nothing)
+      config =
+        "{ bootstrap = { schema_version = 1, project_anchor = \""
+          ++ anchor
+          ++ "\", runtime_socket = \""
+          ++ anchor
+          ++ "/missing.sock\", environment = \"test\", deployment_id = \"fixture\", root_generation = \""
+          ++ generation
+          ++ "\", api_port = 26443, node_image = \"kindest/node@sha256:"
+          ++ replicate 64 'a'
+          ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" } }"
+      status =
+        captureSubprocessWithInputBounded
+          (BoundedSubprocessLimits 1 65536 65536 30000000)
+          B.empty
+          ( Subprocess
+              "./.build/prodbox"
+              ["--config", selected, "control", "status"]
+              (Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")])
+              Nothing
+          )
       requireStatus expected = do
         outcome <- status
         case outcome of
           Right output -> do
             let combined = processStdout output ++ processStderr output
-            unless (expected `isInfixOf` combined && "worker settlement not observed" `isInfixOf` combined) (fail ("public status omitted " ++ expected))
+            unless
+              (expected `isInfixOf` combined && "worker settlement not observed" `isInfixOf` combined)
+              (fail ("public status omitted " ++ expected))
           Left failure -> fail (show failure)
   writeFile selected config
   projection <- readBootstrapProjection selected >>= either (fail . show) pure
@@ -43,21 +63,51 @@ runCase mismatch = withSystemTempDirectory "prodbox-fresh-provider" $ \anchor ->
   result <- withCurrentControllerProvider $ \domain binding sender _ _ verify -> do
     let bus = hostManagerBusId domain
         changedBus = (if take 1 bus == "a" then "b" else "a") ++ drop 1 bus
-    alternate <- maybe (fail "alternate domain invalid") pure $
-      hostManagerDomain (hostManagerBootId domain) changedBus (hostManagerUniqueName domain)
-        (hostManagerUserId domain) (hostManagerProcessId domain) (hostManagerStartTicks domain)
+    alternate <-
+      maybe (fail "alternate domain invalid") pure $
+        hostManagerDomain
+          (hostManagerBootId domain)
+          changedBus
+          (hostManagerUniqueName domain)
+          (hostManagerUserId domain)
+          (hostManagerProcessId domain)
+          (hostManagerStartTicks domain)
     let retainedDomain = if mismatch then alternate else domain
         expected = if mismatch then "ControllerFreshProviderDifferent" else "ControllerFreshProviderMatches"
     records <- withRecoveredKindOperation projection operation $ \stable -> do
       first <- recordControllerSubmissionIntent projection operation request stable
       second <- recordControllerDomain projection operation request retainedDomain window stable
-      third <- recordControllerProvider projection operation request (controllerProviderDigest binding) stable
+      third <-
+        recordControllerProvider projection operation request (controllerProviderDigest binding) stable
       fourth <- recordControllerProviderMaterial projection operation request binding stable
       fifth <- recordControllerSender projection operation request sender stable
-      sixth <- recordFamilyResult projection operation request
-        (FamilyResult FamilyWorkerConfirmed FamilyWorkerIoUnconfirmed FamilyParentUnconfirmed FamilyInputUnconfirmed FamilyPostReceiptComplete FamilyPostLeaseUnconfirmed) stable
+      sixth <-
+        recordFamilyResult
+          projection
+          operation
+          request
+          ( FamilyResult
+              FamilyWorkerConfirmed
+              FamilyWorkerIoUnconfirmed
+              FamilyParentUnconfirmed
+              FamilyInputUnconfirmed
+              FamilyPostReceiptComplete
+              FamilyPostLeaseUnconfirmed
+          )
+          stable
       pure (first, second, third, fourth, fifth, sixth)
-    unless (records == KindOperationCallbackReturned (ControllerSubmissionRecorded, ControllerDomainRecorded, ControllerProviderRecorded, ControllerProviderMaterialRecorded, ControllerSenderRecorded, FamilyResultRecorded)) (fail "fixture records refused")
+    unless
+      ( records
+          == KindOperationCallbackReturned
+            ( ControllerSubmissionRecorded
+            , ControllerDomainRecorded
+            , ControllerProviderRecorded
+            , ControllerProviderMaterialRecorded
+            , ControllerSenderRecorded
+            , FamilyResultRecorded
+            )
+      )
+      (fail "fixture records refused")
     before <- verify
     requireStatus expected
     unless mismatch $ do
@@ -75,6 +125,13 @@ runCase mismatch = withSystemTempDirectory "prodbox-fresh-provider" $ \anchor ->
       case outcome of
         Right output -> do
           let combined = processStdout output ++ processStderr output
-          unless (("ControllerManagerUnitPresent" `isInfixOf` combined || "ControllerManagerUnitAbsent" `isInfixOf` combined) && "job processing and worker settlement not established" `isInfixOf` combined) (fail "manager read unobservable")
+          unless
+            ( ( "ControllerManagerUnitPresent" `isInfixOf` combined
+                  || "ControllerManagerUnitAbsent" `isInfixOf` combined
+              )
+                && "job processing and worker settlement not established" `isInfixOf` combined
+            )
+            (fail "manager read unobservable")
         Left failure -> fail (show failure)
-      putStrLn "public status matched the provider and observed the original sender present then absent; retirement remains unobserved"
+      putStrLn
+        "public status matched the provider and observed the original sender present then absent; retirement remains unobserved"

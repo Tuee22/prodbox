@@ -141,6 +141,7 @@ prodbox
   test
     list
     status
+    cleanup
     init
     run
     all

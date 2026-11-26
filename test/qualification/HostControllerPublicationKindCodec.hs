@@ -46,109 +46,117 @@ main = do
     (Record.publicationBirthKind original == Identity.RpcBirthController)
   require "historical producer bytes changed" (Record.encodePublicationBirth original == old)
   putStrLn "PASS exact registration producer codec"
-  forM_ [Identity.RpcBirthController, Identity.OrdinaryCascadeController, Identity.MutationController, Identity.KindController, Identity.KindProbeVerifierController, Identity.KindProbeSuccessorController] $ \kind -> do
-    nonce <- getRandomBytes 32
-    key <-
-      maybe
-        (fail "fixture key")
-        pure
-        (Identity.hostExecutionKeyFromText (concatMap hexadecimal (BS.unpack nonce)))
-    ending <- (+ 3000000000) <$> getMonotonicTimeNSec
-    let wrong = case kind of
-          Identity.RpcBirthController -> Identity.OrdinaryCascadeController
-          Identity.OrdinaryCascadeController -> Identity.MutationController
-          Identity.MutationController -> Identity.RpcBirthController
-          Identity.KindController -> Identity.RpcBirthController
-          Identity.KindProbeVerifierController -> Identity.KindController
-          Identity.KindProbeSuccessorController -> Identity.KindProbeVerifierController
-    (paths, ()) <-
-      right
-        =<< Publication.withPublishedHostControllerOwner
-          kind
-          ending
-          key
-          "synthetic configuration"
-          "synthetic request"
-          ( \owner -> do
-              let paths@(configuration, request) = Publication.hostPublicationPaths owner
-                  producer = takeDirectory request </> Record.publicationBirthName
-              bytes <- BS.readFile producer
-              decoded <- maybe (fail "native producer decode failed") pure (Record.decodePublicationBirth bytes)
-              require "native producer kind changed" (Record.publicationBirthKind decoded == kind)
-              require "native producer bytes changed" (Record.encodePublicationBirth decoded == bytes)
-              forM_ [BS.empty, BS.init bytes, bytes <> "\NUL", BS.replicate 8193 0] $ \invalid ->
-                require
-                  "malformed/trailing/oversized producer accepted"
-                  (isNothing (Record.decodePublicationBirth invalid))
-              case kind of
-                Identity.RpcBirthController -> pure ()
-                _ -> do
-                  let prefix = "prodbox-host-controller-publication/birth/kind/v1\NUL"
-                  payload <- maybe (fail "ordinary producer prefix missing") pure (BS.stripPrefix prefix bytes)
-                  (version, tag, legacy) <- right (deserialiseOrFail (Lazy.fromStrict payload))
-                  let expectedTag
-                        | kind == Identity.OrdinaryCascadeController = 1
-                        | kind == Identity.MutationController = 2
-                        | kind == Identity.KindController = 3
-                        | kind == Identity.KindProbeVerifierController = 4
-                        | otherwise = 5
-                  require "controller version/tag changed" (version == (1 :: Word8) && tag == (expectedTag :: Word8))
-                  untagged <-
-                    maybe
-                      (fail "ordinary inner registration encoding rejected")
-                      pure
-                      (Record.decodePublicationBirth legacy)
+  forM_
+    [ Identity.RpcBirthController
+    , Identity.OrdinaryCascadeController
+    , Identity.MutationController
+    , Identity.KindController
+    , Identity.KindProbeVerifierController
+    , Identity.KindProbeSuccessorController
+    ]
+    $ \kind -> do
+      nonce <- getRandomBytes 32
+      key <-
+        maybe
+          (fail "fixture key")
+          pure
+          (Identity.hostExecutionKeyFromText (concatMap hexadecimal (BS.unpack nonce)))
+      ending <- (+ 3000000000) <$> getMonotonicTimeNSec
+      let wrong = case kind of
+            Identity.RpcBirthController -> Identity.OrdinaryCascadeController
+            Identity.OrdinaryCascadeController -> Identity.MutationController
+            Identity.MutationController -> Identity.RpcBirthController
+            Identity.KindController -> Identity.RpcBirthController
+            Identity.KindProbeVerifierController -> Identity.KindController
+            Identity.KindProbeSuccessorController -> Identity.KindProbeVerifierController
+      (paths, ()) <-
+        right
+          =<< Publication.withPublishedHostControllerOwner
+            kind
+            ending
+            key
+            "synthetic configuration"
+            "synthetic request"
+            ( \owner -> do
+                let paths@(configuration, request) = Publication.hostPublicationPaths owner
+                    producer = takeDirectory request </> Record.publicationBirthName
+                bytes <- BS.readFile producer
+                decoded <- maybe (fail "native producer decode failed") pure (Record.decodePublicationBirth bytes)
+                require "native producer kind changed" (Record.publicationBirthKind decoded == kind)
+                require "native producer bytes changed" (Record.encodePublicationBirth decoded == bytes)
+                forM_ [BS.empty, BS.init bytes, bytes <> "\NUL", BS.replicate 8193 0] $ \invalid ->
                   require
-                    "ordinary inner registration bytes changed"
-                    ( Record.publicationBirthKind untagged == Identity.RpcBirthController
-                        && Record.encodePublicationBirth untagged == legacy
+                    "malformed/trailing/oversized producer accepted"
+                    (isNothing (Record.decodePublicationBirth invalid))
+                case kind of
+                  Identity.RpcBirthController -> pure ()
+                  _ -> do
+                    let prefix = "prodbox-host-controller-publication/birth/kind/v1\NUL"
+                    payload <- maybe (fail "ordinary producer prefix missing") pure (BS.stripPrefix prefix bytes)
+                    (version, tag, legacy) <- right (deserialiseOrFail (Lazy.fromStrict payload))
+                    let expectedTag
+                          | kind == Identity.OrdinaryCascadeController = 1
+                          | kind == Identity.MutationController = 2
+                          | kind == Identity.KindController = 3
+                          | kind == Identity.KindProbeVerifierController = 4
+                          | otherwise = 5
+                    require "controller version/tag changed" (version == (1 :: Word8) && tag == (expectedTag :: Word8))
+                    untagged <-
+                      maybe
+                        (fail "ordinary inner registration encoding rejected")
+                        pure
+                        (Record.decodePublicationBirth legacy)
+                    require
+                      "ordinary inner registration bytes changed"
+                      ( Record.publicationBirthKind untagged == Identity.RpcBirthController
+                          && Record.encodePublicationBirth untagged == legacy
+                      )
+                    forM_
+                      [ prefix <> Lazy.toStrict (serialise (2 :: Word8, tag, legacy))
+                      , prefix <> Lazy.toStrict (serialise (version, 0 :: Word8, legacy))
+                      , prefix <> Lazy.toStrict (serialise (version, 6 :: Word8, legacy))
+                      , prefix <> Lazy.toStrict (serialise (version, tag, bytes))
+                      ]
+                      $ \invalid ->
+                        require
+                          "unknown/nested ordinary producer accepted"
+                          (isNothing (Record.decodePublicationBirth invalid))
+                right
+                  =<< Publication.withHostPublicationSubmission
+                    owner
+                    ( \permit -> do
+                        require
+                          "submission borrow changed publisher kind"
+                          (Publication.hostPublicationSubmissionKind permit == kind)
+                        refused <- Publication.markHostPublicationPossibleSend permit wrong key ending configuration request
+                        require
+                          "wrong-kind possible-send was admitted"
+                          (refused == Left Publication.ControllerPublicationSubmissionMismatch)
+                        present <- doesFileExist (takeDirectory request </> Record.publicationPossibleSendName)
+                        require "wrong-kind possible-send published metadata" (not present)
                     )
-                  forM_
-                    [ prefix <> Lazy.toStrict (serialise (2 :: Word8, tag, legacy))
-                    , prefix <> Lazy.toStrict (serialise (version, 0 :: Word8, legacy))
-                    , prefix <> Lazy.toStrict (serialise (version, 6 :: Word8, legacy))
-                    , prefix <> Lazy.toStrict (serialise (version, tag, bytes))
-                    ]
-                    $ \invalid ->
-                      require
-                        "unknown/nested ordinary producer accepted"
-                        (isNothing (Record.decodePublicationBirth invalid))
-              right
-                =<< Publication.withHostPublicationSubmission
-                  owner
-                  ( \permit -> do
-                      require
-                        "submission borrow changed publisher kind"
-                        (Publication.hostPublicationSubmissionKind permit == kind)
-                      refused <- Publication.markHostPublicationPossibleSend permit wrong key ending configuration request
-                      require
-                        "wrong-kind possible-send was admitted"
-                        (refused == Left Publication.ControllerPublicationSubmissionMismatch)
-                      present <- doesFileExist (takeDirectory request </> Record.publicationPossibleSendName)
-                      require "wrong-kind possible-send published metadata" (not present)
-                  )
-              pure paths
-          )
-          requireNeverSentDisposition
-    readEnd <- (+ 3000000000) <$> getMonotonicTimeNSec
-    refused <-
-      Publication.withRecoveredHostPublicationNeverSent
-        wrong
-        readEnd
-        key
-        (const (fail "foreign kind entered recovery"))
-    require "wrong-kind recovery was admitted" (isLeft refused)
-    require "wrong-kind recovery removed a payload"
-      =<< ((&&) <$> doesFileExist (fst paths) <*> doesFileExist (snd paths))
-    recovered <- Publication.withRecoveredHostPublicationNeverSent kind readEnd key $ \proof -> do
-      require "recovered never-sent kind changed" (Publication.hostPublicationNeverSentKind proof == kind)
-      _ <- right =<< Reaper.retireNeverSentHostControllerInputs readEnd proof
-      pure ()
-    _ <- right recovered
-    configurationPresent <- doesFileExist (fst paths)
-    requestPresent <- doesFileExist (snd paths)
-    require "cold recovery retained payloads" (not configurationPresent && not requestPresent)
-    putStrLn ("PASS producer codec, double kind guard and cold retirement " <> show kind)
+                pure paths
+            )
+            requireNeverSentDisposition
+      readEnd <- (+ 3000000000) <$> getMonotonicTimeNSec
+      refused <-
+        Publication.withRecoveredHostPublicationNeverSent
+          wrong
+          readEnd
+          key
+          (const (fail "foreign kind entered recovery"))
+      require "wrong-kind recovery was admitted" (isLeft refused)
+      require "wrong-kind recovery removed a payload"
+        =<< ((&&) <$> doesFileExist (fst paths) <*> doesFileExist (snd paths))
+      recovered <- Publication.withRecoveredHostPublicationNeverSent kind readEnd key $ \proof -> do
+        require "recovered never-sent kind changed" (Publication.hostPublicationNeverSentKind proof == kind)
+        _ <- right =<< Reaper.retireNeverSentHostControllerInputs readEnd proof
+        pure ()
+      _ <- right recovered
+      configurationPresent <- doesFileExist (fst paths)
+      requestPresent <- doesFileExist (snd paths)
+      require "cold recovery retained payloads" (not configurationPresent && not requestPresent)
+      putStrLn ("PASS producer codec, double kind guard and cold retirement " <> show kind)
   putStrLn "PASS all publication-kind codec and cold recovery controls"
 
 -- When no historical input is supplied, obtain current registration bytes

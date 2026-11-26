@@ -8,13 +8,13 @@
 > **Purpose**: The real public control/context slice creates and diagnoses isolated kind environments whose host-backed data survives node loss, and a bounded evidence/mutation runner detects fabricated results.
 
 **Phase**: 1
-**State**: Active
+**State**: Complete
 **Prerequisites**: Phase 0 complete; supported Linux host and pinned container-runtime/kind prerequisites. No Vault, cloud account, SES, public domain, or later runtime adapter is required.
 **Acceptance**: A01-01, A01-02, A01-03, A01-04, A01-05, A01-06, A01-07, A01-08 in [acceptance_cases.md](acceptance_cases.md).
 **Critical mutations**: M00, M01, M02 in [mutation_cases.md](mutation_cases.md).
 **Owned removals**: L04, L05 in [legacy_tracking_for_deletion.md](legacy_tracking_for_deletion.md).
 **Inherited removals**: B020, B021, B039, B055 in [legacy_tracking_for_deletion.md](legacy_tracking_for_deletion.md).
-**Evidence**: Acceptance, mutation (M00, M01, M02) and cleanup observations are bound in [evidence/phase_01_validation.md](evidence/phase_01_validation.md); L04 and L05 are closed for the new-install scope their rows name (legacy routes belong to L14, L16 and L18). Historical results are regression inputs only.
+**Evidence**: [Closure evidence](evidence/phase_01_closure_2026_11_25.md) indexes the current acceptance, mutations and cleanup. [Earlier validation](evidence/phase_01_validation.md) remains attributable to its original builds. L04 and L05 are closed for their new-install scope, and L14, L16 and L18 own the legacy routes.
 
 [Resume from the numerical queue](README.md#resume-here). Follow [development_plan_standards.md](development_plan_standards.md); this file owns its tasks and closure, not another queue.
 
@@ -25,6 +25,1447 @@ The real public control/context slice creates and diagnoses isolated kind enviro
 Only capabilities delivered through this phase may be active in its public commands. Later capabilities stay explicitly unavailable; do not add successful stubs or private-only replacements and postpone public use to Phase 10.
 
 ## Implementation tasks
+
+Verifier memory follow-up (2026-11-24): the retained scale fixture's Docker
+response still used the former fixed volume name, so exact node inspection
+refused before it reached the read-back. The fixture now reports the
+generation- and operation-bound volume. With the prior implementation
+(`79c1807e0fd9869a0e5e6c71847496890def9c20`), the corrected 11-link
+fixture then reproduced status 251 with an explicit GHC "Heap exhausted"
+message at `+RTS -M64m -N1`. A second run with the field-selector check
+reproduced that outcome and reported 28,529,992 bytes maximum residency.
+The runs used a disposable Docker socket and loopback TLS API with a
+non-secret generated kubeconfig. They exercised the node and CA readers and
+the real `kubectl` client. Their logs are
+`.build/phase1-rts-probe-docker-family-20261124.log` and
+`.build/phase1-rts-probe-baseline-20261124.log`; the second fixture binary
+SHA-256 is `aab5cb3f3f256366ebda93ce01d374df30fe3a33ca015111787140195c57ed03`.
+The live worker's exact failure stage remains unknown.
+
+The public `control delete --yes` managed-scale fixture subsequently
+reproduced manager exit 251 with neither a read-back nor a usable cleanup
+result (`.build/phase1-rts-probe-managed-traced-20261124.log`). It observed
+the exact successor retire. The binary SHA-256 was
+`041e443538ef039d53ac2de8f57833f92f9bed0e9edea80e5a8ff3dd5e70a7fe`.
+This run submitted only the fixture's managed observer. Its provider and
+Kubernetes endpoints were disposable fixtures.
+
+Decision (2026-11-24): bracket the read-only node, CA and kubeconfig
+observation with the held operation admission, while preserving root,
+record, and Docker-peer checks inside the snapshot. This follows the
+independent read-back and exact identity requirements in
+[control_plane.md:50](../documents/engineering/control_plane.md#recovery-and-local-removal)
+and the same-budget regression requirement in
+[resource_governance.md:30](../documents/engineering/resource_governance.md#runtime-sufficiency-and-boundedness).
+The old implementation repeated the complete predecessor admission inside
+each component read. Recheck the corrected fixture at 64 MiB and exercise
+the public managed successor with the disposable endpoints before resuming
+live recovery. Controlled runs may leave publication metadata after input
+retirement. Scope and account for these exact fixture publications before
+claiming cleanup.
+
+The first change reduced allocated bytes from about 37.4 GB to 24.9 GB,
+but the traced standalone case still exhausted its 64 MiB heap after the
+namespace observation entered the record writer
+(`.build/phase1-rts-probe-traced-20261124.log`). The writer now rechecks
+the held admission before the prerequisite snapshot, immediately before the
+exclusive write and after independent read-back. Root and intent are checked
+during the local read-back. The resulting standalone 11-link case passed at
+64 MiB with 4,876,672 bytes maximum residency and 18 MiB total memory in use
+(`.build/phase1-rts-probe-writer-scale-20261124.log`). The post-write
+admission control initially used a wrong diagnostic path and was corrected
+to observe the actual scoped record. The revised ordinary fixture passed
+the slow admission, pre-write change and post-write incomplete-record
+controls at the same heap cap
+(`.build/phase1-rts-probe-recheck-regression-20261124.log`). The fixture
+SHA-256 is `307abcffc1ce912479ade9598217a70196da3ab50dfa4c8e91103afa7b18c878`.
+
+The rebuilt public managed fixture passed at the same controller cap
+(`.build/phase1-rts-probe-managed-fixed-20261124.log`). The focused integration
+case also passed its matching CA, mismatched CA, and changed admission
+controls. The public binary SHA-256 was
+`7e8a9b9f2b31700c121de4ac3d96abf7d9df61c35f182c6fd6d8666ce8d8a726`.
+This authorized resuming the in-hand test operation, without starting a new
+kind environment or changing the controller envelope.
+
+Retained test recovery (2026-11-24): the same binary submitted successor
+`f189ba6d044b6043e40960b38c07a435` for operation
+`e69453b00acc4c3133b7e9730a381844`. Its live Kubernetes read-back was
+recorded and the public command independently observed its retirement. The
+subsequent node-removal phase returned
+`NodeRemoveActionResultRefused NodeRemoveResultUnobservable` with a
+durable removal attempt and no result. Independent Docker inspection still
+found the original node `68fec6d8c89cb4cd246be1fbe261a9faa3b37c78034cb536c4246c46f32b0598`
+running. The primary operation remains incomplete. Output and preceding
+read-only status are `.build/phase1-retained-recovery-20261124.log` and
+`.build/phase1-retained-status-before-20261124.log`. Preserve the exact
+attempt and successor chain. The new failure needs a bounded offline
+reproducer and a supported recovery disposition before a further live
+removal attempt.
+
+The slow-settlement integration control reproduced the same refusal without
+a real Docker effect (`.build/phase1-node-removal-baseline-20261124.log`).
+It introduces a 1.3-second settlement check only after the durable attempt
+is written. The implementation now brackets the local result read and
+receipt write with physical admission checks, keeping the repeated
+predecessor verification outside nested record reads. The same fixture is
+being rerun. This change applies to a fresh removal attempt and leaves the
+already recorded, unconfirmed live attempt open for exact recovery.
+
+Decision (2026-11-24): node removal can attempt one linked retry only after
+the held operation has re-observed its original removal attempt, a missing
+result, the same daemon, and the exact still-present container. Both attempts
+target the same full Docker container ID. The retry must have its own durable
+attempt and result and must never overwrite or recode the original attempt.
+Observed absence and an unknown provider state need the existing independent
+absence path. This follows the intent and observation requirements in
+[lifecycle.md:20](../documents/engineering/lifecycle.md#identity-intent-and-observations).
+
+The fresh-removal regression passed with the same injected delay
+(`.build/phase1-node-removal-fixed-20261124.log`). The linked-retry fixture
+then passed with an independent positive Docker inventory and one recorded
+204 response under the distinct retry attempt. It preserved the original
+missing result and refused both a second retry and an invalid original
+result, with no extra simulated DELETE
+(`.build/phase1-node-retry-integration-20261124.log`). A new public
+`control delete --yes` on the same retained operation is in progress with
+binary SHA-256
+`e9dcf3d1d99b5f827f968ab3ae10086785ad2491e14f0e6958635a8450907c13`.
+The live retry returned a recorded node 204, then timed out closing the
+volume step before it reached the network. The bound volume journal also
+records a 204. Independent Docker inspections returned no such container
+for the exact old ID and no such volume for
+`prodbox-t-run-7ae426bc5f920fb9fb91a516f104e4f7-var-54f9a9f687914eaafa45d34d34646c4e-e69453b00acc4c3133b7e9730a381844`.
+The exact network
+`5ba4194ec86a4afba110455b3e203a6eaea6ca42bab11ad08572e5b36846d910`
+remains present. Output is `.build/phase1-retained-node-retry-20261124.log`.
+The root, removal records and publication metadata are retained. These
+point observations do not establish terminal Phase 1 cleanup. A
+continuation must settle the volume and the exact remaining network with
+the control API no longer available. No hand cleanup was used.
+
+The read-only `control lifecycle-status` call now reports recovery required
+because it cannot observe the Authority deployment
+(`.build/phase1-retained-admission-after-20261124.log`). The original
+node and volume receipts cannot supply that admission decision. A
+resumable teardown needs a durable, scoped admission checkpoint and a
+fence against later Authority admission before node removal, or a supported
+recovery of the original authority under the same identity. An absent
+API or a missing Authority directory does not establish NeverAdmitted
+under [lifecycle.md:32](../documents/engineering/lifecycle.md#identity-intent-and-observations).
+
+The volume implementation now brackets the removal record and receipt
+reads with the held admission. If the bounded transport wrapper still
+returns incomplete, a separate check under the same operation can require
+the exact bound 204 receipt and a matching-daemon observation of the
+derived volume before deciding whether to continue. The focused integration
+fixture passed with a 900 ms check after the simulated removal response,
+including retained node retry and refusal controls
+(`.build/phase1-volume-closing-integration-20261124.log`). The public binary
+used by the fixture has SHA-256
+`8f9f6e8f7e674b6584c23fe6b16fa2a3d47a9daabce51c91584dd455193da835`.
+This does not establish a fresh admission decision for the earlier retained
+operation. The retained network independently reports zero endpoints. Its
+recorded identity and absence of attached endpoints scope the residue and
+do not stand in for admission.
+
+A read-only inventory enumerated the nine publication paths derived from
+the retained operation and its cleanup, verifier, and six successor
+identities. Each held birth, send, submission, and retirement metadata.
+The two published input payload names were absent from those directories.
+The user manager returned no units matching the exact operation ID pattern.
+The inventory records path contents and matched unit names, with no implied
+result for a static slice or an unrelated fixture. Logs are
+`.build/phase1-retained-publications-20261124.log` and
+`.build/phase1-retained-family-units-20261124.log`. The metadata remains
+available to the retained operation.
+
+The canonical gate stopped at existing Haskell policy violations before the
+warning-clean build or suites (`.build/phase1-canonical-20261124.log`).
+The repairs in progress name the flagged callbacks, route mutation status
+through the existing test runner, and document the kind entrypoint's
+kind-specific publication paths at its wire-fidelity exemption. The worker
+identity remains bound to its exact request and the corresponding
+publication namespace.
+The rerun reached the formatter, which reported inherited drift across the
+kind and qualification sources. The canonical formatter is being applied
+before another gate run. An earlier gate launch overlapped a binary copy and
+failed with `Text file busy`; it supplied no check result.
+
+The repository-wide pinned formatter and documentation check subsequently
+passed. All 74 focused preparation tests passed on the formatted recovery
+build. The mutation manifest check first refused an inherited stale
+overlapping-root preimage hash. The intervening DeploymentScope change
+exported the project-anchor accessor and left the mutation site unchanged.
+Refreshing that binding and the two Delete bindings restored the focused
+manifest check. The owner-first external-family variant has since been
+registered with a designated unchanged assertion. Isolated mutation
+execution and classification still need evidence.
+The focused manifest and owner-family assertion both passed after the
+registration (`.build/phase1-owner-mutation-validation-corrected-20261124.log`).
+The repository linter identified four inherited hints. After correcting the
+three affected files, the same pinned linter found no hints in those files.
+The focused scenario-evidence and wire-fidelity groups passed 42 and 17
+tests respectively. The corrected `prodbox dev check` completed with exit
+zero. The warning-clean build passed, and the gated suites passed 10,209
+general, 27 Authority admission, 35 control-plane authentication, and 935
+authenticated transport tests. Binary SHA-256:
+`f4b1beb5c39d268757f2ad97e8bafa201ffc7830ff717a1fed987bb4e45fe5fb`.
+Output is `.build/phase1-canonical-after-hints-20261124.log`. The live
+cleanup, full real acceptance set, and isolated source-mutation evidence
+remain open.
+
+Early teardown admission checkpoint (2026-11-24). Public `control delete`
+records a fresh local `NeverAdmitted` decision for the exact owner-family
+test operation under its scope lease. The record binds the selected
+configuration, root identity, generation, runtime socket and operation.
+The supported Authority deployment entrypoint takes the same lease and
+refuses an existing or unobservable fence. Before it applies the Authority,
+it confirms and synchronizes the retained journal directory. On resume,
+delete requires the same root and owner operation and observed absence of
+both the retained Authority journal and the legacy local journal root. A
+dangling link at either location refuses. These conditions follow the early
+removal boundary and the retained identity and
+observation rules. [Control plane](../documents/engineering/control_plane.md#recovery-and-local-removal)
+[Lifecycle](../documents/engineering/lifecycle.md#identity-intent-and-observations)
+
+The original live operation `e69453b00acc4c3133b7e9730a381844` predates the
+checkpoint. Its missing API cannot authorize writing one. The exact recorded
+network still has zero endpoints and remains in place. Positive-control-backed
+node absence for a node lost outside supported removal, independent
+control-container retirement and the real interruption acceptance remain open.
+
+Read-back after an owned removal (2026-11-24). The supported delete path
+requires a bound successful node removal receipt and the recorded positive
+pre-removal control, two agreeing scoped Docker inventories, and a framed
+not-found response naming the exact node from the recorded daemon before
+continuing. It checks the bound volume receipt against a separate exact
+volume observation. A network removal receipt requires both the exact-ID
+inventory with Docker's built-in bridge as its positive control and a
+separate scoped name inventory. These read-backs also handle a lost wrapper
+result when the exact receipt was already committed. The Docker 29.9.2
+read-only probe of the old node returned the expected 404 body
+(`.build/phase1-retained-node-http-observation-20261124.log`). That point
+observation leaves the earlier admission and network unresolved.
+
+The warning-clean executable, unit and integration builds passed after
+removing an unused import from the first build. The rebuilt public command
+then refused `control delete --yes` for the earlier operation before any
+removal. Independent network inspections before and after returned the same
+ID and zero endpoints. The admission file remained absent. This is the
+real missing-admission negative case only. The logs are
+`.build/phase1-retained-public-admission-refusal-20261124.log` and
+`.build/phase1-retained-network-{before,after}-refusal-20261124.log`.
+Binary SHA-256:
+`e0bec365b3bf5f73fb79baec1a4340ceaafff249a4a529b68fb744800cb6933a`.
+All 75 preparation and 42 evidence tests passed on that source. The
+admission fixture covered scope-lease contention, an unavailable API
+before admission, API loss after the checkpoint, a dangling legacy journal,
+retained Authority state, a wrong-purpose record, and a dangling checkpoint.
+The focused connected-Docker case accepted the exact 404 response and
+refused a foreign ID, an empty response body, and a successful HTTP status.
+All 60 connected Docker integration tests passed. The formatter, HLint,
+documentation check and `git diff --check` passed.
+
+A bounded local canary started at 13:00 Toronto time with fresh scope
+`run-f6e0119d7aaa44d63aa19bbbe846a4e5` and the same executable. Public
+`config setup --fresh-test` and both `control import-artifact` calls
+completed using the declared node archive and kind tool from the earlier
+scope. The canary runs public reconcile, status, delete and, after a
+successful first delete, a second delete following API loss. Reconcile
+and each delete have a 12-minute command limit. The test uses one local
+kind environment and no AWS resources. Its log is
+`.build/phase1-receipt-canary-20261124.log`. This canary does not exercise a
+deliberate interruption or two-environment acceptance.
+
+The canary stopped at operation `4678a52fbe9517219ede48b1d362f0d4` before
+network, volume or node creation. The real managed family retired with
+controller exit 1 and no durable family result. The image transport record
+has a 200 reply with one stream message, and independent Docker inspect
+found the exact configuration image ID without tags. These observations
+leave the image-read-back and family-result closing boundary unresolved.
+Public delete and repeat both exited zero with no node, volume or network
+create intent. Independent scoped Docker queries returned no node or
+network match, the exact user-manager unit query returned no units, and the
+retirement metadata remained while its published input payloads were absent.
+There was no API to interrupt. This is a real pre-node failure and teardown
+of its attempted scope, with the image and operation records retained.
+Review the image/result boundary with a bounded reproducer before another
+live canary. The independent inventory and terminal controller observation
+are in `.build/phase1-receipt-canary-independent-20261124.log`. The public
+archive inspection matched the selected manifest, blob configuration ID and
+configuration image on the daemon. The manifest reference was unobservable.
+That evidence is in `.build/phase1-receipt-canary-image-20261124.log`.
+
+A bounded contention reproducer held the recovered scope lease across the
+same family-result writer. The dispatcher's one-shot lease acquisition
+returned `KindLeaseBusy` and wrote no result. The existing bounded retry
+acquired the lease after release and independently reread the exact result.
+The public completion observer also takes this lease during its retirement
+poll. This establishes a code-path counterexample compatible with the live
+missing result. The live invocation's exact refusal remains unobserved.
+Output is `.build/phase1-family-result-contention-20261124.log`. The fixture
+source SHA-256 is
+`a8115afad070602d696ea9644749bebf74d311e38522ba2461448e44165dd3d9` and its
+binary SHA-256 is
+`d0b73be34d50e84768805ecc9a22113a23e0ba470605494723f3a48a2f963631`.
+
+The admission and removal-read-back build above passed `prodbox dev check`
+with 10,210 general, 27 Authority admission, 35 authentication, and 935
+authenticated transport tests. The executable digest remained
+`e0bec365b3bf5f73fb79baec1a4340ceaafff249a4a529b68fb744800cb6933a`.
+The log is `.build/phase1-teardown-canonical-20261124.log`. This result
+precedes the following dispatcher change and does not close live acceptance.
+
+The dispatcher now uses the existing bounded operation lease retry while
+recording its summary. The original request's outer deadline and ten-second
+recording limit still bound the write. Only pre-callback lease contention
+retries, preserving the single write and its exact read-back. A controlled
+regression now drives this actual writer behind a temporarily held scope
+lease. The test refused an expired deadline, waited through temporary
+contention, and independently reread the one recorded result. The
+warning-clean build, formatter, HLint, documentation check and
+`git diff --check` passed. Binary SHA-256:
+`e5bdf4950ecebb0a2610d795fc47dfdbbeb15df2e26594b94047dc953d95e14a`.
+The focused result is `.build/phase1-family-result-bounded-test-20261124.log`.
+A second fresh local canary is in progress with this build and the same
+artifact coordinates. It compares exact scoped Docker inventories before
+and after public delete, then checks repeated delete if the first returns
+success. Scope `run-6ae661747edbf3e87c27e46e34824b80` and operation
+`f0b7d22a042e45a7acae2735aa720b78` have recorded image, network, node volume,
+node create and node start results. Its log is
+`.build/phase1-bounded-result-canary-20261124.log`.
+All 76 current preparation tests passed
+(`.build/phase1-family-result-bounded-preparation-20261124.log`).
+
+The second canary reached Kubernetes readiness. An independent `kubectl`
+read returned `ok` for `/readyz` and Ready for the exact selected node
+(`.build/phase1-bounded-result-canary-ready-20261124.log`). `control reconcile`
+exited 1 with a durable `FamilyPostProbeFailed` result and completed
+worker, parent, input and post-lease observations. The probe namespace UID
+was recorded and its removal receipt matched the same UID. The primary
+network-policy enforcement failure remains open.
+
+`control delete --yes` exited zero at 13:35:40 and repeat delete exited
+zero at 13:35:43 with the API unavailable. The repeated command re-observed
+absence of the recorded node, named volume and network. Independent exact
+Docker API reads returned 404 for all three resources, with a visible
+built-in bridge positive control. The scope root, admission checkpoint,
+obsolete kubeconfig and operation evidence remain. The exact unit query
+returned no units and the publication metadata remains without its input
+payloads. See `.build/phase1-bounded-result-canary-independent-20261124.log`.
+This validates owned resource teardown and repeat on one real scope. The
+interruption before teardown completion, network-policy enforcement,
+same-root recreation, the earlier unresolved network and mutation closure
+still prevent Phase 1 completion.
+
+Probe timing review (2026-11-24). The canary retained only the aggregate
+probe failure after the namespace was created and removed. The probe
+previously read both short-lived client logs after a fixed nine-second
+delay, which can expire while a client is still scheduling or running.
+The public adapter now waits up to 30 seconds for both exact Pods to reach
+`Succeeded` before reading their logs. A pending or failed wait yields an
+unobservable connection result and follows the existing UID-bound cleanup.
+The controlled regression covers a delayed success, the allowed and denied
+observations, and a timeout that skips client log reads. This addresses a
+timing counterexample compatible with the canary. It does not identify
+that live invocation's primary probe failure.
+
+The warning-clean build and targeted client-wait regression passed. The
+binary SHA-256 is
+`a5e88db7c53c1889b4559c3a6b747da2ee89b717c5da7618a4184d673470199d`.
+A third bounded local canary is in progress with a separate read-only
+observer of exact Pod phases and result tokens in its operation-bound probe
+namespace. Its logs are `.build/phase1-probe-wait-canary-20261124.log` and
+`.build/phase1-probe-wait-canary-20261124-pods.log`.
+
+The third canary, scope `run-962e83599fea5b22c3335ed84242516a` and operation
+`336538a767659c3b0e0ad544cf104dc1`, reached a Running probe server and both
+baseline Pods `Succeeded`. Each emitted `OBSERVER_UNAVAILABLE`. The
+aggregate reconcile result was again `FamilyPostProbeFailed`. The exact
+helper image's upstream build stages Bash as `sh`, `rm`, and `mkdir` into
+the distroless runtime. It does not stage the probe's required `timeout`
+executable. The Pod observer distinguishes this dependency problem from
+unfinished clients. [Pinned helper image build](https://raw.githubusercontent.com/kubernetes-sigs/kind/7181c60a/images/local-path-helper/Dockerfile)
+
+Public delete and repeat both returned zero and the scoped inventories
+were empty after teardown. The canary command remained unsuccessful
+because the primary network-policy probe failed. All 77 current
+preparation tests passed. The next change must run a finite connection
+observer with the helper's actual executable set and preserve the
+distinction between denial and observer failure.
+
+The probe client now uses Bash builtins from the same pinned helper image.
+The child acknowledges the connection attempt and reports a successful or
+refused socket open. The parent waits within its own deadline and counts a
+timed connection as refused only after observing cancellation of that exact
+child. Unexpected replies and unconfirmed cancellation are unobservable.
+The 12-second Pod deadline remains an independent upper bound on a wedged
+client. A loopback reproducer with an empty command search path observed a
+successful connection, an immediate refusal and a five-second deadline
+with a full accept queue. The public binary SHA-256 is
+`5deb9521f1d92aa8d0b99c5eed80453bf843b6019f1cfb8ded416bab097e203d`.
+The focused real follow-up used separate observer logs
+`.build/phase1-probe-bash-canary-20261124.log` and
+`.build/phase1-probe-bash-canary-20261124-pods.log`.
+
+The real follow-up completed in scope `run-13efef0da3f956807982ab5d8f938e02`
+and operation `072cbe3d94c060ea134a77e58b49a658`. The public command exited
+zero with `Network policy enforcement: PROVEN`. The independent observer
+recorded both baseline connections, allowed/denied connections under the
+policy, and both connections restored after removal. Public delete and
+repeat both exited zero with the API gone by the repeat. Independent
+exact Docker requests returned 404 for the node, named volume and network
+with a visible bridge control. The exact manager-unit inventory was empty
+and the retired publication still held metadata without input payloads.
+The retained root, configuration, image and operation records remain.
+See `.build/phase1-probe-bash-canary-independent-20261124.log`.
+
+The warning-clean executable, unit and integration builds passed. All 77
+preparation tests and both Bash client integration tests passed
+(`.build/phase1-probe-bash-preparation-20261124.log` and
+`.build/phase1-probe-bash-loopback-final-20261124.log`). This canary proves
+one real scoped reconcile, policy probe, owned teardown and repeat. It
+does not exercise two simultaneous scopes, deliberate interruption before
+teardown completion, same-root recreation, or source mutation kills.
+
+Same-root recreation preparation (2026-11-24). The exact recorded node,
+volume and network absence checks now live in their resource read-back
+modules. Public delete still supplies its held operation and retirement
+checks. Recreation can reuse the same observations before archiving the
+old eligibility checkpoint, operation records and kubeconfig. The archive
+now has a public owner-family path for an exact operation with a matching
+teardown checkpoint, independently retired family, known original probe
+cleanup, and confirmed resource absence. It rechecks the resource and
+admission observations under the scope lease before moving only the known
+operation records and credential. The move uses no-overwrite renames and
+keeps the Authority fence until after the former intent is durably moved.
+A reserved history directory fences an incomplete move. Its supported
+recovery path and live same-root acceptance are still pending.
+
+The shared read-back build passed a real repeat delete and 42 evidence
+tests. After archive activation, the warning-clean build and the controlled
+refusals for admission without settled removal and a reserved archive both
+passed. The archive test executable SHA-256 is
+`57c787be0330a0a768bdb32da31ea8e6b0e7bacb306218f49035eb5085639c41`.
+The real same-root canary ran on the already cleaned scope from
+operation `072cbe3d94c060ea134a77e58b49a658`. The observer checks the same
+root and generation, unchanged artifact digests, retired kubeconfig inode,
+a different operation ID and independent readiness. It then follows public
+cleanup for any new operation. Output is
+`.build/phase1-same-root-canary-20261124.log`.
+
+The canary verified the old archive and unchanged root, generation,
+artifact digests and archived credential inode. The new operation
+`8f6ab513fbdf3e60ecd8bef6d961522f` recorded a network intent and no attempt.
+Reconcile exited 1 with `FamilyPostNetworkFailed`. Public cleanup also
+exited 1, even though independent inventories showed no matching node,
+named volume or network. This is verified archive activation and a failed
+recreation. The evidence runner now requires a successful replacement
+reconcile and the exact original intent inode in the old operation's
+archive, with a different live operation ID. An incomplete response or an
+arbitrary history entry can no longer satisfy the recreation case.
+
+The managed prerequisite path now uses the proven bounded lease retry
+at each operation boundary under the original work deadline. A retry is
+eligible only when the lease refused before entering the callback. The
+same-root canary's precise pre-attempt refusal is unobserved. Delete also
+now distinguishes a bound network intent with no recorded attempt or
+results. It checks the selected Docker daemon and checks the scoped name
+inventory with Docker's built-in bridge as a positive control before
+reporting that no network was created.
+
+Recovered the `8f6ab513fbdf3e60ecd8bef6d961522f` teardown on the same
+retained root with the public `control delete --yes`. The initial and
+repeated calls exited 0. Independent Docker CLI observations before and
+after each pair saw the built-in bridge and returned no matching network,
+node or volume. The original admission and network intent remained present
+and no network attempt or removal records appeared. Evidence
+`.build/phase1-unused-network-cleanup-20261124.log` has SHA-256
+`6e7c19e5a7991dbaaa57f14bd8d5efaf104b53f65bc40a0c7bcfc3b105382d88`;
+operator SHA-256
+`5025a441563841ec9bbbaa47c18d334f40f39463c5b4fe1528072b47aa8ef4f1`.
+The pre-attempt operation is settled for teardown. The replacement
+cluster, host marker round-trip and recreation from this early-stop
+state remain unproven.
+
+The 78 preparation tests passed, including a held-lease case that
+observes no admission callback before release and no provider record
+after refusal. All 42 evidence comparison tests passed. The connected
+Docker case rejected an invisible bridge and distinguished a positive
+bridge with an empty scoped inventory from a positive bridge with a
+visible scoped network. Logs are
+`.build/phase1-recreation-preparation-20261124.log`,
+`.build/phase1-recreation-evidence-20261124.log` and
+`.build/phase1-network-name-controlled-20261124.log`. The broader
+connected-suite run overlapped source edits and three tests failed while
+rebuilding the operator from intermediate source. Rerun that suite
+against the completed slice before using it as current evidence.
+
+Decision (2026-11-24): exercise deliberate interruption and simultaneous
+local scopes in the registered Phase 1 workflow, following
+[A01-01](acceptance_cases.md) and the requirement for observations to bind
+the actual operation in
+[the plan standards](development_plan_standards.md#evidence-and-live-campaigns).
+The runner now binds the reports to the observed owner-family operation,
+and the recreation report to the replacement operation when observed.
+The second scope uses the public setup, imports, reconcile and delete.
+Its observer requires both Kubernetes Nodes to be Ready at the same
+time, distinct Docker node IDs, different expected contexts and API
+ports, and each node's exact retained mount. After the sibling delete it
+checks sibling absence and the first node's unchanged identity and
+readiness. The interruption schedule stops the bounded public delete
+after a valid node removal receipt, then requires a bound Docker 404 and
+an independently visible original volume before resuming and repeating
+the same scoped teardown. A missing interruption observation fails
+lifecycle acceptance.
+
+The registered `test run phase-01` run at 14:34–14:49 America/Toronto
+reported `EvidenceChecksSatisfied` for A01-01, A01-02, A01-03, A01-04 and
+A01-06. Its operator SHA-256 is
+`2d129fca369db5d37119829d9e14b546fb7f6caad9fd652d5f441f3d9772274e`
+and the source manifest SHA-256 is
+`a3e7ab3a7394ba93d2b7c8658abf97701c4052fcb1cf19acbea6dc5bc0e9f134`
+on `79c1807e0fd9869a0e5e6c71847496890def9c20`. The seven case reports
+are in `.build/scenario-evidence/22be3e3e2e12f5e5408f8108c75013ee/`.
+The command log `.build/phase1-registered-lifecycle-20261124.log` has
+SHA-256 `2b1a3d746529d37e2c1ffe0b45b65638d7236e9d355682afc593883b354efa0e`.
+
+The first scope was `run-d01b37d751edf9dc76a37e6a3cff685c`, operation
+`e88ed0fe0dfc4163f2b67fe13aa20e61`. The simultaneous sibling was
+`run-f0c9bbe80ac0b30b811341bcf18b7175`, operation
+`5478d6fa13c3178e08baba824ef650ed`. The independent observation at
+14:42:05 saw both Kubernetes Nodes Ready, separate Docker node IDs, exact
+retained mounts and API endpoints on ports 53114 and 58489. After sibling
+cleanup the registered observer still saw the first node Ready with its
+original ID. The public runner confirmed it interrupted the first delete.
+The independent observation at 14:44:18 captured the first operation's
+durable admission and a node-removal receipt with status 204. Docker
+returned 404 for that exact node and 200 twice for its exact original
+volume, before a volume-removal receipt appeared. Public resume and
+repeat completed. Another observer read exact 404s for the original node,
+volume and network with a positive built-in bridge.
+
+Reconcile moved the first intent into its exact archive and created
+replacement operation `1fadcce423dcbee55da75e50cd04d466`. The registered
+reader Pods returned both original markers. The second claim was Bound
+to `pv-a01-02` by name and the validator accepted the replacement report.
+The outer host observer verified both marker digests after final public
+delete, and the root remained device:inode `2050:3161856` at generation
+`436f4e943783a1e740ba358f8106ac2d`. Exact node, volume and network 404s
+and the matching worker-unit observations are in
+`.build/phase1-registered-sibling-removal-final-20261124.log`,
+`.build/phase1-registered-original-removal-20261124.log` and
+`.build/phase1-registered-replacement-removal-20261124.log`.
+The simultaneous and interruption observers are
+`.build/phase1-registered-scope-ready-observer-20261124.log` and
+`.build/phase1-registered-teardown-observer-20261124.log`.
+The additional replacement observer missed the interval when both reader
+Pods were observable. The validator used the registered Pod logs, exact
+host reads and the archived inode, and the outer observer confirmed the
+retained marker hashes independently after removal.
+
+The command exited 1. A01-05 had a missing slice sample even though the
+64 MiB Pod completed and the 16 MiB Pod was OOMKilled. The sampler still
+used a fixed UID and the retired `prodboxkind.slice` path. It now resolves
+the manager path from the effective UID and the active slice and controller
+names through
+[HostOperationFamily.hs](../src/Prodbox/Subprocess/HostOperationFamily.hs).
+It requires the exact controller cgroup to survive the kernel counter read.
+The capacity case requires that sample for success. A01-08 imported and
+checked the inputs, created and replaced the node, and confirmed cleanup.
+The pinned image was already present at the start, so clean-image
+acceptance remains open. The report now records that actual observation
+on both sides instead of claiming the image was absent.
+
+Mutation retirement work (2026-11-24): all seven exact unmodified Phase 1
+assertions were uniquely selected and passed
+(`.build/phase1-reviewed-baselines-20261124.log`). The active Phase 1
+catalog now runs those mutations and the executor calibrations.
+Later-phase declarations remain available to campaign status readers.
+For an observed command exit, the outer executor now requires the full
+container ID from the bound receipt and an independent Docker 404 from
+the same daemon before it advances to the next stage. Label inventory
+remains diagnostic when exact retirement is unconfirmed. Validation of
+that read-back, prepared offline dependencies, workspace cleanup and
+compiled mutation results is pending.
+
+The real mutation canary on operator SHA-256
+`fdbd47519f0dbeb1cfe3ae2ecc4752a50da1dbb448f8e1e68a0e4660ed1858f1`
+advanced through the isolation stage and recorded independent retirement
+for the isolation and baseline-build containers. Exact outer Docker reads
+returned 404 for both with a positive bridge. The baseline exited 1 in
+its empty isolated Cabal directory while attempting to resolve the
+Hackage index. The campaign `1773464124434203` remains Inconclusive
+with its workspace retained. Evidence is
+`.build/phase1-exact-mutation-retirement-live-20261124.log` and
+`.build/phase1-exact-mutation-retirement-independent-20261124.log`.
+A separate offline dry run with no repositories could not resolve
+`yaml`. Copying only the public Hackage index and its metadata to a
+private scratch cache was sufficient for the dry-run solver. Artifact
+custody for the selected compiled dependencies and full workspace
+retirement remain open.
+
+The real capacity rerun with that same operator stopped at
+`69e451f63d4caf97cf9c1c497cdd4c44` in
+`run-74f4ec1a1eb989a429ddb87ed61023ec`. The node proposal exists and
+the record set lacks a node attempt or result. The family summary
+reported `FamilyWorkerUnconfirmed` before post-worker work. Public
+delete retained the recorded volume and network because it could not
+prove the node disposition. No provider mutations were attempted by hand.
+The exact node name returned Docker 404. The bound network
+`e76a77b24ca82afa2ed7d807769bb2f7bfa82562d7858dba0c9d6b92e237baba`
+and generation-bound volume remained visible. See
+`.build/phase1-registered-capacity-20261124.log`.
+
+Decision (2026-11-24): follow the same settlement boundary for a
+never-attempted node proposal as for a never-attempted network, under
+[independent postcondition requirements](development_plan_standards.md#real-acceptance-requirements).
+The node result reader requires an attempt, so it cannot distinguish this
+early state on its own. Delete now checks the bound attempt reader and
+the exact result path under its held lease. It requires the authenticated
+daemon's matching name 404 and an empty scoped label inventory before
+advancing to volume or network. The managed worker admission, root
+handoff and post-worker paths also use the deadline-bounded lease retry.
+The original worker refusal is still imprecise. Live capacity measurement
+remains open.
+
+The rebuilt public `control delete --yes` and its repeat exited 0 for
+`69e451f63d4caf97cf9c1c497cdd4c44`. The admission inode was unchanged
+and no node attempt, create result or removal records were written.
+Docker's exact name read returned 404 before and after, with the bridge
+visible. The recorded network and volume each returned 200 before and
+404 after, alongside bound status 204 removal receipts. The operator
+SHA-256 is
+`608fd7dabc517fe7a4fecc4fe7bdcca754592a5a846c58a92cfdf05b2b3ba669`.
+The log `.build/phase1-unattempted-node-cleanup-20261124.log` has SHA-256
+`11082eebba6ec4518a30f6d6f43916c2754b4be4860542746af705428e636ce8`.
+The exact response fixture rejected wrong subjects, malformed 404s and
+non-404 responses when querying by ID and by the scoped name. The
+admission regression also refused a checkpoint changed to another
+operation without changing the current owner. The 78 preparation and 42
+evidence tests passed on this snapshot.
+
+Offline dependency custody narrowed further. A private curated copy of
+the public index plus the 171 installed units for the selected test and
+Cabal's setup closure let `cabal build --offline --dry-run` select only
+the local library and unit-test target for rebuilding. The experiment
+used a clean command environment and a scratch store, with no home cache
+mounted into a mutation child. It exercised dependency planning only.
+Production integration, content custody and isolated compilation remain
+open.
+
+Capacity sampler follow-up (2026-11-24): the independent reader found the
+exact controller cgroup for `44bd7cec80b2c3ba5bad8aa7b53bfc78`. The shared
+slice reported peak memory 445403136 of 805306368 bytes and peak 29 of 96
+tasks. Reconcile exited 1 before any provider attempt; the recorded summary
+was `FamilyParentKernelUnconfirmed` and `FamilyInputChanged`. Public
+delete and repeat exited 0 with empty scoped Docker inventories.
+The connected integration fixtures were running during that canary.
+The shared placement verifier requires only the controller and its exact
+children in the slice, so overlapping fixtures can invalidate both the
+placement and aggregate measurements. The revised scenario sampler
+requires the expected cgroup names on both sides of the counter reads.
+The recorded measurement locates the live cgroup and leaves A01-05 open.
+Run placement validation serially with the manager-backed fixtures.
+Evidence is `.build/phase1-bound-cgroup-canary-20261124.log` and
+`.build/phase1-bound-cgroup-observer-20261124.log`.
+
+The 61-case connected run completed with one failure in the legacy
+preflight fixture. Selecting the retry policy forced legacy launch
+capabilities before preflight validation. The constructor now defers
+those capabilities until launch. The exact integration case passed on
+rerun (`.build/phase1-legacy-preflight-regression-20261124.log`).
+
+Private mutation dependencies (2026-11-24): the public runner now selects
+the canonical unit test and Cabal setup closure from the local build plan.
+It copies the exact installed package entries, package registrations and
+public index files into a new private campaign directory using held
+descriptors and bounded copies. It verifies source and campaign identity
+around preparation. The worker receives the copied store and index as
+read-only mounts and a separate writable output. Build command identity
+is preserved for older campaign records.
+
+The real campaign `1774771874504831` began an offline unmodified baseline
+compile with operator SHA-256
+`ce64e8a4bf05b913871b7d18d97d1e9bc7644a2d6af8d471db0ebf86f6f24121`.
+The unmodified Docker observer confirmed network mode `none`, non-root
+UID/GID, read-only dependency and source mounts, and one writable output
+mount for the bound baseline container. Three inherited proxy variables
+had empty values. The runner now starts the case shell with an explicit
+environment. The active campaign snapshot predates that change. Evidence
+is `.build/phase1-private-dependencies-live-20261124.log` and
+`.build/phase1-private-dependencies-isolated-observer-20261124.log`.
+
+The campaign compiled the unmodified baseline offline, passed its selected
+assertion, and compiled the reviewed M01 mutation. The rebuilt test
+executable had SHA-256
+`4f7834aea6ce3e79a55160708e834f15ff8985833fc07ac7205746d8d0b37753`.
+The selected mutant test returned exactly
+`TestAssertionFailures 1 ["context.rejects_root_alias"]`. An independent
+Docker observer read a 404 for each of the seven receipt-bound containers
+and a 200 for the bridge. This older build reported the provisional kill
+as `MutationInconclusive` and retained the workspace because retirement
+was unconfirmed. The command log SHA-256 is
+`4cff4ed2253724c4927e1e9ec3860975adb949c25599b9e930e3855a8059467e`.
+The independent evidence is
+`.build/phase1-private-dependencies-exact-retirement-20261124.log`.
+
+The executor now reads compiler diagnostics and binary bytes through
+bounded no-follow descriptors on the held output mount. A case can
+qualify after exact worker retirement, matched outcome, bounded
+unchanged-inventory cleanup and a synced case receipt. The invalid
+calibration checks a parser diagnostic for its target file. The timeout
+calibration checks the selected test's typed timeout. Actual compiled
+mutation outcomes and the revised workspace retirement remain under
+validation.
+
+Decision (2026-11-24) for recreation after a pre-node stop. Follow the
+same retained-root and independent read-back contract in
+[control_plane.md](../documents/engineering/control_plane.md#recovery-and-local-removal).
+An owner-family operation with a bound node proposal can pass archive
+admission after exact volume and network removal, a verified missing node
+attempt, and an independent Docker name and label check. The probe and
+cleanup publications must be empty and the retained kubeconfig must be
+absent. A completed cluster still requires its retired credential. On
+2026-11-24 the public branch archived `69e451f63d4caf97cf9c1c497cdd4c44`
+and created `3640d3a06bfc984900283a3f55730f81` on the same root and
+generation. It retained the original intent inode and artifact digests.
+The replacement returned Kubernetes `/readyz` and verified network policy.
+Public delete exited zero. Exact independent node, volume and network reads
+returned 404, the bridge returned 200, and the operation's worker-unit
+inventory was empty. Operator SHA-256
+`67853790c3e06238964a6e761f5a505e3f211a8e48c6e9ba46a22a149352293b`.
+Evidence is `.build/phase1-pre-node-archive-20261124.log` and
+`.build/phase1-pre-node-archive-exact-removal-20261124.log`.
+
+Serial capacity validation (2026-11-24). The registered run at
+15:25–15:43 America/Toronto passed A01-01, A01-02, A01-03, A01-04, A01-05
+and A01-06 with operator SHA-256
+`3e4b68fe3df45895d1e19eced2b493aedbaffdbe995fd496d865c51ac146b3a4`
+and source manifest SHA-256
+`eeb32b713e4625e426060f74c1b70916a3e437ba321ea5b463470e3964d4aa9a`.
+The independent cgroup and registered case agreed on a peak of
+452308992 of 805306368 bytes and 34 of 96 tasks for
+`38900b153328d617fafbda2b751f91b1`. The 64 MiB Pod completed and the
+16 MiB case was OOMKilled. The unchanged insufficient-capacity control
+and quota observations passed. The run stopped the first teardown after
+exact node removal, resumed it and verified the repeat. Both scopes
+coexisted. The outer Kubernetes observer read both markers from
+replacement operation `ae506c3db9e42e06fcf15fdf1fafc702` and confirmed
+the PVC bound to `pv-a01-02`. Exact Docker read-back returned 404 for
+the node, volume and network for all three operations, with a positive
+bridge. Their worker-unit listings were empty and both host marker
+hashes survived final teardown.
+
+A01-08 reported `EvidenceChecksUnmet` for the single preloaded-image
+observation. All other A01-08 observations matched and cleanup was
+confirmed. The command exited 1. The reports are in
+`.build/scenario-evidence/47cdc6e2232f41ea45e829dd9092caba/`. The command
+log `.build/phase1-registered-serial-capacity-20261124.log` has SHA-256
+`04e44098c24ef3727ad92dc25e1017cd797465d54092928172b8305cd0a19761`.
+Independent logs are `.build/phase1-registered-serial-cgroup-observer-20261124.log`,
+`.build/phase1-registered-serial-marker-observer-20261124.log` and
+`.build/phase1-registered-serial-removal-20261124.log`.
+
+Canonical validation (2026-11-24). The pre-node archive canary operator
+completed `prodbox dev check` with 10,214 main unit tests and gated suites
+of 27, 35 and 935 tests. The log
+`.build/phase1-current-canonical-20261124.log` has SHA-256
+`b7675f1bb30265d373a0d495107c03b64b87d2facc641316e3234053e309fc7b`.
+This run preceded the archive transaction, quota and socket changes.
+
+Isolated mutation recheck (2026-11-24). Campaign `1776734605361095` used
+the same operator and source manifest
+`a9b95bc920f3e98466671300e3c9442f2496be89813febad93aa3b24ab5cc4fd`.
+The baseline compiled offline to an owner-private executable with SHA-256
+`dd2ecbb2ef4d6361f5caf4b8b1730519a66954a2875e2463082d8f8c26852239`.
+Cabal created `0755` intermediate directories within the `0700` output
+root. The member reader refused those directories, so baseline selection was
+unbound and the result was `MutationInconclusive`. All three exact workers
+returned 404 with a 200 bridge control. The independently observed worker
+had network mode `none`, non-root UID/GID, read-only source and dependency
+mounts and the five declared environment variables. Evidence is
+`.build/phase1-qualified-mutation-20261124.log`,
+`.build/phase1-qualified-mutation-running-observer-20261124.log` and
+`.build/phase1-inconclusive-mutation-permissions-20261124.log`.
+
+Decision (2026-11-24) for fixed mutation storage. The contract requires a
+disk bound during execution. A disposable Docker protocol fixture rejected
+a write beyond the shared tmpfs limit and allowed the outer process to read
+the result through its read-only keeper. The native adapter fixture observed
+the intended 3 GiB capacity and 32,768 inodes. The keeper and exact volume
+returned 404 after cleanup. The executor now takes one immutable campaign
+snapshot, mounts one bounded volume per case, and requires exact keeper,
+volume and workspace retirement. The member reader accepts `0755`
+directories under the private root and refuses group-writable intermediates.
+The integrated command needs validation. See [mutation execution rules](mutation_cases.md#execution-and-isolation).
+
+Decision (2026-11-24) for interrupted archival. Persist a scope-bound
+inventory before moving any retired records. Lease-held recovery restores
+exact original inodes from incomplete staging and reruns teardown
+observations. The final archive appears in one rename after complete staging
+read-back. Authority deployment checks the staging fence. A filesystem
+interruption fixture restored the original inodes, refused a foreign staged
+entry, and completed publication. Public-path recovery and the earlier
+network-proposal-only root are queued for validation.
+See [recovery and local removal](../documents/engineering/control_plane.md#recovery-and-local-removal).
+
+Clean-runtime preflight (2026-11-24). A disposable rootless daemon reported
+Docker ID `94e65c97-bac6-4218-be53-7b3bce1d4c63`, systemd cgroup v2 and
+an empty image inventory before shutting down. The shell fixture probed the
+runtime only. The fresh public scenario accepts an explicit absolute Unix
+socket with `--runtime-socket`. Actual A01-08 validation is pending.
+Evidence is `.build/phase1-clean-engine-protocol-retry-20261124.log`.
+
+Explicit clean-runtime run (2026-11-24). Operator SHA-256
+`5c59ef7ba66307dd18875bc45e02b98cfa42f835ebfeab4c89d6606c8d4a7360`
+selected Docker daemon `66b3eb1b-129b-4adf-8749-49fe717e2263`.
+The independent pinned image read changed from 404 to 200 on that daemon.
+Operation `ded644f0aab136b041a9a41693d1bbd8` stopped before the node
+create attempt. Supported teardown confirmed scoped node absence and
+removed the exact network and volume. The outer inventory found only
+built-in networks, and the disposable daemon socket stopped answering.
+The retained root is `run-7cfedfef95b5e0b57e6ffc95fdeb3756` and the
+disposable daemon files are under `/tmp/prodbox-clean-engine.sgHYoSWw`.
+The input preparation and cleanup observations are recorded; Kubernetes
+creation, recreation and the full A01-08 case remain open. The log
+`.build/phase1-clean-runtime-20261124.log` has SHA-256
+`49c7755c8aeb74344d2cb1d5e08a6e13f4dd200980f3c1e8286123edba401f5d`.
+
+Quota launch and recovery (2026-11-24). Campaign `1779052358050524`
+recorded and created its case volume. The initial executor launch guard
+refused the keeper stage before writing a launch record. The command
+reported `MutationInconclusive`. The keeper is now admitted by the same
+launch guard as the worker stages. `test cleanup 1779052358050524` and
+its repeat both exited zero with operator SHA-256
+`9cd2b4fad10584d18c9f67cef9ea0c94b7784dc7d1a3921a9a39277f66b7a4fd`.
+The independent exact volume read changed from 200 to 404 with a 200
+bridge control, and the cleanup receipt was retained. The initial failure
+and recovery are in `.build/phase1-kernel-bounded-mutation-20261124.log`
+and `.build/phase1-unused-mutation-disk-recovery-20261124.log`.
+The corrected public campaign `1779537769813259` reached offline baseline
+compilation. Independent Docker and filesystem reads confirmed a read-only
+keeper on the recorded volume, a single writable volume mount in the
+worker, a read-only worker root, no network, a memory and swap ceiling
+of 8 GiB, and a 3 GiB tmpfs with 32,768 inodes.
+Evidence is `.build/phase1-kernel-bounded-mutation-active-observer-20261124.log`.
+The baseline exited 1 after about 343 seconds. The isolation and build
+workers, keeper and exact volume retired. The compiler log was on the
+retired tmpfs, so the build cause is unconfirmed. The command reported
+`MutationInconclusive` and retained the source and local records. A bounded
+private baseline diagnostic is now captured before the volume retires.
+The command log `.build/phase1-kernel-bounded-mutation-retry-20261124.log`
+has SHA-256 `a27652019b5d5878f3f748b2dbf623592cbc9ebdaa75b56253184359d186a628`.
+
+Network-proposal recovery (2026-11-24). The public archive canary used
+the `5c59ef7b` operator above and archived operation
+`8f6ab513fbdf3e60ecd8bef6d961522f` after an independent 404 for the
+unattempted network name with a visible bridge. The published transaction
+record matched all nine entries. Replacement operation
+`02a5799c106a249206fed71380be269a` reached Kubernetes readiness and
+verified network policy. Public delete exited zero. Independent reads
+returned 404 for the exact node, volume and network, returned 200 for
+the bridge and found no matching worker units. Evidence is
+`.build/phase1-network-proposal-archive-20261124.log` and
+`.build/phase1-network-proposal-archive-exact-removal-20261124.log`.
+
+Interrupted archive recovery (2026-11-24). The same operator stopped
+while archiving `3640d3a06bfc984900283a3f55730f81`. The independent
+observer found one moved entry and the bound manifest in staging before
+terminating the exact reconcile process. A new public reconcile restored
+and republished the old archive, preserving the original intent inode
+and root generation. Replacement `9d9f5ec2b9ceacc4198bcb223460a4cf`
+passed Kubernetes readiness and verified network policy. The supported
+delete exited zero, exact independent node, network and volume reads
+returned 404, and the operation's worker-unit inventory was empty.
+Evidence is `.build/phase1-interrupted-archive-live-20261124.log`.
+The warning-clean build for the archive and quota recovery slice passed,
+as did 45 focused evidence fixtures and 354 CLI parser tests.
+
+Phase 0 checker replay through the Phase 1 executor now binds the
+five reviewed M00 source changes to their unchanged assertion semantics.
+The plan records the new exact candidate digests. The compiled isolated
+replay remains open. See [M00 replay](mutation_cases.md#phase-1-executor-replay-of-m00).
+
+Rootless node diagnostic (2026-11-24). A second clean daemon under a
+delegated systemd scope independently reported cgroup v2 with memory, PID
+and CPU support. The pinned image again moved from 404 to 200. Operation
+`04649f7451b6e50c32160aa4ea8f077a` stopped before sending a node create
+request. Supported teardown removed the scoped volume and network. A
+read-only fixture for the pinned kind executable then captured the exact
+extra `--device /dev/fuse` request on the rootless branch. The recorded
+proposal had the rootful vector, so the bridge could not admit that request.
+The adapter now binds the daemon's observed mode to the exact argv and
+permits only the pinned rootless FUSE device. Read-back checks the complete
+device list and retains the original rootful record format. Evidence is
+`.build/phase1-clean-runtime-debug-20261124.log` and
+`.build/phase1-upstream-rootless-arguments-20261124.log`.
+See [pinned kind Docker provisioning](https://github.com/kubernetes-sigs/kind/blob/v0.32.0/pkg/cluster/internal/providers/docker/provision.go).
+
+Clean rootless startup (2026-11-24). Operator SHA-256
+`ebad412d22027ad94527c76bce8b849604b422cfbb88224334917d54812ac56e`
+imported the pinned image on daemon `ee79d7a1-1c7b-44b2-a422-b9d0008a2cf1`.
+The independent observer saw exact node
+`7080d8816fca845191be30777d3bf6eb6b78d765717fdc3123935eac7c5cb9d3`
+with only the recorded FUSE device. Docker returned 204 to the start
+request. Operation `690674698ea8ae28fe0bcde6bc207664` stopped in the worker
+before installation of the kubeconfig. Kubernetes readiness remained
+unconfirmed. Public cleanup removed the exact node, volume and network,
+and the disposable daemon ended with the three built-in networks. This
+confirms the device transition and leaves A01-08 open. Evidence is
+`.build/phase1-clean-rootless-device-20261124.log` and
+`.build/phase1-clean-rootless-device-independent-20261124.log`.
+
+Decision (2026-11-24) for the A01-08 runtime. The [acceptance case at line 37](acceptance_cases.md#required-cases)
+requires a clean Docker runtime and real preparation through supported
+commands. Select a separate empty rootful daemon for the same public path
+used in the passing A01-01 through A01-06 campaign. Bank the distinct
+rootless startup result above. The fixture owns only the daemon and its
+default bridge. The public workflow owns node image preparation and all
+deployment resources and retirement.
+
+Mutation compile diagnostic (2026-11-24). M01 campaign
+`1780316149064117` reached the offline baseline compiler and exited 1 under
+operator SHA-256 `0d24651b73b3f8c0d916108343aa13ad2a640efba85724926291bd80ae838aaf`.
+The exact three workers and quota volume independently returned 404,
+with a 200 bridge. The private compiler record exceeded the established
+4096-byte record limit and its tail only identified Cabal's aggregate build
+failure. The next runner writes a bounded excerpt of compiler error lines
+or its captured process output and verifies the resulting record within
+the same limit. The assertion did not run. Evidence is
+`.build/phase1-m01-compiler-diagnostic-live-20261124.log` and
+`.build/phase1-m01-compiler-diagnostic-exact-removal-20261124.log`.
+
+Compiler temporary filesystem (2026-11-24). The independent observer for
+campaign `1781121574517477` found GHC loading a temporary Template Haskell
+shared object from Docker's `noexec` `/tmp`. The exact worker had more
+than 3 GB available on its output mount when the diagnostic first appeared.
+An offline two-module splice reproduced the same mapping refusal on a
+private `noexec` mount and passed when GHC used an executable temporary
+directory. The build command now sets `TMPDIR` to a private member of the
+same kernel-bounded output volume. The generic `/tmp` retains `noexec`.
+Evidence is `.build/phase1-m01-bounded-diagnostic-observer-20261124.log`
+and `.build/phase1-ghc-private-noexec-local-splice-20261124.log`. The prior
+campaign exited 1 before the assertion. The exact three worker IDs and
+volume returned 404 with a 200 bridge in
+`.build/phase1-m01-noexec-exact-removal-20261124.log`.
+
+Rootful fixture isolation (2026-11-24). The first rootful test used an empty
+Docker daemon and returned HTTP 200 to the archive load, followed by exact
+image read-back 404. The daemon was using a containerd snapshotter and its
+diagnostic stream exposed task events from the other daemon's namespace.
+Reconcile stopped before node, volume or network proposals. Supported
+cleanup returned zero and the fixture stopped. A second fixture preflight
+confirmed the private containerd socket and classic `overlay2` on an empty
+daemon, matching the successful rootful runtime's image store. Evidence is
+`.build/phase1-clean-rootful-live-20261124.log` and
+`.build/phase1-clean-rootful-isolated-preflight-20261124.log`.
+Independent read-back additionally found one dangling image record for the
+loaded manifest `29f6cdcc91e8f78bd09d879d72210d6c04db5b976921af338c07580aaab5bf1a`
+in the shared containerd `moby` namespace. The original Docker daemon
+still reported the expected pinned config image. The dangling record
+remains accounted for at `.build/phase1-first-rootful-containerd-observation-20261124.log`.
+At 19:45 America/Toronto, an exact read-only query reconfirmed the shared
+entry, the original Docker daemon identity, its bridge ID, and its pinned
+config image. The entry remains in the shared namespace. Exclusive ownership
+of its backing content and snapshots remains unverified.
+See `.build/phase1-first-rootful-containerd-repeat-observation-20261124.log`.
+
+Reviewed mutation coverage (2026-11-24). Registered Phase 1 variants for
+foreign Docker scope and network, forbidden pull requests, foreign control
+and namespace cleanup, replaced namespaces, controller receipt and node
+binding, unbound removal receipts, unavailable Authority admission, the
+Authority deployment fence and independent node-removal read-back. The M02
+set now includes stale-source, wrong-scope and fabricated-success reports.
+Test selectors and exact source and candidate digests are in
+[mutation_cases.md](mutation_cases.md#phase-1-preliminary-assertion-binding).
+The in-hand campaign `1781529353439883` captured its source and started M01
+before those bindings were added. Each added variant needs its own isolated
+execution evidence.
+
+Clean-runtime acceptance (2026-11-24). From 17:07 to 17:24 America/Toronto,
+`test run phase-01 --runtime-socket PATH` exited zero on the private rootful
+Docker and containerd instance `30fe838a-2a90-4ea7-8e33-76075fbb8f23`.
+A01-01 through A01-06 and A01-08 each recorded `EvidenceChecksSatisfied`,
+successful primary work and confirmed cleanup. The source manifest SHA-256
+was `641def6ec50869a224e2b2668cfa3c234f751275ebdb18c4ce5ffdbafa4a7074`,
+operator file SHA-256 `06aa18dc35973816bd47bec1788ee9ad8ebc12895ef229b928dbb422f6b83ca3`,
+and the case 8 public configuration evidence digest was
+`bc5af79358a3be1f8d6968be3dd0ca2bddf77403b35f05420e802d022e0657e2`.
+The pinned Docker config image returned 404 before preparation and 200
+after it. Independent file SHA-256 observations were
+`50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54`
+for kind and `14bb2d45444f0ece9bb26daadc440f4ca59d51ef64b8782fd5c9c6839efc4a07`
+for the archive. Reports are under
+`.build/scenario-evidence/f0d4fa82d6cf765c4407d1bdae6c6e5d/`.
+
+The original and replacement operations `ddef7cfee55e6171ce5d7062cd587cb8`
+and `52f557b1a2a1bec183eff2eef17772b7` used scope
+`run-d5ab0d26ed71a15ba11f75f994cafe4f` and root generation
+`91c4de47a7d72fa78381e68b8c871ac1`. Sibling operation
+`553d8bdeb807fac52ed231b827f3b45d` used
+`run-4ea1598e450d84170abc66ab687b5fbe`. Independent `/readyz` reads passed
+for all three nodes. Both replacement Pods read their original markers and
+the PVC bound to `pv-a01-02`. The 64 MiB workload completed and the 16 MiB
+workload was OOMKilled in the public scenario. Independent exact reads
+returned 404 for all three containers, volumes and networks, with a 200
+bridge. The exact worker-unit lists were empty after cleanup. The fixture's
+two sockets and default bridge retired. The command log SHA-256 was
+`cece4024fe323c14a19c681e06067305415e56e1f8ad79828f29e7566d246859`.
+Evidence is `.build/phase1-clean-rootful-isolated-live-20261124.log`,
+`.build/phase1-clean-rootful-isolated-live-20261124-independent.log`,
+`.build/phase1-clean-rootful-isolated-marker-20261124.log` and
+`.build/phase1-clean-rootful-isolated-closure-20261124.log`.
+The three publication directories held only the expected birth, send,
+submission and retirement metadata after teardown. Their payload files
+were absent. The exact read-back is in
+`.build/phase1-clean-rootful-publication-accounting-20261124.log`.
+
+Clean-runtime repeat (2026-11-24). From 19:08 to 19:24 America/Toronto,
+the public `test run phase-01 --runtime-socket PATH` exited zero on a second
+private Docker and containerd instance, `22d789e5-3f9c-412e-ae95-31af959fb29b`.
+A01-01 through A01-06 and A01-08 each recorded `PrimarySucceeded`,
+`CleanupConfirmed` and `EvidenceChecksSatisfied`. The exact pinned image
+returned 404 before preparation and 200 afterward, and the independently
+observed kind and archive hashes matched the first run. The operator SHA-256
+was `60cbfaea27e3bb577bc08e9f5184fcf98c1b95d9b56214f6a32cef21855edfc8`,
+the source manifest SHA-256 was
+`9df901f4c5ddc797137caa85425db02bf7a29d4809444602534438c5d9018ebf`, and the
+case 8 public configuration evidence digest was
+`9ed8df2166da78b38cf3e75f4197cbda582472d920c986f3288692188331da4f`.
+Reports are under `.build/scenario-evidence/7c4a7c3f982cac2bac2a2030c8a1f7ff/`.
+
+Primary operation `4d47cab8d5043ba773c3d934d8b31187` and replacement
+`144e502fe3e38a1f9090a5d2525ae365` used scope
+`run-b2c7ef9bb3fb85c00ca3367569987550` and generation
+`0fd6ff2194831ff8bef76f59a96336dd`. Sibling `c67898c5e263e72a728c85c9cec7aea6`
+used scope `run-480e6a9748b8359754ab3a6427a562fb`. An independent observer
+bracketed simultaneous Kubernetes readiness on the two live roots. It then
+confirmed replacement readiness, both retained markers and PVC binding to
+`pv-a01-02`. The public capacity case recorded peak memory of 450,637,824 of
+805,306,368 bytes and 34 of 96 tasks. Exact node, volume and network reads
+for all three operations returned 404 while the private bridge returned
+200. Exact worker-unit lists were empty, both disposable sockets and the
+fixture bridge retired, and the original daemon's bridge retained its ID.
+The command log `.build/phase1-clean-rootful-repeat-final-20261124.log`
+has SHA-256 `4df71ce0ee2e4a3495f885abeec8ba02def4f2535912119a26c254cc760ceb3e`.
+The independent logs are
+`.build/phase1-clean-rootful-repeat-final-20261124-independent.log` and
+`.build/phase1-clean-rootful-repeat-final-closure-20261124.log`.
+The three publication directories retained only birth, send, submission and
+retirement metadata. The input names were absent in the independent
+`.build/phase1-clean-rootful-repeat-final-publication-20261124.log` read-back.
+
+Canonical gate follow-up (2026-11-24). Operator SHA-256
+`467c70b351aa852b3a7e87926808d84be52fdd7ad05fdbb90fa65b01c9385871`
+failed policy before the build and test gate. The keeper receipt used a
+nested `case` in a lambda, and the Docker read-back comment contained a
+token reserved by the subprocess checker. The corrected source keeps the
+same keeper sequence and adapter behavior. The two Docker mutation preimage
+and candidate digests were refreshed. Failed evidence is
+`.build/phase1-current-full-catalog-canonical-20261124.log`.
+The corrected gate passed policy and then flagged formatting in 14 Haskell
+files. The pinned Fourmolu 0.19.0.1 formatted only those paths. All seven
+affected mutation sites still occur exactly once. Their source, binding and
+candidate digests were refreshed without changing the substitution text.
+The second failed gate is `.build/phase1-canonical-style-recheck-20261124.log`.
+The version 2 receipt gate required one final layout correction in its write
+call. That correction cleared formatting. The full pinned HLint scan then
+found one `whenMaybe` hint in the Docker keeper adapter. The adapter now
+uses the existing `guard` and `traverse` operations for the same conditional
+action. Targeted pinned format and lint checks passed. The failed gate logs
+are `.build/phase1-canonical-receipt-v2-20261124.log` and
+`.build/phase1-canonical-final-format-20261124.log`.
+The next gate passed policy, formatting, lint and the warning-clean build.
+It ran 10,221 main unit tests. Three CLI snapshots still omitted
+`test cleanup` and `test run --runtime-socket`. The existing CLI renderers
+regenerated only the command tree, registry JSON and leaf help snapshots.
+The four generated CLI output tests passed against those files. The failed
+gate is `.build/phase1-canonical-disk-hint-20261124.log`.
+The canonical rerun finished at 19:08 America/Toronto with exit zero and
+10,221 main, 27 Authority admission, 35 control-plane authentication and
+935 authenticated transport tests passed. Its operator SHA-256 was
+`60cbfaea27e3bb577bc08e9f5184fcf98c1b95d9b56214f6a32cef21855edfc8`.
+The log `.build/phase1-canonical-cli-golden-20261124.log` has SHA-256
+`4f49bdbf9fdcf7a3b6d58bf047a73c0b9fb8748908c5fd5f8a49e12e561496e8`.
+The same operator then started a repeat clean-runtime scenario on private
+daemon `22d789e5-3f9c-412e-ae95-31af959fb29b`; its initial exact image
+lookup returned 404. The repeat log is
+`.build/phase1-clean-rootful-repeat-final-20261124.log`.
+
+Isolated M01 baseline (2026-11-24). In campaign `1781529353439883` a
+fresh build reached selection and passed its designated test. The held
+keeper observer independently read the owner-private baseline executable,
+SHA-256 `615153e2162069418217c03e05c7140e7f7de7aa898285f50c958e440cfe608e`.
+The baseline container had network mode `none`, an 8 GiB limit for memory
+and for combined memory and swap, a four-CPU quota and a 4,096-PID limit.
+The observer confirmed read-only bind
+mounts, generic `noexec` `/tmp`, and compiler temporary files on the one
+bounded output volume. The mutant build has begun. Evidence is
+`.build/phase1-mutation-current-baseline-binary-20261124.log` and
+`.build/phase1-mutation-campaign-tmpdir-isolation-20261124.log`.
+
+M01 receipt boundary (2026-11-24). The isolated mutant compiled and the
+unchanged test returned `TestAssertionFailures 1 ["context.rejects_root_alias"]`.
+The outer runner observed workspace and quota retirement. Its final receipt
+was 4,186 bytes and exceeded the 4 KiB metadata reader limit. The command
+exited 1 with `MutationInconclusive`. The exact eight container IDs and
+quota volume independently returned 404, with a 200 bridge and no retained
+case directories. The command log SHA-256 was
+`144a75531993b33a3fb0534280ae8371e3d6bce84e581cb366a2b1078854e3f4`.
+Evidence is `.build/phase1-mutation-campaign-tmpdir-20261124.log` and
+`.build/phase1-mutation-receipt-overflow-closure-20261124.log`.
+
+Decision (2026-11-24). The [evidence rule at line 98](development_plan_standards.md#evidence-and-live-campaigns)
+requires the source, test, outcome and cleanup binding to survive in the
+receipt. Version 2 case receipts use a 16 KiB limit for creation and
+read-back. Other metadata and historical version 1 receipts keep their
+4 KiB limit. The writer checks the serialized size before creating a file.
+Campaign `1781529353439883` remains inconclusive and the original receipt
+remains available for diagnosis. Re-run the registered campaign with the
+new receipt version.
+
+Version 2 receipt canary (2026-11-24). The 45 focused evidence tests passed,
+including a 4,300-byte detail accepted only in the new version and refusal
+above the new limit. Public `test status 1781529353439883` refused the old
+oversized receipt. Public `test cleanup 1779052358050524` still confirmed
+the absence of the previously recovered volume using its valid version 1
+record. The full registered campaign `1783840184764378` started at 17:45
+America/Toronto using operator SHA-256
+`eb417fecb42cd1abcf53142fab728a9411f07c6f31db80c7383d6b4e66350d4b`
+and source manifest SHA-256
+`51239b38afc0eb68aacd14c9bea09d612553bdd5d69f71d664a16ee6f9e1f1a5`.
+It retains the existing per-stage budgets and has a 20-hour outer deadline.
+The exact Docker retirement observer follows each case receipt. Evidence is
+`.build/phase1-current-full-mutation-catalog-20261124.log` and
+`.build/phase1-current-full-mutation-retirement-20261124.log`.
+
+Qualified overlapping-root variant (2026-11-24). Campaign
+`1783840184764378` completed `M01` at 18:15 America/Toronto. The baseline
+passed and the compiled mutant failed exactly `context.rejects_root_alias`.
+The synchronized 4,186-byte version 2 receipt records `MutationKilled`
+and `qualified=true`; its SHA-256 is
+`4e4983064381d87aa4879b9b7ccb490c3bf95e75540bc15c785ab4bf7b938745`.
+The independent observer read exact 404s for eight containers and the
+quota volume, a 200 for the bridge, and no retained case workspace. Held
+volume reads identified the baseline raw binary SHA-256
+`459686808916573a152b1bd0a1d2d2dae553e16f2098ff997f6dbd29d75ab6d8`
+and the mutant raw binary SHA-256
+`2b648146110aa5555cc262c0f27a228b75446ba6beed6aaca8b3f1bd2e6fda34`.
+Public `test status` also read the exact case receipt. The same campaign
+has started `M00-future-dependency`. Other variants and calibrations
+remain pending. Evidence is `.build/phase1-v2-verified-case-status-20261124.log`,
+`.build/phase1-v2-current-case-binary-20261124.log`,
+`.build/phase1-v2-current-mutant-binary-20261124.log` and the campaign
+retirement observer above.
+
+Qualified future-dependency replay (2026-11-24). In the same campaign,
+`M00-future-dependency` finished at 18:40 America/Toronto with a compiled
+mutant failure exactly at `plan.rejects_future_dependency`. The 4,283-byte
+version 2 receipt records `MutationKilled` and `qualified=true`, SHA-256
+`b4e42080089ff8a1ff647b3b7d2802a6cb924be83a6e99782f002e6221ee6308`.
+Independent observation confirmed eight exact worker 404s, quota volume
+absence, a 200 bridge and no remaining case workspace. The campaign
+started `M00-invalid-remover` next.
+`M00-invalid-remover` qualified at 19:06 America/Toronto after its compiled
+mutant failed only `plan.requires_valid_remover`. Its 4,263-byte receipt
+SHA-256 is `4f169abb7eee2ab5adcbfa84c4d253f53671edc71ff2e270695a6d73b259caed`.
+Independent read-back confirmed all eight workers and the volume absent,
+the positive bridge, and no remaining workspace. Three cases are now
+qualified in the active campaign.
+
+Qualified missing-evidence replay (2026-11-24). In campaign
+`1783840184764378`, `M00-missing-evidence` qualified at 19:33 America/Toronto
+with a compiled mutant failure only at `plan.requires_bound_evidence`.
+The 4,279-byte version 2 receipt has SHA-256
+`1be6d5d773f38622bb9f8a942afedfcadc7a42487fd86b906bef47ce3ff90017`.
+The independent observer confirmed all eight exact worker IDs and the
+quota volume absent, the bridge present, and the case workspaces retired.
+At 19:59 America/Toronto, `M00-foreign-evidence` also failed only
+`plan.requires_bound_evidence` and qualified with the same independently
+confirmed cleanup. Its 4,279-byte receipt SHA-256 is
+`e986ed0854b8d7fcdfa3bd6bcdd6ec721dc779b3626ec5bad79308d029ca4fcd`.
+Five cases are qualified. `M00-missing-current-source` started next.
+That case qualified at 20:25 America/Toronto when the compiled mutant
+failed only `plan.rejects_missing_source`. The 4,253-byte receipt SHA-256
+is `bb9183a6c91bf219b0864cf3874f067a5288ff26fc8fbfd3d63c7a9597f07621`.
+The independent observer confirmed eight absent workers, quota volume
+absence, the 200 bridge and workspace retirement. All five M00 cases and
+the overlapping-root M01 case have qualified in campaign `1783840184764378`.
+`M01-artifact` started next.
+It qualified at 20:47 America/Toronto when its compiled mutant failed only
+`artifact.rejects_changed_bytes`. Its 4,213-byte receipt SHA-256 is
+`dd50aa9d3c80afb4d127d080093aa6cb87025b010f2946c825df07226699c762`.
+The independent observer confirmed all eight worker IDs and the quota volume
+absent, the bridge present and the case workspaces retired.
+`M01-unconfirmed-node` advanced next, with seven cases qualified so far.
+At 21:12 America/Toronto, its compiled mutant failed only
+`delete.rejects_unconfirmed_node`. The 4,247-byte receipt SHA-256 is
+`1b27faaf6f336786234235c4093736949fafe6481e985777cd780482fe3d1d49`.
+The independent observer confirmed all eight workers and the volume absent,
+the bridge present and the workspaces retired. Eight cases are qualified.
+At 21:38 America/Toronto, `M01-unknown-recreate` qualified with the sole
+compiled assertion failure `recreate.rejects_unknown_intent` and the same
+independent cleanup observations. Its 4,237-byte receipt SHA-256 is
+`b6947153644bd9aa51594daec8e68412e506a6ea9dd8dcacfa326586a0fce0b5`.
+Nine cases are qualified. `M01-external-family` started next.
+At 22:03 America/Toronto it qualified with the sole compiled assertion
+failure `controller.rejects_external_family`. Its 4,250-byte receipt SHA-256
+is `0c63d16a6b285590412656afd7370dc762ec49de411baaf4753f9a65f39a5f6b`.
+The independent observer confirmed eight workers and the quota volume
+absent, a 200 bridge and workspace retirement. Ten cases are qualified.
+`M01-failed-removal` qualified at 22:26 America/Toronto with the sole compiled
+assertion failure `delete.rejects_failed_removal`. Its 4,224-byte receipt
+SHA-256 is `71ba584ffc5d395747a9033559575823cde097ed5edb6912b5061c8ab5037b3e`.
+The independent observer confirmed the same exact cleanup. Eleven cases are
+qualified. `M01-foreign-control` started next.
+At 22:52 America/Toronto, `M01-foreign-control` qualified with the sole
+compiled assertion failure `delete.rejects_foreign_control`. Its 4,234-byte
+receipt SHA-256 is
+`e97141c3f2a020f353e3dc008b8fc53d9b20445f86c6c1f9c9a8c1caa7c7cf15`.
+The independent observer confirmed eight workers and the quota volume absent,
+the bridge present and the workspace retired. Twelve cases are qualified.
+`M01-unbound-receipt` qualified at 23:15 America/Toronto, with the sole
+compiled assertion failure `delete.rejects_unbound_receipt` and the same
+independent read-back. Its 4,236-byte receipt SHA-256 is
+`65b649e6567fe74370ccc58e351206c91787c4b8c6f729f6ff5e48fa61a16aac`.
+Thirteen cases are qualified. `M01-foreign-controller-receipt` started next.
+It qualified at 23:37 America/Toronto with the sole compiled assertion
+failure `controller.rejects_foreign_receipt`. Its 4,268-byte receipt
+SHA-256 is `0c7ccde62489792a5d67610de493b319f12f4997e9dd6581e82f1dd4cb598721`.
+The independent observer confirmed exact retirement of eight workers, the
+volume and case workspaces while observing the bridge. Fourteen cases are
+qualified. `M01-wrong-controller-node` started next.
+An additional read-only audit at 23:51 independently matched the 14 durable
+case receipts to their launch intents and worker receipts. The original
+Docker daemon and exact bridge bracketed 112 worker 404s and 14 quota volume
+404s. All 14 case workspace names were absent. See
+`.build/phase1-current-full-mutation-bracketed-sample-20261124.log`.
+
+Controller node mutation (2026-11-25). At 00:03 America/Toronto,
+`M01-wrong-controller-node` qualified with the sole compiled assertion
+failure `controller.rejects_wrong_node`. Its 4,220-byte receipt SHA-256 is
+`4c479d3d202b582e0e6b0ad9c15562b6fb227ed68f2cc377c727909eaaff3bbd`.
+The independent observer confirmed exact retirement of eight workers, the
+quota volume and the case workspace, while observing the bridge. Fifteen
+cases are qualified. `M01-foreign-namespace-cleanup` started next.
+At 00:26 America/Toronto, it qualified with the sole compiled assertion
+failure `network.rejects_foreign_namespace_cleanup`. Its 4,271-byte receipt
+SHA-256 is `d92b434d54725c708f8bdfbaafa0c927f1dbbe0f0086283c53bec4e973a3b62f`.
+The independent observer confirmed eight exact worker 404s, the quota
+volume absent, the bridge present and the workspace retired. Sixteen
+cases are qualified. `M01-replaced-namespace` started next.
+At 00:49 America/Toronto it qualified with the sole compiled assertion
+failure `network.rejects_replaced_namespace`. Its 4,243-byte receipt
+SHA-256 is `0c1c9e70c9acb76de2abac8cdf7f67c9afc21180d2d13848533acd8b359d7e61`.
+Independent exact cleanup checks passed for all eight workers, the volume
+and workspace while the bridge was present. Seventeen cases are
+qualified. `M01-foreign-scope` started next.
+At 01:12 America/Toronto, that case qualified with the sole compiled
+assertion failure `context.rejects_foreign_scope`. Its 4,212-byte receipt
+SHA-256 is `ab5642a1c507fed01061ed578a3e660adf6d71e0294646ecb14a63b6a906358c`.
+The independent observer repeated the exact worker, quota volume, workspace
+and positive bridge checks. Eighteen cases are qualified.
+At 01:34 America/Toronto, `M01-foreign-network` qualified with the sole
+compiled assertion failure `context.rejects_foreign_network`. Its 4,229-byte
+receipt SHA-256 is
+`94877b9c41dc2bead5e70b17ca402904737c34fca040287e453e80b25203b908`.
+All eight workers and the quota volume independently returned 404. The
+workspace was absent and the bridge returned 200. Nineteen cases are
+qualified. `M01-unowned-pull` started next.
+At 02:00 America/Toronto, it qualified with the sole compiled assertion
+failure `context.rejects_unowned_pull`. The 4,223-byte receipt SHA-256 is
+`63dbf4be393f60d5d656af834bca429e386376ad40d990ecaea4a6156b7dd7f3`.
+The independent observer confirmed the same exact worker, volume and
+workspace retirement with the bridge present. Twenty cases are qualified.
+`M01-authority-unobservable` started next.
+It qualified at 02:23 America/Toronto with the sole compiled assertion
+failure `delete.requires_observed_admission`. Its 4,265-byte receipt
+SHA-256 is `11774a671adf955c119df5705c16325576101d33217eaac54a9f5716303a245a`.
+All eight exact worker and quota volume 404s were independently observed,
+with a 200 bridge and the case workspace absent. Twenty-one cases are
+qualified. `M01-authority-fence` started next.
+It qualified at 02:46 America/Toronto with the sole compiled assertion
+failure `delete.fences_authority_deployment`. Its 4,258-byte receipt SHA-256
+is `c349fca548d5f351f4df31bf75f3fea68fbfb0b847168091ea57c5149634cef9`.
+Independent Docker reads confirmed eight worker IDs and the quota volume
+absent with a 200 bridge, and the case workspace names were absent.
+Twenty-two cases are qualified. `M01-receipt-only-removal` started next.
+It qualified at 03:11 America/Toronto with the sole compiled assertion
+failure `delete.requires_independent_removal`. Its 4,254-byte receipt
+SHA-256 is `51007e50bedc122f8cfdcc6a3470b064c47865e633e8803241d5dce4c9db22df`.
+The independent observer confirmed eight workers and the quota volume absent,
+the bridge present and workspace retirement. All 18 kind M01 cases and all
+five M00 cases have qualified. The first M02 evidence case started next.
+The independent audit at 02:48 also bracketed exact Docker reads for the
+first 22 cases with the original daemon and bridge, confirming 176 worker
+404s, 22 quota volume 404s and no case workspaces. See
+`.build/phase1-current-full-mutation-bracketed-sample-20261125.log`.
+
+Evidence-validation mutations (2026-11-25). At 03:34 America/Toronto, `M02`
+qualified with the sole compiled assertion failure
+`evidence.rejects_unbound_result`. Its 4,201-byte receipt SHA-256 is
+`bf06cc31ef357a6e91f923ef1eb45646d61f6c80999035b4ef8960bd219be032`.
+The independent observer confirmed exact Docker absence of eight workers
+and the quota volume, a 200 bridge, and workspace retirement. Twenty-four
+cases are qualified. `M02-stale-source` started next.
+At 03:57 America/Toronto, it qualified with the sole compiled assertion
+failure `evidence.rejects_unbound_result`. Its 4,232-byte receipt SHA-256 is
+`9e256f62edfc231ef608a935308e629076851e951fdbe2bd68d55ad2415ad70e`.
+Independent worker, quota volume and workspace retirement checks passed,
+with the exact bridge present. Twenty-five cases are qualified.
+`M02-wrong-scope` started next.
+It qualified at 04:19 America/Toronto with the sole compiled assertion
+failure `evidence.rejects_unbound_result`. Its 4,231-byte receipt SHA-256 is
+`d3dd6be2db4c25672e40068091ee57a9febc9daeec3ed1adcbbc6c90c4dde896`.
+The independent observer confirmed eight exact worker 404s, the quota
+volume absent, the bridge present and the workspace retired. Twenty-six
+cases are qualified. `M02-fabricated-success` started next.
+At 04:42 America/Toronto, it qualified with the sole compiled assertion
+failure `evidence.rejects_unbound_result`. Its 4,244-byte receipt SHA-256 is
+`9b3064a8fe00a586c69f6db087411b035d4162d2c113a4bfcb0e2372948e7664`.
+All eight worker IDs, the quota volume and the workspace retired under
+independent observation with the bridge present. All 27 required source
+mutations are killed. The executor's three outcome calibrations remain.
+
+Executor calibration (2026-11-25). At 05:05 America/Toronto,
+`calibration-survivor` qualified with `MutationSurvived`. The selected
+unchanged assertion passed after the compiled mutation. Its 4,042-byte
+receipt SHA-256 is
+`2cd512fea0712cf9babc9516cb619c5660e3c0cc0672a3b947ff0ffdff407bf4`.
+The independent observer confirmed exact retirement of eight workers, the
+quota volume and the case workspace, with the bridge present.
+`calibration-invalid` started next.
+It qualified at 05:27 America/Toronto with `MutationInvalid`. The mutant
+build exited 1 on the seeded syntax fault. Its 3,399-byte receipt SHA-256
+is `828d33b637fb5401a4825b447b3374ae5338a91582a2f02f65333dd4766c303e`.
+All six launched workers and the quota volume independently returned 404,
+the bridge returned 200, and the case workspace was absent.
+`calibration-timeout` started last.
+At 05:50 America/Toronto it classified `MutationInconclusive` and retained
+`qualified=false`. The selected invocation exited 1 with no stdout and 879
+stderr bytes, which the typed decoder classified as `TestUnobservable`.
+Campaign `1783840184764378` exited 1 after 29 qualified cases. All eight
+timeout case workers and the quota volume returned exact 404s with a 200
+bridge. The failed run retained the case's two workspace directories and
+its 3,966-byte receipt, SHA-256
+`db522a08c70ffec6f5b1221736c4b158c5d4d42fe90465b164a471882d2c1705`.
+
+Decision (2026-11-25). The exact unit executable reproduced a Tasty option
+parse failure for `--timeout 1ns`. With `--timeout 0ms`, all 64 repetitions
+returned exit 1 with only the typed timeout marker for the same exact test.
+Use that expired test deadline in the timeout calibration. This follows
+the mutation replay requirement at line 80 of
+[development_plan_standards.md](development_plan_standards.md). The other
+29 cases run unchanged commands and retain their isolated results. The
+bounded reproducer is `.build/phase1-timeout-parser-reproducer-20261125.log`.
+A corrected, isolated public replay of `calibration-timeout` is required.
+The corrected operator SHA-256 is
+`72b9ef0c081fd894a6d057cbcbad1361573f3ed1061f5d24903608c658239fc3`.
+It began public replay `1827568496146719` at 05:54 America/Toronto with
+source manifest `3f8494ed0d3442ca74a7d3b9c604365eceeb4bace02933a29402fc68c93956bf`.
+The command log is `.build/phase1-timeout-calibration-replay-20261125.log`.
+At 06:18 America/Toronto, the corrected replay exited zero. Its baseline
+passed and its compiled mutant returned `TestTimedOut`. The executor
+classified it `MutationInconclusive` and retained `qualified=true`. The
+4,135-byte receipt has SHA-256
+`5023ed05a3ce1fad4e3317bed21ceeb0f7817583357014615d65b82c53c93222`.
+The original Docker daemon and exact bridge bracketed eight worker 404s
+and the quota volume 404, and the case workspace names were absent. See
+`.build/phase1-timeout-calibration-bracketed-20261125.log`.
+The same bracketed audit independently reconfirmed 230 exact worker 404s,
+29 volume 404s and workspace retirement for the 29 unchanged cases in
+`.build/phase1-qualified-mutation-prefix-20261125.log`. Together these
+records establish 27 targeted kills and all three expected calibrations.
+
+Canonical gate after the timeout correction (2026-11-25). Operator
+SHA-256 `72b9ef0c081fd894a6d057cbcbad1361573f3ed1061f5d24903608c658239fc3`
+ran `prodbox dev check` with Fourmolu 0.19.0.1. Policy, formatting, lint,
+the warning-clean build and all four gated suites passed. The suites ran
+11,218 tests in total. The command exited zero at 06:48 America/Toronto.
+Log `.build/phase1-canonical-timeout-calibration-20261125.log`, SHA-256
+`2b90dc7debf0d47a1c457b2ff9c54b292f2084d96ace5b8554884629e4dca4c2`.
+
+Historical publication inventory (2026-11-24). A read-only comparison at
+17:48 America/Toronto found 28 directories whose keys matched a retained
+test operation and whose names and modes matched terminal metadata. Among
+unmatched keys, 495 held only the expected terminal metadata names and nine
+still had at least one published input filename. This comparison observed
+names, modes and operation IDs. It did not open the publication payloads
+or establish terminal state or cleanup admission for unmatched keys. The
+inventory is `.build/phase1-earlier-publication-shapes-20261124.log`.
+
+Historical fixture provenance (2026-11-24). A follow-up found that eight of
+the nine input-bearing keys match the paired operation and cleanup IDs
+generated by [ProbeVerifierBudget.hs](../test/qualification/ProbeVerifierBudget.hs)
+at line 152.
+Each also had the corresponding same-operation family, verifier and
+successor publication names. One matched the exact operation in
+`.build/phase1-rts-probe-docker-preflight-64m.log`; another matched the
+successor ID in `.build/phase1-rts-probe-managed-traced-20261124.log`.
+The ninth key had the repeated PID-and-monotonic operation key shape from
+[KindControllerInput.hs](../test/qualification/KindControllerInput.hs)
+at line 306.
+The user manager listed no units matching any of the nine operation IDs.
+This scopes the historical fixture investigation. No payload was opened,
+and key shape and current unit inventory do not supply a retained retirement
+proof for any of the nine. Exact names, ownership, timestamps, and sibling
+keys are in `.build/phase1-earlier-publication-fixture-provenance-20261124.log`.
+At 19:35 America/Toronto, a read-only observer linked to the current
+publication library reopened each exact birth record under its lock and
+verified the never-sent fence before and after matching both input inode
+identities to that birth. All nine passed. The observer reads birth/send
+metadata and file status only. The repeat run's possible-send marker
+triggered the expected refusal in the same observer. No payload was opened
+or retired. The log
+`.build/phase1-earlier-publication-fence-observation-20261124.log` includes
+the observer identity and the nine exact results. The named public mutation
+cleanup handles an unused quota volume only. The historical standalone
+fixtures no longer have a claimed source root to drive registered teardown.
+
+Earlier cleanup disposition (2026-11-25). At 05:29 America/Toronto, a
+read-only audit bracketed observations with the original Docker daemon and
+bridge. It confirmed the exact old node and volume 404s, no listed operation
+units, and the exact scoped network still present with zero endpoints. See
+`.build/phase1-earlier-network-bracketed-20261125.log`.
+[AGENTS.md](../AGENTS.md) at line 71 requires completing in-hand lifecycle
+operations or recording their recovery disposition. Its lines 67 and 77
+also require closing the phase's cleanup obligations and getting explicit
+authorization for an exceptional manual cleanup. The exact network and
+nine historical input pairs remain pending that authorization. Preserve the
+original supported-path refusals and the old operation records. A hand
+action, if authorized, cannot qualify an acceptance run under the
+[campaign standards](development_plan_standards.md#evidence-and-live-campaigns).
+The 05:29 publication fence repeat confirmed the nine exact never-sent
+births and both bound inputs for each, with the same read-only observer.
+See `.build/phase1-earlier-publication-fence-repeat-20261125.log`.
+
+Earlier cleanup settled (2026-11-25). The operator authorized these exact
+hand actions and standing local test fallback cleanup under
+[AGENTS.md](../AGENTS.md#autonomous-test-cleanup). At 12:13 America/Toronto,
+the recorded test root, generation, operation, socket, daemon and creation
+receipt matched while the root lease was held. No operation unit or network
+endpoint remained, and the exact node and volume returned 404. The exact
+network delete returned 204. Independent GET returned 404 with the original
+daemon and bridge confirmed before and after. The original scope, intent and
+creation receipt retained their digests. The first verifier invocation
+stopped before contacting Docker because its connection wrapper lacked a
+context-manager interface. The corrected attempt is recorded in
+`.build/phase1-detached-network-hand-action-verified-20261125.log`, SHA-256
+`99e6fc4dfc75e7973b66608bb97456c16ddcb6ce39c4675b554e63a99cd514f3`.
+
+At 12:14 the existing journaled never-sent retirement routine retired the
+nine exact fixture input pairs. Each birth proof matched the original
+payload identities and publication directory. Independent no-follow
+read-back confirmed all 18 inputs and their quarantine names absent, with
+the original birth and submission metadata and the new terminal records
+present. See `.build/phase1-publication-cleanup-hand-action-20261125.log`,
+SHA-256 `caf605a6149c8e746249daf5123049e6b2e5637f496569b8189cc95c675bf1c5`.
+These hand actions settle the failed-run residue. The earlier refusal and
+the two supported clean runs retain their original verdicts. The shared
+containerd cache observation above carried no exclusive test ownership and
+no cleanup claim applies to it.
 
 Verifier isolation work in progress (2026-11-23): the failed probe cleanup
 family and original kind family use the same systemd slice, so a successor in
@@ -10022,11 +11463,11 @@ at this point; owned removals L04 and L05 are the only open completion item.
 
 - [x] **P01-T01** — Refactor the typed CommandSpec/parser/dispatch boundaries and visibility model. Add explicit --config, minimal bootstrap context and scoped diagnostics; activate only completed commands, without successful future-feature stubs.
 - [x] **P01-T02** — Implement production/test identity and safe path construction: distinct project roots, kind names, mounts, kubeconfigs, ports, networks, metadata and resource ownership. Reject overlap, symlink escape, foreign context and ambient target selection before effects.
-- [ ] **P01-T03** — Implement the kind adapter with exact host extraMounts, deterministic PV binding, pinned node/bootstrap artifact identity and explicit node port reservations for the accepted MetalLB/Envoy publication contract. Constrain kind's Docker effects to the admitted scope, including duplicate-network removal and image pulls, and preserve interrupted-operation recovery. Existing RKE2 identity import is not new enrollment. Reopened for the controller completion and recreation-record defects identified below.
+- [x] **P01-T03** — The kind adapter binds exact host extraMounts, deterministic PV binding, pinned node/bootstrap artifact identity and explicit node port reservations for the accepted MetalLB/Envoy publication contract. It constrains Docker effects to the admitted scope, including duplicate-network removal and image pulls. Both clean-runtime runs passed the public controller completion, interrupted removal and same-root recreation regressions. The earlier failed operation's recovery disposition and the compiled mutation campaign remain open in the evidence record.
 - [x] **P01-T04** — Implement management CNI policy enforcement and host/node capacity discovery, real requests/limits/quotas and a funded simultaneous management/secret-worker envelope before later secrets work.
-- [x] **P01-T05** — Implement the common real scenario/evidence runner, independent evidence validator and bounded source-mutation executor. Bind outcomes to actual source/build/test identity; distinguish detected, surviving, invalid and inconclusive calibration faults.
-- [ ] **P01-T06** — Activate early control removal only for exact new identities that cannot have admitted cloud effects. Foreign/existing/unknown identities refuse; do not bypass Phase-3 obligation semantics. Reopened for the unconfirmed node-create attempt defect identified below and its required real regression.
-- [ ] **P01-T07** — Run real kind recreation, cross-environment negative controls, allow/deny connections, capacity worker completion, evidence/mutation calibration and outer cleanup. Re-run M00 through the new automation. Earlier evidence remains historical; the revised runner and mutation catalog require their own validation.
+- [x] **P01-T05** — The common scenario runner, independent evidence validator and bounded mutation executor bind outcomes to source, build and test identity. The 27 targeted compiled kills and the three outcome calibrations passed with independent worker and workspace retirement observations for each qualifying case.
+- [x] **P01-T06** — Activate early control removal only for exact new identities that cannot have admitted cloud effects. Foreign, existing, and unknown identities refuse. Bind and fence the original teardown admission before removing the control API. Exercise interruption after node or volume removal, exact resource read-back on resume, and missing-admission refusal. Preserve the unconfirmed node-create regression below and the Phase 3 obligation boundary.
+- [x] **P01-T07** — The clean kind runs exercised recreation, cross-environment controls, allowed and denied connections, and capacity. The isolated mutation campaign replayed M00, M01 and M02, and the corrected timeout replay completed executor calibration. Independent observations confirmed cleanup for all qualifying scopes.
 Decision (2026-11-22): the prior Phase 1 runner explicitly assumed that the
 selected root already contained the kind tool and archive
 ([Phase01Runner.hs](../src/Prodbox/Test/Phase01Runner.hs), lines 150–155), while
@@ -11526,7 +12967,7 @@ unsafe parent without changing its permissions. The 44 preparation tests and
 the reviewed-manifest binding test also passed, as did targeted HLint, the
 documentation check and `git diff --check`. No container or mutant was run.
 
-- [ ] **P01-T08** — Provide supported test preparation for the pinned kind executable and node OCI archive, including bounded acquisition, digest/read-back verification and exact scoped import; the public harness must prepare its own declared prerequisites without hand-created Docker images. Preserve offline retained-artifact use, isolate all scopes and refuse unknown or changed sources before effects.
+- [x] **P01-T08** — Provide supported test preparation for the pinned kind executable and node OCI archive, including bounded acquisition, digest/read-back verification and exact scoped import; the public harness prepares its own declared prerequisites without hand-created Docker images. Both clean A01-08 runs verified retained artifacts through recreation and exercised changed, missing and foreign inputs before effects.
 
 ## Real acceptance and independent observation
 
@@ -11534,14 +12975,14 @@ After implementing the active slice, run the built operator against explicit own
 
 The linked catalog defines the exact real workflow and observer for each case:
 
-- [ ] **A01-01** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Historical evidence (2026-11-19): case 1 recorded scope, readiness, cleanup absence and host-data retention, with Docker inventories identical before and after. The current implementation still needs the full two-environment case and revised public completion behavior validated.
-- [ ] **A01-02** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Historical evidence (2026-11-19): a Pod-written marker survived removal and recreation on the same root and generation, with distinct node IDs and archived history. The full case requires current-build evidence including the distinct wrong-mount and changed-generation controls.
-- [ ] **A01-03** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Historical evidence (2026-11-19): `test run phase-01` case 3 recorded thirteen adverse observations, including foreign same-name network, ambient kubeconfig, symlinked/foreign/nested roots, wrong generation, unavailable image, cross-environment and sibling port/name conflicts. Port and name checks are point-in-time, not reservations. The revised fixture ownership, listener settlement and retained-scope observations require a new real run.
-- [ ] **A01-04** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Historical evidence (2026-11-19): real sockets under the pinned management policy showed labelled access, unlabelled denial and restored access when the policy was removed; the disposable namespace was removed. The revised controller-settlement gate and current build require a new run. Persistent workload enforcement belongs to Phase 2.
-- [ ] **A01-05** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Historical evidence (2026-11-19): case 5 recorded admission, a one-CPU refusal, kernel slice peaks, Pod memory limits and a `ResourceQuota` adverse control as described at the quota note above and in the reference evidence. The revised runner and current declared envelope require validation against the current build.
-- [ ] **A01-06** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Historical evidence (2026-11-19): case 6 accepted an untampered stored case-1 report and rejected fabricated, missing, stale, wrong-scope and missing-report variants. The revised scenario bindings and current build require a new run; validation was in the runner process.
-- [ ] **A01-07** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result. Historical evidence (2026-11-19): the isolated mutation runner recorded M01 and M02 kills and the survivor, invalid-build and timeout calibrations. The expanded M01 catalog and current source require a new isolated run.
-- [ ] **A01-08** — execute and record the cataloged automatic-artifact preparation case, independent observation, adverse controls and exact cleanup result.
+- [x] **A01-01** — two ready scopes, interrupted teardown, repeat and independent exact cleanup passed in clean-runtime evidence `f0d4fa82d6cf765c4407d1bdae6c6e5d`.
+- [x] **A01-02** — same root and generation, retired original operation, and independently matched host and PV markers on the replacement passed in the clean-runtime run.
+- [x] **A01-03** — foreign scope, network, context, image and artifact adverse controls passed with exact fixture cleanup in the clean-runtime run.
+- [x] **A01-04** — real allowed and forbidden connections and the disabled-policy control passed in the clean-runtime run.
+- [x] **A01-05** — capacity admission, kernel peaks, the 64 MiB and 16 MiB cases and quota adverse controls passed in the clean-runtime run.
+- [x] **A01-06** — the retained ordinary report and the fabricated, missing, stale and wrong-scope controls passed in the clean-runtime run.
+- [x] **A01-07** — Campaign `1783840184764378` supplied 27 intended compiled kills, the survivor and the invalid-build control. Replay `1827568496146719` supplied the typed timeout calibration. Independent read-backs confirmed worker, quota volume and workspace retirement for all 30 qualifying cases.
+- [x] **A01-08** — empty-runtime preparation, exact pinned artifacts, adverse inputs, replacement and independently observed removal passed in clean-runtime evidence `f0d4fa82d6cf765c4407d1bdae6c6e5d`.
 
 A result is incomplete if its independent read-back, scope/source binding, worker settlement, or required cleanup is unavailable. Fixture-only provider behavior, source scans, manifest rendering, process exit and old receipts cannot close a real-system claim. Actual input prerequisites are declared above; no acceptance result depends on an unimplemented larger phase.
 
@@ -12564,12 +14005,12 @@ Update implemented correspondence and generated references as the active slice c
 
 ## Completion record
 
-- [ ] All implementation tasks and owned acceptance cases passed.
-- [ ] Source/binary/image/config identity, independent observations, budgets and evidence availability are recorded without secret values for the current implementation.
-- [ ] Required source mutations are killed by intended assertions or carry reviewed equivalence evidence; no invalid/inconclusive substitute is counted.
-- [ ] Exact resource/credential/worker cleanup and retained-state obligations are terminal for the declared scope.
-- [ ] Owned legacy removals and documentation/generated-reference updates are complete.
-- [ ] Canonical gate and cumulative relevant regressions pass for the current implementation; no hand action is used as qualifying evidence.
+- [x] All implementation tasks and owned acceptance cases passed.
+- [x] Source/binary/image/config identity, independent observations, budgets and evidence availability are recorded without secret values for the current implementation.
+- [x] Required source mutations are killed by intended assertions or carry reviewed equivalence evidence; no invalid/inconclusive substitute is counted.
+- [x] Exact resource/credential/worker cleanup and retained-state obligations are terminal for the declared scope. The earlier failed-run hand actions and independent read-backs are recorded above.
+- [x] Owned legacy removals and documentation/generated-reference updates are complete.
+- [x] Canonical gate and cumulative relevant regressions pass for the current implementation; no hand action is used as qualifying evidence.
 
 Closure requires real kind/control/context behavior and all owned evidence and mutation cases. Cloud admission is impossible; storage retention and actual management isolation/capacity must be proven before secret workers are introduced.
 

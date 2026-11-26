@@ -12,16 +12,27 @@ module Prodbox.Control.KindAbsenceStatus
 import Control.Exception (IOException, try)
 import Prodbox.Config.BootstrapProjection (BootstrapProjection)
 import Prodbox.Control.KindAbsenceVolumeReadback
-  ( AbsenceVolumePhase (AbsenceVolumesAfterRemoval), AbsenceVolumeReadback
-  , observeAbsenceControlVolumesUnderLease )
+  ( AbsenceVolumePhase (AbsenceVolumesAfterRemoval)
+  , AbsenceVolumeReadback
+  , observeAbsenceControlVolumesUnderLease
+  )
 import Prodbox.Control.KindIntent (KindIntentObservation (..), observeKindIntent)
 import Prodbox.Control.KindLease (KindOperationOutcome (..), withRecoveredKindOperation)
 import Prodbox.Control.KindNodeCreateIntent
-  ( KindAbsencePlanRecovery (..), KindAbsenceIdObservation (..), KindAbsenceFootprintObservation (..)
-  , KindAbsenceControlResultObservation
-  , KindAbsenceObservation, KindAbsenceStage (..), KindAbsenceVolumeResultObservation
-  , observeKindAbsenceStage, recoverKindAbsenceControlId, recoverKindAbsenceFootprint
-  , recoverKindAbsencePlan, recoverKindAbsenceVolumeResult, recoverKindAbsenceControlResult )
+  ( KindAbsenceControlResultObservation
+  , KindAbsenceFootprintObservation (..)
+  , KindAbsenceIdObservation (..)
+  , KindAbsenceObservation
+  , KindAbsencePlanRecovery (..)
+  , KindAbsenceStage (..)
+  , KindAbsenceVolumeResultObservation
+  , observeKindAbsenceStage
+  , recoverKindAbsenceControlId
+  , recoverKindAbsenceControlResult
+  , recoverKindAbsenceFootprint
+  , recoverKindAbsencePlan
+  , recoverKindAbsenceVolumeResult
+  )
 import System.Timeout (timeout)
 
 data AbsenceJournalObservation
@@ -30,8 +41,12 @@ data AbsenceJournalObservation
   | AbsenceJournalPlanUnconfirmed
   | AbsenceJournalIdentityUnconfirmed
   | AbsenceJournalFootprintUnconfirmed !String
-  | AbsenceJournalRecorded !String !KindAbsenceObservation !KindAbsenceControlResultObservation
-      ![(FilePath, String, KindAbsenceVolumeResultObservation)] !Bool
+  | AbsenceJournalRecorded
+      !String
+      !KindAbsenceObservation
+      !KindAbsenceControlResultObservation
+      ![(FilePath, String, KindAbsenceVolumeResultObservation)]
+      !Bool
   deriving (Eq, Show)
 
 data AbsenceInventoryObservation
@@ -52,7 +67,8 @@ observeAbsenceInventoryStatus bootstrap = do
           AbsencePlanObserved plan -> do
             inventory <- observeAbsenceControlVolumesUnderLease bootstrap plan AbsenceVolumesAfterRemoval stable
             closing <- try stable
-            pure (AbsenceInventoryObserved inventory (either (const False) id (closing :: Either IOException Bool)))
+            pure
+              (AbsenceInventoryObserved inventory (either (const False) id (closing :: Either IOException Bool)))
           _ -> pure AbsenceInventoryUnconfirmed
       pure $ case result of
         Just (KindOperationCallbackReturned value) -> value
@@ -80,12 +96,22 @@ observeAbsenceJournalStatus bootstrap = do
                   AbsenceFootprintObserved volumes -> do
                     sampled <- observeKindAbsenceStage bootstrap plan (AbsenceControlSampled controlId volumes) stable
                     removal <- recoverKindAbsenceControlResult bootstrap plan controlId volumes stable
-                    results <- traverse (\(path, volume) -> do
-                      observed <- recoverKindAbsenceVolumeResult bootstrap plan controlId volumes volume stable
-                      pure (path, volume, observed)) volumes
+                    results <-
+                      traverse
+                        ( \(path, volume) -> do
+                            observed <- recoverKindAbsenceVolumeResult bootstrap plan controlId volumes volume stable
+                            pure (path, volume, observed)
+                        )
+                        volumes
                     closing <- try stable
-                    pure (AbsenceJournalRecorded controlId sampled removal results
-                      (either (const False) id (closing :: Either IOException Bool)))
+                    pure
+                      ( AbsenceJournalRecorded
+                          controlId
+                          sampled
+                          removal
+                          results
+                          (either (const False) id (closing :: Either IOException Bool))
+                      )
       pure $ case result of
         Just (KindOperationCallbackReturned value) -> value
         _ -> AbsenceJournalOperationUnconfirmed
@@ -93,10 +119,12 @@ observeAbsenceJournalStatus bootstrap = do
 
 renderAbsenceJournalStatus :: AbsenceJournalObservation -> String
 renderAbsenceJournalStatus observation =
-  "Absence-control journal: " ++ show observation
+  "Absence-control journal: "
+    ++ show observation
     ++ "; local records only; resource presence, cleanup and worker settlement are not established.\n"
 
 renderAbsenceInventoryStatus :: AbsenceInventoryObservation -> String
 renderAbsenceInventoryStatus observation =
-  "Absence-control volume inventory: " ++ show observation
+  "Absence-control volume inventory: "
+    ++ show observation
     ++ "; unsettled observation only; cleanup and worker settlement are not established.\n"

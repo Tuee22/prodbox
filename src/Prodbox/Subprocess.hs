@@ -2109,10 +2109,11 @@ captureConfinedKindOperationCommandBefore requested owned budgets sandbox kind c
   runInBoundThread $ do
     ready <- kindWorkerSandboxReady sandbox kind client
     let kindBudget = SealedTool.kindWorkerKindBudget budgets
-        valid = operationSubprocessKind owned == Identity.KindController
-          && operationSubprocessRuntimeMemory owned == SealedTool.sealedToolRuntimePlan kindBudget
-          && validConfinedKindSpec kind spec
-          && maybe False (ByteString.length input <=) (SealedTool.sealedToolInputMaximum kindBudget)
+        valid =
+          operationSubprocessKind owned == Identity.KindController
+            && operationSubprocessRuntimeMemory owned == SealedTool.sealedToolRuntimePlan kindBudget
+            && validConfinedKindSpec kind spec
+            && maybe False (ByteString.length input <=) (SealedTool.sealedToolInputMaximum kindBudget)
     if not (ready && valid)
       then pure (Left (OperationProcessRefused OwnedSubprocessInvalidLimits))
       else do

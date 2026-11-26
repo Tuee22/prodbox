@@ -22,6 +22,7 @@ module Prodbox.Control.BrokerDeploy
   ( deployBroker
   , observeBrokerReadiness
   , brokerNamespace
+  , localBrokerStoreBucket
   , runtimeRepository
   , runtimeImageTag
   ) where
@@ -74,7 +75,7 @@ deployBroker
   -> FilePath
   -> String
   -> String
-  -> ([String] -> IO (Either String (Int, String, String)))
+  -> (Int -> [String] -> ByteString.ByteString -> IO (Either String (Int, String, String)))
   -> (Int -> [String] -> ByteString.ByteString -> IO (Either String (Int, String, String)))
   -> IO [ServiceStep]
 deployBroker socket root node clusterId docker kubectl = do
@@ -124,11 +125,11 @@ deployBroker socket root node clusterId docker kubectl = do
       case built of
         Right (0, _, _) -> do
           let archive = directory </> "prodbox-runtime.tar"
-          saved <- docker ["save", "--output", archive, tag]
+          saved <- docker 120 ["save", "--output", archive, tag] ByteString.empty
           case saved of
             Right (0, _, _) -> do
               size <- try (getFileSize archive) :: IO (Either IOException Integer)
-              imported <- importImageStep "runtime-import" archive tag node
+              imported <- importImageStep docker "runtime-import" archive tag node
               if not (serviceStepOk imported)
                 then
                   pure
@@ -297,13 +298,18 @@ brokerConfigMap clusterId =
       ++ show brokerPort
       ++ " }, bootstrap_store = { store_endpoint = \"http://minio."
       ++ managementNamespace
-      ++ ".svc.cluster.local:9000\", store_bucket = \"prodbox-objects\""
+      ++ ".svc.cluster.local:9000\", store_bucket = \""
+      ++ localBrokerStoreBucket
+      ++ "\""
       ++ concat
         [ ", " ++ field ++ " = \"bootstrap/" ++ clusterId ++ "/" ++ suffix ++ "\""
         | (field, suffix) <- storeKeys
         ]
       ++ " }, limits = { queue_capacity = 64, max_request_body_bytes = 65536, request_deadline_milliseconds = 300000, drain_deadline_milliseconds = 60000 }"
       ++ ", parent_registration = None { parent_cluster_id : Text, parent_authority_endpoint : Text } }"
+
+localBrokerStoreBucket :: String
+localBrokerStoreBucket = "prodbox-objects"
 
 brokerPod :: String -> String
 brokerPod tag =

@@ -4198,9 +4198,15 @@ unitSuite = do
               :: Value
           )
       let decoded =
-            eitherDecode "{\"data\":{\"certificate\":\"-----BEGIN CERTIFICATE-----\\n...\"}}"
+            eitherDecode
+              "{\"data\":{\"serial_number\":\"01:AB\",\"certificate\":\"-----BEGIN CERTIFICATE-----\\n...\"}}"
               :: Either String PkiIssueCertificateResponse
       fmap pkiIssueCertificatePem decoded `shouldBe` Right "-----BEGIN CERTIFICATE-----\n..."
+      fmap pkiIssueCertificateSerial decoded `shouldBe` Right "01:ab"
+      ( eitherDecode "{\"data\":{\"serial_number\":\"../../ca\",\"certificate\":\"invalid\"}}"
+          :: Either String PkiIssueCertificateResponse
+        )
+        `shouldSatisfy` isLeft
   describe "vault orchestration (Sprint 1.36)" $ do
     it "plans the remaining unseal key submissions for a sealed Vault" $ do
       planUnseal (SealStatus True True 3 5 0) ["k1", "k2", "k3", "k4", "k5"]
@@ -21778,7 +21784,8 @@ unitSuite = do
             currentSourceObjectExists root "src/Prodbox/Foreign.hs" `shouldReturn` False
             currentSourceObjectExists root "src/Prodbox/Private.hs" `shouldReturn` False
             currentSourceObjectExists root "src/Prodbox/../../outside.hs" `shouldReturn` False
-            currentSourceObjectExists root "src/Prodbox/Host/Tool.hs" `shouldReturn` False
+            missing <- currentSourceObjectExists root "src/Prodbox/Host/Tool.hs"
+            assertMutationInvariant "plan.rejects_missing_source" (not missing)
 
     describe "Sprint 0.28 widened check-code gate regions" $ do
       it "registers the six AWS create verbs that were outside the table" $
@@ -21930,15 +21937,18 @@ unitSuite = do
         let valid = "| L01 | Old route | 0 | Scope | Proof | Absence | Pending |\n"
             invalid = "| B071 | Old route | 11 | Scope | Pending |\n"
         numericalRemovalOwnerViolations valid `shouldBe` []
-        numericalRemovalOwnerViolations invalid `shouldSatisfy` any (isInfixOf "B071")
+        assertMutationInvariant
+          "plan.requires_valid_remover"
+          (any (isInfixOf "B071") (numericalRemovalOwnerViolations invalid))
         numericalRemovalOwnerViolations (valid ++ valid) `shouldSatisfy` any (isInfixOf "Duplicate")
         numericalRemovalOwnerViolations "" `shouldSatisfy` any (isInfixOf "no removal rows")
 
       it "rejects future numerical phase dependencies including range endpoints" $ do
         let phase field = [("DEVELOPMENT_PLAN/phase_03_fixture.md", "**Prerequisites**: " ++ field)]
         numericalPhaseDependencyViolations (phase "Phases 1–2 complete.") `shouldBe` []
-        numericalPhaseDependencyViolations (phase "Phases 1–4 complete.")
-          `shouldSatisfy` any (isInfixOf "phase 4")
+        assertMutationInvariant
+          "plan.rejects_future_dependency"
+          (any (isInfixOf "phase 4") (numericalPhaseDependencyViolations (phase "Phases 1–4 complete.")))
         numericalPhaseDependencyViolations (phase "Phases 1, 9 complete.")
           `shouldSatisfy` any (isInfixOf "phase 9")
         numericalPhaseDependencyViolations (phase "Phases 1 and `9`; account ready.")
@@ -22057,9 +22067,12 @@ unitSuite = do
             removed = "| L01 | old | 0 | details | Removed |\n"
             pending = "| L01 | old | 0 | details | Pending |\n"
         completedPhaseViolations [(path, body), evidence] removed `shouldBe` []
-        completedPhaseViolations [(path, body)] removed `shouldSatisfy` any (isInfixOf "no available")
-        completedPhaseViolations [(path, body), foreignEvidence] removed
-          `shouldSatisfy` any (isInfixOf "bound to phase")
+        assertMutationInvariant
+          "plan.requires_bound_evidence"
+          (any (isInfixOf "no available") (completedPhaseViolations [(path, body)] removed))
+        assertMutationInvariant
+          "plan.requires_bound_evidence"
+          (any (isInfixOf "bound to phase") (completedPhaseViolations [(path, body), foreignEvidence] removed))
         completedPhaseViolations [(path, body), missingAcceptance] removed
           `shouldSatisfy` any (isInfixOf "evidence does not mention required ID A00-01")
         completedPhaseViolations [(path, body), missingMutation] removed

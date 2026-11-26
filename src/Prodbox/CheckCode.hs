@@ -5012,6 +5012,13 @@ wireFidelityExemptions =
         ++ "The coordinate digest also carries networkFamilyName and the predicate version, "
         ++ "and Provider wire/evidence identity carries networkFamilyName rather than this projection."
     )
+  ,
+    ( "src/Prodbox/Subprocess/SystemdIdentity.hs"
+    , "hostControllerKindEntrypoint"
+    , "The kind controllers share a dispatcher command. Its configuration and request paths "
+        ++ "carry the kind-specific publication namespace, and KindControllerInput binds "
+        ++ "the exact namespace, execution key and request codec before entering a worker."
+    )
   ]
     ++ map
       brokerBoundaryClassifier

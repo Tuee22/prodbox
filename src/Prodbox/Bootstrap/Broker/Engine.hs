@@ -109,6 +109,7 @@ import Control.Monad (unless, void, when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
 import Data.Aeson (Value, encode, object, (.=))
+import Data.Aeson.Types (Pair)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Base64 qualified as Base64
@@ -226,6 +227,7 @@ import Prodbox.Bootstrap.Broker.Program
   , BrokerCapabilityRefs
   , BrokerProgram (..)
   , PkiIssueRequest
+  , VaultPkiIssueReceipt (..)
   , VaultPkiStatus (..)
   , brokerProgramCapabilityRef
   )
@@ -934,7 +936,7 @@ data DecodedBrokerCall (operation :: CapabilityKind) result where
     :: !RequestDigest
     -> !BrokerActionRequest
     -> !PkiIssueRequest
-    -> DecodedBrokerCall 'VaultPkiOperate BootstrapMutationReceipt
+    -> DecodedBrokerCall 'VaultPkiOperate VaultPkiIssueReceipt
   DecodedVaultResetAmbiguousInitialization
     :: !RequestDigest
     -> !BrokerActionRequest
@@ -1223,7 +1225,7 @@ data PreparedExecution (operation :: CapabilityKind) result where
     :: PreparedExecution 'VaultPkiOperate VaultPkiStatus
   ExecuteVaultPkiIssueTestCertificate
     :: !PkiIssueRequest
-    -> PreparedExecution 'VaultPkiOperate BootstrapMutationReceipt
+    -> PreparedExecution 'VaultPkiOperate VaultPkiIssueReceipt
   ExecuteVaultResetAmbiguousInitialization
     :: !InitAmbiguity
     -> !PristineResetProof
@@ -1687,7 +1689,7 @@ data BrokerPhysicalCall (operation :: CapabilityKind) result where
     :: CapabilityRef 'VaultPkiOperate
     -> BootstrapVaultEffectPermit
     -> PkiIssueRequest
-    -> BrokerPhysicalCall 'VaultPkiOperate BootstrapMutationReceipt
+    -> BrokerPhysicalCall 'VaultPkiOperate VaultPkiIssueReceipt
   PhysicalObserveChildRecoveryConsumption
     :: CapabilityRef 'VaultBootstrapMutate
     -> BootstrapVaultEffectPermit
@@ -1906,7 +1908,7 @@ data BrokerInMemoryCall (operation :: CapabilityKind) result where
     :: CapabilityRef 'VaultPkiOperate
     -> BootstrapVaultEffectPermit
     -> PkiIssueRequest
-    -> BrokerInMemoryCall 'VaultPkiOperate BootstrapMutationReceipt
+    -> BrokerInMemoryCall 'VaultPkiOperate VaultPkiIssueReceipt
   InMemoryVaultResetAmbiguousInitialization
     :: CapabilityRef 'VaultBootstrapMutate
     -> BootstrapStoreMutationPermit
@@ -2097,7 +2099,7 @@ data BrokerResponse result where
   BrokerVaultPkiStatusResponse
     :: !VaultPkiStatus -> BrokerResponse VaultPkiStatus
   BrokerVaultPkiIssueResponse
-    :: !BootstrapMutationReceipt -> BrokerResponse BootstrapMutationReceipt
+    :: !VaultPkiIssueReceipt -> BrokerResponse VaultPkiIssueReceipt
   BrokerVaultResetAmbiguityResponse
     :: !BootstrapMutationReceipt -> BrokerResponse BootstrapMutationReceipt
   BrokerChildCustodyPrepareResponse
@@ -2225,7 +2227,12 @@ encodeBrokerResponse = LazyByteString.toStrict . encode . responseObject
         , "status" .= pkiStatusText status
         ]
     BrokerVaultPkiIssueResponse receipt ->
-      mutationObject "vault_pki_issue_test_certificate" receipt
+      object
+        ( mutationFields "vault_pki_issue_test_certificate" (pkiIssueMutation receipt)
+            ++ [ "certificate_serial" .= pkiIssueSerial receipt
+               , "certificate_sha256" .= renderArtifactDigest (pkiIssueCertificateDigest receipt)
+               ]
+        )
     BrokerVaultResetAmbiguityResponse receipt ->
       mutationObject "vault_reset_ambiguous_initialization" receipt
     BrokerChildCustodyPrepareResponse exported ->
@@ -2268,13 +2275,14 @@ encodeBrokerResponse = LazyByteString.toStrict . encode . responseObject
       childDeliveryObject "child_recovery_observe" delivery
 
   mutationObject :: Text -> BootstrapMutationReceipt -> Value
-  mutationObject operation receipt =
-    object
-      [ "operation" .= (operation :: Text)
-      , "changed" .= bootstrapMutationChanged receipt
-      , "mutation_digest"
-          .= renderArtifactDigest (bootstrapMutationDigest receipt)
-      ]
+  mutationObject operation receipt = object (mutationFields operation receipt)
+
+  mutationFields :: Text -> BootstrapMutationReceipt -> [Pair]
+  mutationFields operation receipt =
+    [ "operation" .= (operation :: Text)
+    , "changed" .= bootstrapMutationChanged receipt
+    , "mutation_digest" .= renderArtifactDigest (bootstrapMutationDigest receipt)
+    ]
 
   childDeliveryObject :: Text -> ChildRecoveryDelivery -> Value
   childDeliveryObject operation delivery =
@@ -2627,10 +2635,18 @@ executeInMemoryPreparedPlan engine boundary attempt prepared =
       fmap BrokerVaultPkiStatusResponse
         <$> runInMemory boundary (InMemoryVaultPkiStatus reference)
     ExecuteVaultPkiIssueTestCertificate request ->
-      executeMutation
-        BootstrapVaultIssueTestCertificate
-        (\permit -> InMemoryVaultPkiIssueTestCertificate reference permit request)
-        BrokerVaultPkiIssueResponse
+      withMutationAttempt attempt $ \mutationAttempt -> do
+        result <-
+          runAuthorizedInMemoryVault
+            engine
+            boundary
+            mutationAttempt
+            BootstrapVaultIssueTestCertificate
+            (\permit -> InMemoryVaultPkiIssueTestCertificate reference permit request)
+        pure $ do
+          receipt <- result
+          validateMutationReceipt prepared (pkiIssueMutation receipt)
+          Right (BrokerVaultPkiIssueResponse receipt)
     ExecuteVaultResetAmbiguousInitialization ambiguity resetProof ->
       withMutationAttempt attempt $ \mutationAttempt -> do
         result <-
@@ -2903,7 +2919,7 @@ executePhysicalPreparedPlan engine attempt prepared =
             (\permit -> PhysicalIssueVaultPkiTestCertificate reference permit request)
         pure $ do
           receipt <- result
-          validateMutationReceipt prepared receipt
+          validateMutationReceipt prepared (pkiIssueMutation receipt)
           Right (BrokerVaultPkiIssueResponse receipt)
     ExecuteVaultResetAmbiguousInitialization ambiguity resetProof ->
       withMutationAttempt attempt $ \mutationAttempt -> do

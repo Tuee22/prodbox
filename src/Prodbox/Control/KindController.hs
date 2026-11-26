@@ -53,8 +53,8 @@ import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (runExceptT)
 import Data.Aeson qualified as Aeson
 import Data.ByteString qualified as ByteString
-import Data.ByteString.Lazy qualified as LazyByteString
 import Data.ByteString.Char8 qualified as ByteString8
+import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
@@ -73,9 +73,9 @@ import Prodbox.Capacity.RuntimeMemory qualified as Runtime
 import Prodbox.Config.BootstrapProjection
   ( BootstrapProjection
   , BootstrapProjectionError
-  , decodeOptionalBootstrapSource
   , bootstrapRootGeneration
   , bootstrapScope
+  , decodeOptionalBootstrapSource
   , readBootstrapProjection
   )
 import Prodbox.Config.DeploymentScope
@@ -87,85 +87,90 @@ import Prodbox.Config.DeploymentScope
   , validRootGeneration
   , withScopeRootDescriptor
   )
-import Prodbox.Control.KubernetesReadiness (ReadinessObservation (..))
-import Prodbox.Control.NetworkEnforcement (EnforcementOutcome, observeNetworkEnforcementUnderFamily)
-import Prodbox.Control.Status (observeNodeCaBindingUnderLease)
-import Prodbox.Control.Reconcile (ReconcileOutcome (..), reconcileFamilyPrerequisites)
-import Prodbox.Control.KindIntent (KindIntentObservation (KindIntentMatches), observeKindOwnerFamilyIntent, observeKindExternalFamilyIntent)
+import Prodbox.Control.KindControllerReceipt
+  ( ControllerDomainWrite (ControllerDomainRecorded)
+  , ControllerJobWrite (ControllerJobRecorded)
+  , ControllerProviderMaterialWrite (ControllerProviderMaterialRecorded)
+  , ControllerProviderWrite (ControllerProviderRecorded)
+  , ControllerReceiptWrite (..)
+  , ControllerSenderWrite (ControllerSenderRecorded)
+  , FamilyLaunchObservation (FamilyLaunchMissing, FamilyLaunchObserved)
+  , controllerUnitName
+  , matchesRetainedFamilyRequest
+  , observeFamilyPrePublicationCancellation
+  , observeFamilyPublicationAttempt
+  , recordControllerDomain
+  , recordControllerJob
+  , recordControllerProvider
+  , recordControllerProviderMaterial
+  , recordControllerReceipt
+  , recordControllerSender
+  , withControllerSubmissionIntent
+  )
 import Prodbox.Control.KindControllerRequest
   ( KindControllerRequest
-  , ProbeRecoveryRequest
   , ProbeAttemptVerifierRequest
+  , ProbeRecoveryRequest
   , ProbeSuccessorRequest
-  , probeVerifierRecoveryRequest
-  , probeVerifierIsIsolated
-  , encodeProbeAttemptVerifierRequest
+  , decodeKindControllerRequest
   , decodeProbeAttemptVerifierRequest
-  , probeSuccessorVerifier
-  , encodeProbeSuccessorRequest
+  , decodeProbeRecoveryRequest
   , decodeProbeSuccessorRequest
+  , encodeKindControllerRequest
+  , encodeProbeAttemptVerifierRequest
+  , encodeProbeRecoveryRequest
+  , encodeProbeSuccessorRequest
   , kindControllerOperationKey
   , kindProbeRecoveryKey
-  , probeRecoveryControllerRequest
-  , probeRecoveryId
+  , kindRequestExecutableDigest
+  , kindRequestManagerDomain
   , kindRequestOperation
   , kindRequestWindow
-  , kindRequestManagerDomain
-  , kindRequestExecutableDigest
-  , encodeKindControllerRequest
-  , decodeKindControllerRequest
-  , encodeProbeRecoveryRequest
-  , decodeProbeRecoveryRequest
+  , probeRecoveryControllerRequest
+  , probeRecoveryId
+  , probeSuccessorVerifier
+  , probeVerifierIsIsolated
+  , probeVerifierRecoveryRequest
   )
-import Prodbox.Control.KindControllerReceipt
-  ( controllerUnitName
-  , ControllerReceiptWrite (..)
-  , withControllerSubmissionIntent
-  , ControllerJobWrite (ControllerJobRecorded)
-  , recordControllerJob
-  , ControllerDomainWrite (ControllerDomainRecorded)
-  , recordControllerDomain
-  , ControllerProviderWrite (ControllerProviderRecorded)
-  , recordControllerProvider
-  , ControllerProviderMaterialWrite (ControllerProviderMaterialRecorded)
-  , recordControllerProviderMaterial
-  , ControllerSenderWrite (ControllerSenderRecorded)
-  , recordControllerSender
-  , recordControllerReceipt
-  , matchesRetainedFamilyRequest
-  , FamilyLaunchObservation (FamilyLaunchObserved, FamilyLaunchMissing)
-  , observeFamilyPublicationAttempt
-  , observeFamilyPrePublicationCancellation
+import Prodbox.Control.KindIntent
+  ( KindIntentObservation (KindIntentMatches)
+  , observeKindExternalFamilyIntent
+  , observeKindOwnerFamilyIntent
   )
 import Prodbox.Control.KindKubeconfigInstall
   ( KindKubeconfigInstall (..)
   , installKindKubeconfig
   )
 import Prodbox.Control.KindLease
-  ( KindOperationOutcome (..)
-  , KindLeaseHandoff (..)
+  ( KindLeaseHandoff (..)
+  , KindOperationOutcome (..)
   , awaitKindLeaseHandoff
   , withRecoveredKindOperation
+  , withRecoveredKindOperationUntil
   )
 import Prodbox.Control.KindTool
   ( ArchiveBoundConfinedKindNode
   , confirmedKindWorkerNode
-  , runArchiveBoundConfinedKindNodeOnOperation
   , runArchiveBoundConfinedKindNodeOnHost
+  , runArchiveBoundConfinedKindNodeOnOperation
   )
+import Prodbox.Control.KubernetesReadiness (ReadinessObservation (..))
+import Prodbox.Control.NetworkEnforcement (EnforcementOutcome, observeNetworkEnforcementUnderFamily)
 import Prodbox.Control.NodeArchive (InspectedArchiveResult)
+import Prodbox.Control.Reconcile (ReconcileOutcome (..), reconcileFamilyPrerequisites)
 import Prodbox.Control.SealedTool
   ( KindWorkerSnapshots
   , kindWorkerKindBudget
   , planKindWorkerSnapshots
   , sealedToolRuntimePlan
   )
+import Prodbox.Control.Status (observeNodeCaBindingUnderLease)
 import Prodbox.Subprocess qualified as Subprocess
-import Prodbox.Subprocess.SystemdBus
-import Prodbox.Subprocess.SystemdProvider qualified as Provider
 import Prodbox.Subprocess.HostOperationFamily qualified as Family
 import Prodbox.Subprocess.KernelScope qualified as Kernel
+import Prodbox.Subprocess.SystemdBus
 import Prodbox.Subprocess.SystemdIdentity qualified as Identity
+import Prodbox.Subprocess.SystemdProvider qualified as Provider
 import System.Directory (canonicalizePath, doesFileExist)
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..))
@@ -215,23 +220,34 @@ compileKindSerialControllerPlan
   :: ObservedHostRoot -> Either String (Host.HostExecutionPlan, KindWorkerSnapshots)
 compileKindSerialControllerPlan host = do
   (allocated, budgets) <- kindControllerPlanInputs False
-  plan <- either (Left . show) Right $
-    Host.compileHostExecutionPlan host allocated (sealedToolRuntimePlan (kindWorkerKindBudget budgets)) kindControllerDemand
+  plan <-
+    either (Left . show) Right $
+      Host.compileHostExecutionPlan
+        host
+        allocated
+        (sealedToolRuntimePlan (kindWorkerKindBudget budgets))
+        kindControllerDemand
   pure (plan, budgets)
 
 compileKindFamilyControllerPlan
   :: ObservedHostRoot -> Either String (Host.HostExecutionTransportPlan, KindWorkerSnapshots)
 compileKindFamilyControllerPlan host = do
   (allocated, budgets) <- kindControllerPlanInputs True
-  plan <- either (Left . show) Right $
-    Host.compileHostExecutionPlanWithTransport host allocated (sealedToolRuntimePlan (kindWorkerKindBudget budgets))
-      kindControllerDemand (Host.HostTransportDemand 100000 8 (16 * 1048576))
+  plan <-
+    either (Left . show) Right $
+      Host.compileHostExecutionPlanWithTransport
+        host
+        allocated
+        (sealedToolRuntimePlan (kindWorkerKindBudget budgets))
+        kindControllerDemand
+        (Host.HostTransportDemand 100000 8 (16 * 1048576))
   pure (plan, budgets)
 
 kindControllerDemand :: Host.HostExecutionDemand
 kindControllerDemand = Host.HostExecutionDemand 1000000 500000 100000 64 16 8 (64 * 1048576) (16 * 1048576) 1 0
 
-kindControllerPlanInputs :: Bool -> Either String (Allocation.SomeAllocatedPlan, KindWorkerSnapshots)
+kindControllerPlanInputs
+  :: Bool -> Either String (Allocation.SomeAllocatedPlan, KindWorkerSnapshots)
 kindControllerPlanInputs family = do
   let mib = 1048576
       base = Capacity.defaultResourcePlan
@@ -265,9 +281,10 @@ kindControllerPlanInputs family = do
           , Runtime.runtimeOtherHeapReserve = otherHeap
           , Runtime.runtimeHeapCap = heapCap
           , Runtime.runtimeNativeNonHeapReserve = native
-          , Runtime.runtimeRawChildSchedule = if family
-              then Runtime.BoundedChildSchedule 2 (Just 600000000) [80 * mib, 16 * mib]
-              else Runtime.BoundedChildSchedule 1 (Just 600000000) [80 * mib]
+          , Runtime.runtimeRawChildSchedule =
+              if family
+                then Runtime.BoundedChildSchedule 2 (Just 600000000) [80 * mib, 16 * mib]
+                else Runtime.BoundedChildSchedule 1 (Just 600000000) [80 * mib]
           , Runtime.runtimeKernelCgroupReserve = kernel
           , Runtime.runtimeSafetyMargin = margin
           , Runtime.runtimeContainerMemoryLimit = container
@@ -307,10 +324,13 @@ data KindFamilyPreparationError
   deriving (Eq, Show)
 
 prepareKindFamilyController
-  :: BootstrapProjection -> KindControllerRequest -> IO (Either KindFamilyPreparationError KindFamilyPreparation)
+  :: BootstrapProjection
+  -> KindControllerRequest
+  -> IO (Either KindFamilyPreparationError KindFamilyPreparation)
 prepareKindFamilyController bootstrap request = do
   now <- getMonotonicTimeNSec
-  observed <- observeNativeHostCapacityBefore (now + 2000000000) (scopeRoot (bootstrapScope bootstrap))
+  observed <-
+    observeNativeHostCapacityBefore (now + 2000000000) (scopeRoot (bootstrapScope bootstrap))
   case observed of
     Left failure -> pure (Left (KindFamilyPreparationCapacityRefused (show failure)))
     Right host -> prepareKindFamilyControllerFromObserved host bootstrap request
@@ -318,34 +338,57 @@ prepareKindFamilyController bootstrap request = do
 -- This pure-observation input supports deterministic plan validation. It is not
 -- the public admission path and cannot create or observe a process owner.
 prepareKindFamilyControllerFromObserved
-  :: ObservedHostRoot -> BootstrapProjection -> KindControllerRequest
+  :: ObservedHostRoot
+  -> BootstrapProjection
+  -> KindControllerRequest
   -> IO (Either KindFamilyPreparationError KindFamilyPreparation)
 prepareKindFamilyControllerFromObserved host bootstrap request = case kindControllerOperationKey (kindRequestOperation request) of
   Nothing -> pure (Left KindFamilyPreparationBindingRefused)
-  Just key -> case decodeKindControllerRequest bootstrap key window (kindRequestManagerDomain request)
-      (kindRequestExecutableDigest request) (encodeKindControllerRequest request) of
+  Just key -> case decodeKindControllerRequest
+    bootstrap
+    key
+    window
+    (kindRequestManagerDomain request)
+    (kindRequestExecutableDigest request)
+    (encodeKindControllerRequest request) of
     Left _ -> pure (Left KindFamilyPreparationBindingRefused)
-    Right _ -> prepareKindFamilyFromBound Identity.KindController host bootstrap request key (encodeKindControllerRequest request)
+    Right _ ->
+      prepareKindFamilyFromBound
+        Identity.KindController
+        host
+        bootstrap
+        request
+        key
+        (encodeKindControllerRequest request)
  where
   window = kindRequestWindow request
 
 -- Recovery is a separate family, with a distinct key and its own original
 -- window. It shares the bounded process envelope, not the node work action.
 prepareKindProbeRecoveryController
-  :: BootstrapProjection -> ProbeRecoveryRequest -> IO (Either KindFamilyPreparationError KindFamilyPreparation)
+  :: BootstrapProjection
+  -> ProbeRecoveryRequest
+  -> IO (Either KindFamilyPreparationError KindFamilyPreparation)
 prepareKindProbeRecoveryController bootstrap request = do
   now <- getMonotonicTimeNSec
-  observed <- observeNativeHostCapacityBefore (now + 2000000000) (scopeRoot (bootstrapScope bootstrap))
+  observed <-
+    observeNativeHostCapacityBefore (now + 2000000000) (scopeRoot (bootstrapScope bootstrap))
   case observed of
     Left failure -> pure (Left (KindFamilyPreparationCapacityRefused (show failure)))
     Right host -> prepareKindProbeRecoveryControllerFromObserved host bootstrap request
 
 prepareKindProbeRecoveryControllerFromObserved
-  :: ObservedHostRoot -> BootstrapProjection -> ProbeRecoveryRequest
+  :: ObservedHostRoot
+  -> BootstrapProjection
+  -> ProbeRecoveryRequest
   -> IO (Either KindFamilyPreparationError KindFamilyPreparation)
 prepareKindProbeRecoveryControllerFromObserved host bootstrap recovery =
-  case (kindProbeRecoveryKey operation (probeRecoveryId recovery), decodeProbeRecoveryRequest bootstrap operation encoded) of
-    (Just key, Right decoded) | decoded == recovery -> prepareKindFamilyFromBound Identity.KindController host bootstrap request key encoded
+  case ( kindProbeRecoveryKey operation (probeRecoveryId recovery)
+       , decodeProbeRecoveryRequest bootstrap operation encoded
+       ) of
+    (Just key, Right decoded)
+      | decoded == recovery ->
+          prepareKindFamilyFromBound Identity.KindController host bootstrap request key encoded
     _ -> pure (Left KindFamilyPreparationBindingRefused)
  where
   request = probeRecoveryControllerRequest recovery
@@ -353,19 +396,26 @@ prepareKindProbeRecoveryControllerFromObserved host bootstrap recovery =
   encoded = encodeProbeRecoveryRequest recovery
 
 prepareKindProbeVerifierController
-  :: BootstrapProjection -> ProbeAttemptVerifierRequest -> IO (Either KindFamilyPreparationError KindFamilyPreparation)
+  :: BootstrapProjection
+  -> ProbeAttemptVerifierRequest
+  -> IO (Either KindFamilyPreparationError KindFamilyPreparation)
 prepareKindProbeVerifierController bootstrap request = do
   now <- getMonotonicTimeNSec
-  observed <- observeNativeHostCapacityBefore (now + 2000000000) (scopeRoot (bootstrapScope bootstrap))
+  observed <-
+    observeNativeHostCapacityBefore (now + 2000000000) (scopeRoot (bootstrapScope bootstrap))
   case observed of
     Left failure -> pure (Left (KindFamilyPreparationCapacityRefused (show failure)))
     Right host -> prepareKindProbeVerifierControllerFromObserved host bootstrap request
 
 prepareKindProbeVerifierControllerFromObserved
-  :: ObservedHostRoot -> BootstrapProjection -> ProbeAttemptVerifierRequest
+  :: ObservedHostRoot
+  -> BootstrapProjection
+  -> ProbeAttemptVerifierRequest
   -> IO (Either KindFamilyPreparationError KindFamilyPreparation)
 prepareKindProbeVerifierControllerFromObserved host bootstrap verifier =
-  case (kindProbeRecoveryKey operation (probeRecoveryId coordinates), decodeProbeAttemptVerifierRequest bootstrap operation encoded) of
+  case ( kindProbeRecoveryKey operation (probeRecoveryId coordinates)
+       , decodeProbeAttemptVerifierRequest bootstrap operation encoded
+       ) of
     (Just key, Right decoded) | decoded == verifier -> prepareKindFamilyFromBound kind host bootstrap request key encoded
     _ -> pure (Left KindFamilyPreparationBindingRefused)
  where
@@ -373,23 +423,35 @@ prepareKindProbeVerifierControllerFromObserved host bootstrap verifier =
   request = probeRecoveryControllerRequest coordinates
   operation = kindRequestOperation request
   encoded = encodeProbeAttemptVerifierRequest verifier
-  kind = if probeVerifierIsIsolated verifier then Identity.KindProbeVerifierController else Identity.KindController
+  kind =
+    if probeVerifierIsIsolated verifier
+      then Identity.KindProbeVerifierController
+      else Identity.KindController
 
 prepareKindProbeSuccessorController
-  :: BootstrapProjection -> ProbeSuccessorRequest -> IO (Either KindFamilyPreparationError KindFamilyPreparation)
+  :: BootstrapProjection
+  -> ProbeSuccessorRequest
+  -> IO (Either KindFamilyPreparationError KindFamilyPreparation)
 prepareKindProbeSuccessorController bootstrap request = do
   now <- getMonotonicTimeNSec
-  observed <- observeNativeHostCapacityBefore (now + 2000000000) (scopeRoot (bootstrapScope bootstrap))
+  observed <-
+    observeNativeHostCapacityBefore (now + 2000000000) (scopeRoot (bootstrapScope bootstrap))
   case observed of
     Left failure -> pure (Left (KindFamilyPreparationCapacityRefused (show failure)))
     Right host -> prepareKindProbeSuccessorControllerFromObserved host bootstrap request
 
 prepareKindProbeSuccessorControllerFromObserved
-  :: ObservedHostRoot -> BootstrapProjection -> ProbeSuccessorRequest
+  :: ObservedHostRoot
+  -> BootstrapProjection
+  -> ProbeSuccessorRequest
   -> IO (Either KindFamilyPreparationError KindFamilyPreparation)
 prepareKindProbeSuccessorControllerFromObserved host bootstrap successor =
-  case (kindProbeRecoveryKey operation (probeRecoveryId coordinates), decodeProbeSuccessorRequest bootstrap operation encoded) of
-    (Just key, Right decoded) | decoded == successor -> prepareKindFamilyFromBound Identity.KindProbeSuccessorController host bootstrap request key encoded
+  case ( kindProbeRecoveryKey operation (probeRecoveryId coordinates)
+       , decodeProbeSuccessorRequest bootstrap operation encoded
+       ) of
+    (Just key, Right decoded)
+      | decoded == successor ->
+          prepareKindFamilyFromBound Identity.KindProbeSuccessorController host bootstrap request key encoded
     _ -> pure (Left KindFamilyPreparationBindingRefused)
  where
   coordinates = probeVerifierRecoveryRequest (probeSuccessorVerifier successor)
@@ -398,20 +460,27 @@ prepareKindProbeSuccessorControllerFromObserved host bootstrap successor =
   encoded = encodeProbeSuccessorRequest successor
 
 prepareKindFamilyFromBound
-  :: Identity.HostControllerKind -> ObservedHostRoot -> BootstrapProjection -> KindControllerRequest -> Identity.HostExecutionKey
-  -> ByteString.ByteString -> IO (Either KindFamilyPreparationError KindFamilyPreparation)
+  :: Identity.HostControllerKind
+  -> ObservedHostRoot
+  -> BootstrapProjection
+  -> KindControllerRequest
+  -> Identity.HostExecutionKey
+  -> ByteString.ByteString
+  -> IO (Either KindFamilyPreparationError KindFamilyPreparation)
 prepareKindFamilyFromBound kind host bootstrap request key encoded = case compileKindFamilyControllerPlan host of
-      Left failure -> pure (Left (KindFamilyPreparationCapacityRefused failure))
-      Right (plan, snapshots) -> case (Family.hostOperationHelperBounds 1000000 5000000, Subprocess.mkOperationStreamLimits 65536 65536 30000) of
-        (Just helper, Right streams) -> case Subprocess.validateOperationStreamLimits (Host.hostExecutionRuntimeMemory plan) window streams of
-          Left failure -> pure (Left (KindFamilyPreparationStreamsRefused failure))
-          Right () -> do
-            intent <- Family.newHostOperationIntent kind plan helper key window
-            pure $ case intent of
-              Left failure -> Left (KindFamilyPreparationIntentRefused failure)
-              Right value -> Right (KindFamilyPreparation bootstrap request encoded value snapshots streams streams)
-        (_, Left failure) -> pure (Left (KindFamilyPreparationStreamsRefused failure))
-        (Nothing, _) -> pure (Left KindFamilyPreparationBindingRefused)
+  Left failure -> pure (Left (KindFamilyPreparationCapacityRefused failure))
+  Right (plan, snapshots) -> case ( Family.hostOperationHelperBounds 1000000 5000000
+                                  , Subprocess.mkOperationStreamLimits 65536 65536 30000
+                                  ) of
+    (Just helper, Right streams) -> case Subprocess.validateOperationStreamLimits (Host.hostExecutionRuntimeMemory plan) window streams of
+      Left failure -> pure (Left (KindFamilyPreparationStreamsRefused failure))
+      Right () -> do
+        intent <- Family.newHostOperationIntent kind plan helper key window
+        pure $ case intent of
+          Left failure -> Left (KindFamilyPreparationIntentRefused failure)
+          Right value -> Right (KindFamilyPreparation bootstrap request encoded value snapshots streams streams)
+    (_, Left failure) -> pure (Left (KindFamilyPreparationStreamsRefused failure))
+    (Nothing, _) -> pure (Left KindFamilyPreparationBindingRefused)
  where
   window = kindRequestWindow request
 
@@ -437,7 +506,9 @@ data KindFamilyParentOutcome value
 -- The manager and program remain held through the physically observed parent.
 -- This supplies bounded process ownership, not lifecycle admission.
 withKindFamilyProcesses
-  :: KindFamilyPreparation -> Family.HostControllerProgram -> Identity.HostManagerDomain
+  :: KindFamilyPreparation
+  -> Family.HostControllerProgram
+  -> Identity.HostManagerDomain
   -> (Subprocess.OperationSubprocesses -> IO value)
   -> IO (KindFamilyParentOutcome value)
 withKindFamilyProcesses preparation program domain action = do
@@ -462,16 +533,25 @@ withKindFamilyProcesses preparation program domain action = do
                 case checked of
                   Left failure -> pure (Left failure)
                   Right () -> do
-                    result <- Kernel.withObservedOperationParent connection intent program $ \parent ->
-                      case Subprocess.operationSubprocesses parent (kindFamilyCommandStreams preparation) (kindFamilyTransportStreams preparation) of
-                        Left failure -> pure (Right (Left (KindFamilyParentStreamsRefused failure)))
-                        Right processes -> do
-                          value <- action processes
-                          writeIORef primary (Just value)
-                          pure (Right (Right value))
+                    let runInParent parent =
+                          case Subprocess.operationSubprocesses
+                            parent
+                            (kindFamilyCommandStreams preparation)
+                            (kindFamilyTransportStreams preparation) of
+                            Left failure -> pure (Right (Left (KindFamilyParentStreamsRefused failure)))
+                            Right processes -> do
+                              value <- action processes
+                              writeIORef primary (Just value)
+                              pure (Right (Right value))
+                    result <- Kernel.withObservedOperationParent connection intent program runInParent
                     closing <- Provider.verifyQualifiedProvider provider
                     pure $ case (result, closing) of
-                      (Left failure, Left providerFailure) -> Left (KindFamilyParentCombined (KindFamilyParentKernelRefused failure) (KindFamilyParentProviderRefused providerFailure))
+                      (Left failure, Left providerFailure) ->
+                        Left
+                          ( KindFamilyParentCombined
+                              (KindFamilyParentKernelRefused failure)
+                              (KindFamilyParentProviderRefused providerFailure)
+                          )
                       (Right (Left failure), Left providerFailure) -> Left (KindFamilyParentCombined failure (KindFamilyParentProviderRefused providerFailure))
                       (Left failure, _) -> Left (KindFamilyParentKernelRefused failure)
                       (Right _, Left failure) -> Left (KindFamilyParentProviderRefused failure)
@@ -484,31 +564,37 @@ withKindFamilyProcesses preparation program domain action = do
       pure (maybe (KindFamilyParentRefused failure) (`KindFamilyParentUnconfirmedAfter` failure) result)
 
 verifyKindFamilyProgram
-  :: KindFamilyPreparation -> Family.HostControllerProgram -> Identity.HostManagerDomain
+  :: KindFamilyPreparation
+  -> Family.HostControllerProgram
+  -> Identity.HostManagerDomain
   -> IO (Either KindFamilyParentError ())
 verifyKindFamilyProgram preparation program domain = do
   let request = kindFamilyRequest preparation
       intent = kindFamilyIntent preparation
       failProgram result = either (Left . KindFamilyParentProgramRefused) Right result
-  if domain /= kindRequestManagerDomain request then pure (Left KindFamilyParentDomainMismatch) else do
-    checked <- Family.verifyHostControllerProgram intent program
-    digest <- Family.hashHostControllerProgramExecutable program
-    inputs <- Family.readHostControllerProgramInputs program
-    case (failProgram checked, failProgram digest, failProgram inputs) of
-      (Left failure, _, _) -> pure (Left failure)
-      (_, Left failure, _) -> pure (Left failure)
-      (_, _, Left failure) -> pure (Left failure)
-      (Right (), Right actual, Right bytes)
-        | actual /= kindRequestExecutableDigest request -> pure (Left KindFamilyParentInputMismatch)
-        | Family.hostControllerRequestBytes bytes /= kindFamilyProgramRequest preparation -> pure (Left KindFamilyParentInputMismatch)
-        | otherwise -> case TextEncoding.decodeUtf8' (Family.hostControllerConfigurationBytes bytes) of
-            Left _ -> pure (Left KindFamilyParentInputEncodingRefused)
-            Right source -> do
-              decoded <- decodeOptionalBootstrapSource (Family.hostControllerProgramConfigurationPath program) source
-              pure $ case decoded of
-                Left failure -> Left (KindFamilyParentProjectionRefused failure)
-                Right (Just projection) | projection == kindFamilyBootstrap preparation -> Right ()
-                _ -> Left KindFamilyParentInputMismatch
+  if domain /= kindRequestManagerDomain request
+    then pure (Left KindFamilyParentDomainMismatch)
+    else do
+      checked <- Family.verifyHostControllerProgram intent program
+      digest <- Family.hashHostControllerProgramExecutable program
+      inputs <- Family.readHostControllerProgramInputs program
+      case (failProgram checked, failProgram digest, failProgram inputs) of
+        (Left failure, _, _) -> pure (Left failure)
+        (_, Left failure, _) -> pure (Left failure)
+        (_, _, Left failure) -> pure (Left failure)
+        (Right (), Right actual, Right bytes)
+          | actual /= kindRequestExecutableDigest request -> pure (Left KindFamilyParentInputMismatch)
+          | Family.hostControllerRequestBytes bytes /= kindFamilyProgramRequest preparation ->
+              pure (Left KindFamilyParentInputMismatch)
+          | otherwise -> case TextEncoding.decodeUtf8' (Family.hostControllerConfigurationBytes bytes) of
+              Left _ -> pure (Left KindFamilyParentInputEncodingRefused)
+              Right source -> do
+                decoded <-
+                  decodeOptionalBootstrapSource (Family.hostControllerProgramConfigurationPath program) source
+                pure $ case decoded of
+                  Left failure -> Left (KindFamilyParentProjectionRefused failure)
+                  Right (Just projection) | projection == kindFamilyBootstrap preparation -> Right ()
+                  _ -> Left KindFamilyParentInputMismatch
 
 data KindFamilyPostAction
   = KindFamilyPostPreconditionUnconfirmed
@@ -533,13 +619,16 @@ data KindFamilyWorkOutcome
 -- must all remain valid for broker effects and the post-worker writes. A
 -- returned worker result is not itself controller or resource retirement.
 runKindFamilyWorker
-  :: KindFamilyPreparation -> Subprocess.OperationSubprocesses
-  -> IO (Either Family.HostOperationError ()) -> IO KindFamilyWorkOutcome
+  :: KindFamilyPreparation
+  -> Subprocess.OperationSubprocesses
+  -> IO (Either Family.HostOperationError ())
+  -> IO KindFamilyWorkOutcome
 runKindFamilyWorker preparation processes inputStable = do
   primary <- newIORef Nothing
   let bootstrap = kindFamilyBootstrap preparation
       request = kindFamilyRequest preparation
       operation = kindRequestOperation request
+      ending = Identity.hostExecutionWorkEnd (kindRequestWindow request)
       parentStable = do
         held <- inputStable
         parent <- Subprocess.verifyOperationSubprocessesBeforeEffect processes
@@ -549,7 +638,8 @@ runKindFamilyWorker preparation processes inputStable = do
         marker <- observeFamilyPublicationAttempt bootstrap operation stable
         cancelled <- observeFamilyPrePublicationCancellation bootstrap operation stable
         parent <- parentStable
-        pure (matching && marker == FamilyLaunchObserved request && cancelled == FamilyLaunchMissing && parent)
+        pure
+          (matching && marker == FamilyLaunchObserved request && cancelled == FamilyLaunchMissing && parent)
       protocolAdmission observe stable = do
         before <- admission stable
         protocol <- observe bootstrap
@@ -557,71 +647,102 @@ runKindFamilyWorker preparation processes inputStable = do
         pure (before && protocol == KindIntentMatches operation && after)
       attempt admitted descriptors = case descriptors of
         [usr, cache, nullDevice] -> do
-          observed <- runArchiveBoundConfinedKindNodeOnOperation
-            180000000 processes (kindFamilySnapshots preparation) bootstrap operation
-            (kindRequestExecutableDigest request) (256 * 1024 * 1024)
-            [usr, cache] nullDevice (\_ _ stable -> admitted stable) (\_ _ _ stable -> admitted stable)
+          observed <-
+            runArchiveBoundConfinedKindNodeOnOperation
+              180000000
+              processes
+              (kindFamilySnapshots preparation)
+              bootstrap
+              operation
+              (kindRequestExecutableDigest request)
+              (256 * 1024 * 1024)
+              [usr, cache]
+              nullDevice
+              (\_ _ stable -> admitted stable)
+              (\_ _ _ stable -> admitted stable)
           writeIORef primary (Just observed)
           pure (Just observed)
         _ -> pure Nothing
-  handoff <- awaitKindLeaseHandoff (Identity.hostExecutionWorkEnd (kindRequestWindow request)) bootstrap operation parentStable
+  handoff <-
+    awaitKindLeaseHandoff
+      ending
+      bootstrap
+      operation
+      parentStable
   case handoff of
     KindLeaseHandoffReady -> do
-      selected <- withRecoveredKindOperation bootstrap operation admission
-      if selected /= KindOperationCallbackReturned True then pure KindFamilyWorkAdmissionRefused else do
-        protocol <- withRecoveredKindOperation bootstrap operation $ \stable -> do
-          before <- admission stable
-          owner <- observeKindOwnerFamilyIntent bootstrap
-          external <- observeKindExternalFamilyIntent bootstrap
-          after <- admission stable
-          pure (before, owner, external, after)
-        case protocol of
-          KindOperationCallbackReturned (True, KindIntentMatches owner, _, True) | owner == operation -> do
-            let ownedAdmission = protocolAdmission observeKindOwnerFamilyIntent
-            -- The prerequisite coordinator itself brackets every effect
-            -- with the owner-first protocol check. Pass the base family
-            -- admission so that the same proof is not recursively repeated.
-            prerequisites <- reconcileFamilyPrerequisites bootstrap operation admission
-            case prerequisites of
-              ReconcileNodeReady ready | ready == operation -> runNode primary (attempt ownedAdmission) bootstrap operation ownedAdmission
-              other -> pure (KindFamilyWorkPrerequisitesUnconfirmed other)
-          KindOperationCallbackReturned (True, _, KindIntentMatches external, True) | external == operation ->
-            let externalAdmission = protocolAdmission observeKindExternalFamilyIntent
-             in runNode primary (attempt externalAdmission) bootstrap operation externalAdmission
-          _ -> pure KindFamilyWorkAdmissionRefused
+      selected <- withRecoveredKindOperationUntil ending bootstrap operation admission
+      if selected /= KindOperationCallbackReturned True
+        then pure KindFamilyWorkAdmissionRefused
+        else do
+          protocol <- withRecoveredKindOperationUntil ending bootstrap operation $ \stable -> do
+            before <- admission stable
+            owner <- observeKindOwnerFamilyIntent bootstrap
+            external <- observeKindExternalFamilyIntent bootstrap
+            after <- admission stable
+            pure (before, owner, external, after)
+          case protocol of
+            KindOperationCallbackReturned (True, KindIntentMatches owner, _, True) | owner == operation -> do
+              let ownedAdmission = protocolAdmission observeKindOwnerFamilyIntent
+              -- The prerequisite coordinator itself brackets every effect
+              -- with the owner-first protocol check. Pass the base family
+              -- admission so that the same proof is not recursively repeated.
+              prerequisites <-
+                reconcileFamilyPrerequisites
+                  ending
+                  bootstrap
+                  operation
+                  admission
+              case prerequisites of
+                ReconcileNodeReady ready
+                  | ready == operation ->
+                      runNode ending primary (attempt ownedAdmission) bootstrap operation ownedAdmission
+                other -> pure (KindFamilyWorkPrerequisitesUnconfirmed other)
+            KindOperationCallbackReturned (True, _, KindIntentMatches external, True)
+              | external == operation ->
+                  let externalAdmission = protocolAdmission observeKindExternalFamilyIntent
+                   in runNode ending primary (attempt externalAdmission) bootstrap operation externalAdmission
+            _ -> pure KindFamilyWorkAdmissionRefused
     failure -> pure (KindFamilyWorkHandoffRefused failure)
  where
-  runNode primary attempt bootstrap operation admission = do
-        result <- try (withPaths ["/usr", "/etc/ld.so.cache", "/dev/null"] attempt)
-        case result of
-          Left (failure :: IOException) -> do
-            prior <- readIORef primary
-            pure $ case prior of
-              Nothing -> KindFamilyWorkIoUnconfirmed (ioeGetErrorType failure)
-              Just observed -> KindFamilyWorkIoUnconfirmedAfter observed (ioeGetErrorType failure)
-          Right Nothing -> pure KindFamilyWorkDescriptorShapeRefused
-          Right (Just observed) -> case confirmedKindWorkerNode observed of
-            Nothing -> pure (KindFamilyWorkObserved observed Nothing)
-            Just node -> do
-              post <- withRecoveredKindOperation bootstrap operation $ \stable -> do
-                before <- admission stable
-                if not before then pure KindFamilyPostPreconditionUnconfirmed else do
-                  installed <- installKindKubeconfig bootstrap operation
-                  afterInstall <- admission stable
-                  if installed /= KindKubeconfigInstalled || not afterInstall
-                    then pure (KindFamilyPostInstallUnconfirmed installed afterInstall)
-                    else do
-                      receipt <- recordControllerReceipt bootstrap operation node stable
-                      afterReceipt <- admission stable
-                      if receipt /= ControllerReceiptRecorded || not afterReceipt
-                        then pure (KindFamilyPostReceipt installed receipt afterReceipt)
-                        else do
-                          probe <- observeNetworkEnforcementUnderFamily processes bootstrap operation
-                            ("prodbox-netcheck-" ++ take 12 operation) (admission stable)
+  runNode ending primary attempt bootstrap operation admission = do
+    result <- try (withPaths ["/usr", "/etc/ld.so.cache", "/dev/null"] attempt)
+    case result of
+      Left (failure :: IOException) -> do
+        prior <- readIORef primary
+        pure $ case prior of
+          Nothing -> KindFamilyWorkIoUnconfirmed (ioeGetErrorType failure)
+          Just observed -> KindFamilyWorkIoUnconfirmedAfter observed (ioeGetErrorType failure)
+      Right Nothing -> pure KindFamilyWorkDescriptorShapeRefused
+      Right (Just observed) -> case confirmedKindWorkerNode observed of
+        Nothing -> pure (KindFamilyWorkObserved observed Nothing)
+        Just node -> do
+          post <- withRecoveredKindOperationUntil ending bootstrap operation $ \stable -> do
+            before <- admission stable
+            if not before
+              then pure KindFamilyPostPreconditionUnconfirmed
+              else do
+                installed <- installKindKubeconfig bootstrap operation
+                afterInstall <- admission stable
+                if installed /= KindKubeconfigInstalled || not afterInstall
+                  then pure (KindFamilyPostInstallUnconfirmed installed afterInstall)
+                  else do
+                    receipt <- recordControllerReceipt bootstrap operation node stable
+                    afterReceipt <- admission stable
+                    if receipt /= ControllerReceiptRecorded || not afterReceipt
+                      then pure (KindFamilyPostReceipt installed receipt afterReceipt)
+                      else do
+                        probe <-
+                          observeNetworkEnforcementUnderFamily
+                            processes
+                            bootstrap
+                            operation
+                            ("prodbox-netcheck-" ++ take 12 operation)
+                            (admission stable)
                             (\config -> observeNodeCaBindingUnderLease bootstrap operation node config (admission stable))
-                          afterProbe <- admission stable
-                          pure (KindFamilyPostProbe probe afterProbe)
-              pure (KindFamilyWorkObserved observed (Just post))
+                        afterProbe <- admission stable
+                        pure (KindFamilyPostProbe probe afterProbe)
+          pure (KindFamilyWorkObserved observed (Just post))
 
 -- | Refuse with the compiled envelope's own reason when the observed host
 -- cannot fund the declared controller and worker envelope.
@@ -643,8 +764,9 @@ launchKindController selected operation resultPath = do
   bootstrap <- readBootstrapProjection selected
   case bootstrap of
     Left failure -> pure (Left ("bootstrap: " <> show failure))
-    Right projection | not (validControllerResultPath projection operation resultPath) ->
-      pure (Left "controller result path refused")
+    Right projection
+      | not (validControllerResultPath projection operation resultPath) ->
+          pure (Left "controller result path refused")
     Right projection -> do
       let root = scopeRoot (bootstrapScope projection)
       envelope <- kindControllerEnvelope root
@@ -674,18 +796,21 @@ launchKindController selected operation resultPath = do
                 , show stop
                 , show finish
                 ]
-          let requestBytes = LazyByteString.toStrict $ Aeson.encode $ Aeson.object
-                [ "schema_version" Aeson..= (1 :: Int)
-                , "unit" Aeson..= unitName
-                , "slice" Aeson..= sliceName
-                , "runtime_directory" Aeson..= runtimeDirectoryName
-                , "socket" Aeson..= socket
-                , "executable_sha256" Aeson..= digest
-                , "executable" Aeson..= executable
-                , "arguments" Aeson..= arguments
-                , "description" Aeson..= Subprocess.kindHostSubprocessDescription plan key window
-                , "plan" Aeson..= show plan
-                ]
+          let requestBytes =
+                LazyByteString.toStrict $
+                  Aeson.encode $
+                    Aeson.object
+                      [ "schema_version" Aeson..= (1 :: Int)
+                      , "unit" Aeson..= unitName
+                      , "slice" Aeson..= sliceName
+                      , "runtime_directory" Aeson..= runtimeDirectoryName
+                      , "socket" Aeson..= socket
+                      , "executable_sha256" Aeson..= digest
+                      , "executable" Aeson..= executable
+                      , "arguments" Aeson..= arguments
+                      , "description" Aeson..= Subprocess.kindHostSubprocessDescription plan key window
+                      , "plan" Aeson..= show plan
+                      ]
               requestDigest = ByteString8.unpack (hexSha256 requestBytes)
           submitted <- withSystemdBus outer socket $ \connection -> lift $ do
             qualified <- Provider.withQualifiedProvider connection $ \provider -> do
@@ -697,15 +822,19 @@ launchKindController selected operation resultPath = do
                     beforeSender <- runExceptT (observeBusSender connection)
                     providerBefore <- Provider.verifyQualifiedProvider provider
                     operationStillBound <- stable
-                    if before /= Right domain || beforeSender /= Right sender || providerBefore /= Right () || not operationStillBound
+                    if before /= Right domain
+                      || beforeSender /= Right sender
+                      || providerBefore /= Right ()
+                      || not operationStillBound
                       then pure (Left "manager, provider or operation changed before submission")
                       else do
-                        sent <- runExceptT $
-                          callManager
-                            connection
-                            StartTransientUnit
-                            (kindControllerRequest plan key window executable arguments)
-                            (`readString` 'o')
+                        sent <-
+                          runExceptT $
+                            callManager
+                              connection
+                              StartTransientUnit
+                              (kindControllerRequest plan key window executable arguments)
+                              (`readString` 'o')
                         case sent of
                           Left failure -> pure (Left ("manager submission unconfirmed: " ++ show failure))
                           Right job -> do
@@ -713,9 +842,19 @@ launchKindController selected operation resultPath = do
                             after <- runExceptT (observeManagerDomain connection)
                             afterSender <- runExceptT (observeBusSender connection)
                             providerAfter <- Provider.verifyQualifiedProvider provider
-                            pure $ if recorded == ControllerJobRecorded && after == Right domain && afterSender == Right sender && providerAfter == Right ()
-                              then Right job
-                              else Left ("manager returned job " ++ take 128 job ++ "; receipt/domain/provider unconfirmed: " ++ show recorded)
+                            pure $
+                              if recorded == ControllerJobRecorded
+                                && after == Right domain
+                                && afterSender == Right sender
+                                && providerAfter == Right ()
+                                then Right job
+                                else
+                                  Left
+                                    ( "manager returned job "
+                                        ++ take 128 job
+                                        ++ "; receipt/domain/provider unconfirmed: "
+                                        ++ show recorded
+                                    )
               senderResult <- runExceptT (observeBusSender connection)
               leased <- withRecoveredKindOperation projection operation $ \stable -> do
                 admitted <- withControllerSubmissionIntent projection operation requestDigest stable $ do
@@ -723,7 +862,8 @@ launchKindController selected operation resultPath = do
                   if recordedDomain /= ControllerDomainRecorded
                     then pure (Left ("manager domain record unconfirmed: " ++ show recordedDomain))
                     else do
-                      recordedProvider <- recordControllerProvider projection operation requestDigest providerDigest stable
+                      recordedProvider <-
+                        recordControllerProvider projection operation requestDigest providerDigest stable
                       if recordedProvider /= ControllerProviderRecorded
                         then pure (Left ("manager provider record unconfirmed: " ++ show recordedProvider))
                         else do
@@ -743,7 +883,11 @@ launchKindController selected operation resultPath = do
               case leased of
                 KindOperationCallbackReturned (Right _) -> Right <$> waitForUnitAbsence finish connection
                 KindOperationCallbackReturned (Left failure) -> pure (Left failure)
-                other -> pure (Left ("controller submission lease unconfirmed; inspect retained operation: " ++ take 1000 (show other)))
+                other ->
+                  pure
+                    ( Left
+                        ("controller submission lease unconfirmed; inspect retained operation: " ++ take 1000 (show other))
+                    )
             pure $ either (Left . ("manager provider unconfirmed: " ++) . show) id qualified
           pure $ case submitted of
             Left failure -> Left ("bus: " <> show failure)
@@ -756,10 +900,11 @@ launchKindController selected operation resultPath = do
 -- A manager reply is only one observation. It cannot establish that the
 -- submitted job and its physical worker family have settled.
 classifyControllerUnitAbsence :: Bool -> Either String String
-classifyControllerUnitAbsence observedAbsent = Left $
-  if observedAbsent
-    then "controller unit absent; submitted job and physical worker settlement unconfirmed"
-    else "controller unit absence was not confirmed before the deadline"
+classifyControllerUnitAbsence observedAbsent =
+  Left $
+    if observedAbsent
+      then "controller unit absent; submitted job and physical worker settlement unconfirmed"
+      else "controller unit absence was not confirmed before the deadline"
 
 waitForUnitAbsence :: Word64 -> BusConnection -> IO Bool
 waitForUnitAbsence deadline connection =
@@ -801,8 +946,11 @@ afterControllerSettlement settled action = case settled of
 -- authentication of the Kubernetes peer. A result after change is retained as
 -- a diagnostic, never upgraded to a successful observation.
 observeControllerUnderLease
-  :: IO Bool -> IO (Maybe String) -> (String -> IO Bool)
-  -> IO ReadinessObservation -> IO String
+  :: IO Bool
+  -> IO (Maybe String)
+  -> (String -> IO Bool)
+  -> IO ReadinessObservation
+  -> IO String
   -> IO (Maybe String, ReadinessObservation, String)
 observeControllerUnderLease stable readReceipt nodeMatches readReadiness probe = do
   initial <- stable
@@ -811,8 +959,10 @@ observeControllerUnderLease stable readReceipt nodeMatches readReadiness probe =
     Just identifier -> nodeMatches identifier
     Nothing -> pure False
   held <- stable
-  readiness <- if initial && nodeReady && held then readReadiness
-    else pure (ReadinessUnobservable "bound running node not confirmed")
+  readiness <-
+    if initial && nodeReady && held
+      then readReadiness
+      else pure (ReadinessUnobservable "bound running node not confirmed")
   readyToProbe <- stable
   network <- case (node, readiness) of
     (Just _, ReadinessObserved True 1 1 _ _) | readyToProbe -> probe
@@ -822,12 +972,20 @@ observeControllerUnderLease stable readReceipt nodeMatches readReadiness probe =
   finalMatches <- case (node, finalNode) of
     (Just first, Just lastNode) | first == lastNode -> nodeMatches first
     _ -> pure False
-  finalReady <- if finalMatches then readReadiness else pure (ReadinessUnobservable "final node identity unconfirmed")
+  finalReady <-
+    if finalMatches
+      then readReadiness
+      else pure (ReadinessUnobservable "final node identity unconfirmed")
   after <- stable
   let stillReady = case finalReady of ReadinessObserved True 1 1 _ _ -> True; _ -> False
   if finalStable && finalMatches && stillReady && after
     then pure (node, readiness, network)
-    else pure (Nothing, ReadinessUnobservable "operation or final node readiness unconfirmed", "Network policy enforcement: final binding unconfirmed; prior result: " ++ network)
+    else
+      pure
+        ( Nothing
+        , ReadinessUnobservable "operation or final node readiness unconfirmed"
+        , "Network policy enforcement: final binding unconfirmed; prior result: " ++ network
+        )
 
 kindControllerRequest
   :: Host.HostExecutionPlan

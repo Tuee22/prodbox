@@ -144,7 +144,13 @@ hostExecutionStopEnd (HostExecutionWindow _ _ _ value _) = value
 hostExecutionFinishEnd (HostExecutionWindow _ _ _ _ value) = value
 
 -- Closed program identity, not physical placement or Authority admission.
-data HostControllerKind = RpcBirthController | OrdinaryCascadeController | MutationController | KindController | KindProbeVerifierController | KindProbeSuccessorController
+data HostControllerKind
+  = RpcBirthController
+  | OrdinaryCascadeController
+  | MutationController
+  | KindController
+  | KindProbeVerifierController
+  | KindProbeSuccessorController
   deriving (Eq, Show)
 
 hostControllerKindEntrypoint :: HostControllerKind -> String

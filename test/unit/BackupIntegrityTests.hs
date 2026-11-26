@@ -16,7 +16,15 @@ import Prodbox.Config.BootstrapProjection
   , renderBootstrapDraft
   )
 import Prodbox.Config.DeploymentScope (scopeKindName, scopeRoot)
-import Prodbox.Control.Backup (backupStepDetail, backupStepOk, restoreServices, treeDigest)
+import Prodbox.Control.Backup
+  ( backupStepDetail
+  , backupStepOk
+  , protectedRestoreHistoryMatches
+  , restoreServices
+  , treeDigest
+  )
+import Prodbox.Control.BrokerDeploy (localBrokerStoreBucket)
+import Prodbox.Minio.ObjectStoreTypes (defaultObjectStoreBucket)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -84,3 +92,20 @@ backupIntegritySuite = describe "backup content integrity" $ do
       any (("independently known-good live source" `isInfixOf`) . backupStepDetail) result
         `shouldBe` True
       doesFileExist manifest >>= (`shouldBe` True)
+
+  it "rejects restoring an older Broker fence while allowing regenerated MinIO temporary files" $
+    withSystemTempDirectory "prodbox-restore-history" $ \directory -> do
+      let backup = directory </> "backup"
+          live = directory </> "live"
+          brokerBucket = "minio-data" </> localBrokerStoreBucket
+          sys = "minio-data" </> ".minio.sys"
+          members = ["vault-data", brokerBucket, "minio-data" </> defaultObjectStoreBucket, sys </> "config"]
+          setup root = do
+            mapM_ (createDirectoryIfMissing True . (root </>)) members
+            ByteString.writeFile (root </> brokerBucket </> "fence") "old-record"
+          observe = protectedRestoreHistoryMatches "synthetic-restore-key" backup live
+      mapM_ setup [backup, live]
+      ByteString.writeFile (live </> sys </> "temporary") "regenerated"
+      observe >>= (`shouldBe` True)
+      ByteString.writeFile (live </> brokerBucket </> "fence") "new-record"
+      observe >>= (`shouldBe` False)

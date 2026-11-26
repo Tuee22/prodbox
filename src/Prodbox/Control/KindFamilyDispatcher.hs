@@ -20,49 +20,89 @@ module Prodbox.Control.KindFamilyDispatcher
   , summarizeFamilyResult
   ) where
 
-import Prodbox.Control.KindController
-  ( KindFamilyParentOutcome (..)
-  , KindFamilyParentError (..)
-  , KindFamilyPreparationError
-  , KindFamilyPostAction (..)
-  , KindFamilyWorkOutcome (..)
-  , prepareKindFamilyController
-  , prepareKindProbeRecoveryController
-  , prepareKindProbeVerifierController
-  , prepareKindProbeSuccessorController
-  , runKindFamilyWorker
-  , withKindFamilyProcesses
-  )
-import Prodbox.Control.KindControllerInput
-  ( KindControllerInputError (..), KindControllerInputOutcome (..)
-  , withPinnedKindControllerInput
-  , withPinnedKindProbeRecoveryInput
-  , KindProbeFamilyRequest (..)
-  , withPinnedKindProbeFamilyInput
-  )
 import Data.ByteString.Char8 qualified as Bytes
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (isPrefixOf)
 import GHC.Clock (getMonotonicTimeNSec)
 import Prodbox.Aws.SigV4 (hexSha256)
+import Prodbox.Config.BootstrapProjection (BootstrapProjection)
+import Prodbox.Control.KindController
+  ( KindFamilyParentError (..)
+  , KindFamilyParentOutcome (..)
+  , KindFamilyPostAction (..)
+  , KindFamilyPreparationError
+  , KindFamilyWorkOutcome (..)
+  , prepareKindFamilyController
+  , prepareKindProbeRecoveryController
+  , prepareKindProbeSuccessorController
+  , prepareKindProbeVerifierController
+  , runKindFamilyWorker
+  , withKindFamilyProcesses
+  )
+import Prodbox.Control.KindControllerInput
+  ( KindControllerInputError (..)
+  , KindControllerInputOutcome (..)
+  , KindProbeFamilyRequest (..)
+  , withPinnedKindControllerInput
+  , withPinnedKindProbeFamilyInput
+  , withPinnedKindProbeRecoveryInput
+  )
 import Prodbox.Control.KindControllerReceipt
   ( ControllerReceiptWrite (ControllerReceiptRecorded)
-  , FamilyPrimary (..), FamilyWorkerClosing (..), FamilyParentClosing (..), FamilyInputClosing (..)
-  , FamilyPostDisposition (..), FamilyPostClosing (..), FamilyResult (..), FamilyResultWrite (..)
-  , recordFamilyResult
+  , FamilyInputClosing (..)
+  , FamilyParentClosing (..)
+  , FamilyPostClosing (..)
+  , FamilyPostDisposition (..)
+  , FamilyPrimary (..)
+  , FamilyResult (..)
+  , FamilyResultWrite (..)
+  , FamilyWorkerClosing (..)
+  , recordFamilyResultUntil
   )
-import Prodbox.Control.KindControllerRequest (encodeKindControllerRequest, kindRequestOperation, probeRecoveryControllerRequest, probeRecoveryId, probeVerifierRecoveryRequest, probeSuccessorVerifier)
-import Prodbox.Control.KindNetworkProbeRecord (ProbeRecord (ProbeVerifierDiagnosticRecord, ProbeSuccessorDiagnosticRecord), ProbeRecordWrite (..), ProbeVerifierDiagnostic (..), recordProbeRecord)
-import Prodbox.Control.KindFamilyRecovery (KindFamilyRetirementOutcome (..), KindProbeSuccessorChainOutcome (..), KindProbeSuccessorWorkerOutcome (..), recoverKindFamilyProbeWithWorker, recoverKindFamilyProbeAttemptWithVerifier, recoverKindFamilyProbeWithSuccessor)
+import Prodbox.Control.KindControllerRequest
+  ( KindControllerRequest
+  , encodeKindControllerRequest
+  , kindRequestOperation
+  , kindRequestWindow
+  , probeRecoveryControllerRequest
+  , probeRecoveryId
+  , probeSuccessorVerifier
+  , probeVerifierRecoveryRequest
+  )
+import Prodbox.Control.KindFamilyRecovery
+  ( KindFamilyRetirementOutcome (..)
+  , KindProbeSuccessorChainOutcome (..)
+  , KindProbeSuccessorWorkerOutcome (..)
+  , recoverKindFamilyProbeAttemptWithVerifier
+  , recoverKindFamilyProbeWithSuccessor
+  , recoverKindFamilyProbeWithWorker
+  )
 import Prodbox.Control.KindKubeconfigInstall (KindKubeconfigInstall (KindKubeconfigInstalled))
-import Prodbox.Control.NetworkEnforcement (EnforcementOutcome (..), ProbeRecoveryOutcome (..), ProbeAttemptReadbackOutcome (..), enforcementComplete)
-import Prodbox.Control.Reconcile (ImageAttemptFailure (..), ReconcileOutcome (..))
-import Prodbox.Control.KindLease (KindLeaseOutcome (..), KindLeaseHandoff (..), KindOperationOutcome (..), awaitKindLeaseHandoff, withRecoveredKindOperation)
-import Prodbox.Subprocess qualified as Subprocess
-import Prodbox.Subprocess.HostOperationFamily qualified as HostFamily
-import Prodbox.Subprocess.HostControllerInputs qualified as HostInputs
+import Prodbox.Control.KindLease
+  ( KindLeaseHandoff (..)
+  , KindLeaseOutcome (..)
+  , KindOperationOutcome (..)
+  , awaitKindLeaseHandoff
+  , withRecoveredKindOperation
+  )
+import Prodbox.Control.KindNetworkProbeRecord
+  ( ProbeRecord (ProbeSuccessorDiagnosticRecord, ProbeVerifierDiagnosticRecord)
+  , ProbeRecordWrite (..)
+  , ProbeVerifierDiagnostic (..)
+  , recordProbeRecord
+  )
 import Prodbox.Control.KindTool (confirmedKindWorkerNode)
+import Prodbox.Control.NetworkEnforcement
+  ( EnforcementOutcome (..)
+  , ProbeAttemptReadbackOutcome (..)
+  , ProbeRecoveryOutcome (..)
+  , enforcementComplete
+  )
+import Prodbox.Control.Reconcile (ImageAttemptFailure (..), ReconcileOutcome (..))
+import Prodbox.Subprocess qualified as Subprocess
 import Prodbox.Subprocess.HostControllerArguments qualified as Arguments
+import Prodbox.Subprocess.HostControllerInputs qualified as HostInputs
+import Prodbox.Subprocess.HostOperationFamily qualified as HostFamily
 import Prodbox.Subprocess.SystemdBus qualified as Bus
 import Prodbox.Subprocess.SystemdIdentity qualified as Identity
 import System.Posix.User (getEffectiveUserID)
@@ -78,48 +118,107 @@ data KindFamilyResultRecording
 data KindFamilyDispatchOutcome
   = KindFamilyDispatchManagerRefused !Bus.BusError
   | KindFamilyDispatchInput
-      !(KindControllerInputOutcome (Either KindFamilyPreparationError (KindFamilyParentOutcome KindFamilyWorkOutcome)))
+      !( KindControllerInputOutcome
+           (Either KindFamilyPreparationError (KindFamilyParentOutcome KindFamilyWorkOutcome))
+       )
       !KindFamilyResultRecording
   deriving (Show)
 
 data KindProbeRecoveryDispatchOutcome
   = KindProbeRecoveryDispatchManagerRefused !Bus.BusError
   | KindProbeRecoveryDispatchInput
-      !(KindControllerInputOutcome (Either KindFamilyPreparationError
-        (KindFamilyParentOutcome KindProbeRecoveryWorkerOutcome)))
+      !( KindControllerInputOutcome
+           ( Either
+               KindFamilyPreparationError
+               (KindFamilyParentOutcome KindProbeRecoveryWorkerOutcome)
+           )
+       )
   deriving (Show)
 
 data KindProbeRecoveryWorkerOutcome
   = KindProbeRecoveryHandoffRefused !KindLeaseHandoff
-  | KindProbeRecoveryWorkerObserved !(KindFamilyRetirementOutcome (KindOperationOutcome ProbeRecoveryOutcome))
+  | KindProbeRecoveryWorkerObserved
+      !(KindFamilyRetirementOutcome (KindOperationOutcome ProbeRecoveryOutcome))
   deriving (Show)
 
 data KindProbeFamilyWorkerOutcome
   = KindProbeFamilyHandoffRefused !KindLeaseHandoff
   | KindProbeFamilyCleanup !(KindFamilyRetirementOutcome (KindOperationOutcome ProbeRecoveryOutcome))
-  | KindProbeFamilyVerifier !(KindFamilyRetirementOutcome (KindFamilyRetirementOutcome (KindOperationOutcome ProbeAttemptReadbackOutcome)))
+  | KindProbeFamilyVerifier
+      !( KindFamilyRetirementOutcome
+           (KindFamilyRetirementOutcome (KindOperationOutcome ProbeAttemptReadbackOutcome))
+       )
   | KindProbeFamilySuccessor !KindProbeSuccessorWorkerOutcome
   deriving (Show)
 
 data KindProbeFamilyDispatchOutcome
   = KindProbeFamilyDispatchManagerRefused !Bus.BusError
-  | KindProbeFamilyDispatchInput !(KindControllerInputOutcome
-      (Either KindFamilyPreparationError (KindFamilyParentOutcome KindProbeFamilyWorkerOutcome)))
+  | KindProbeFamilyDispatchInput
+      !( KindControllerInputOutcome
+           (Either KindFamilyPreparationError (KindFamilyParentOutcome KindProbeFamilyWorkerOutcome))
+       )
   deriving (Show)
 
 -- Completion describes the worker callback only; its family still needs
 -- independent retirement before any successor can use its result.
 kindProbeFamilyDispatchCompleted :: KindProbeFamilyDispatchOutcome -> Bool
 kindProbeFamilyDispatchCompleted outcome = case outcome of
-  KindProbeFamilyDispatchInput (KindInputCompleted (Right (KindFamilyParentCompleted
-    (KindProbeFamilyCleanup (KindFamilyRetirementReturned
-      (KindOperationCallbackReturned ProbeRecoveryCompleted) (Right ()) True))))) -> True
-  KindProbeFamilyDispatchInput (KindInputCompleted (Right (KindFamilyParentCompleted
-    (KindProbeFamilyVerifier (KindFamilyRetirementReturned (KindFamilyRetirementReturned
-      (KindOperationCallbackReturned ProbeAttemptReadbackRecorded) (Right ()) True) (Right ()) True))))) -> True
-  KindProbeFamilyDispatchInput (KindInputCompleted (Right (KindFamilyParentCompleted
-    (KindProbeFamilySuccessor (KindProbeSuccessorWorkerObserved (KindFamilyRetirementReturned (KindFamilyRetirementReturned
-      (KindFamilyRetirementReturned (KindProbeSuccessorChainReturned (KindOperationCallbackReturned ProbeAttemptReadbackRecorded) True) (Right ()) True) (Right ()) True) (Right ()) True)))))) -> True
+  KindProbeFamilyDispatchInput
+    ( KindInputCompleted
+        ( Right
+            ( KindFamilyParentCompleted
+                ( KindProbeFamilyCleanup
+                    ( KindFamilyRetirementReturned
+                        (KindOperationCallbackReturned ProbeRecoveryCompleted)
+                        (Right ())
+                        True
+                      )
+                  )
+              )
+          )
+      ) -> True
+  KindProbeFamilyDispatchInput
+    ( KindInputCompleted
+        ( Right
+            ( KindFamilyParentCompleted
+                ( KindProbeFamilyVerifier
+                    ( KindFamilyRetirementReturned
+                        ( KindFamilyRetirementReturned
+                            (KindOperationCallbackReturned ProbeAttemptReadbackRecorded)
+                            (Right ())
+                            True
+                          )
+                        (Right ())
+                        True
+                      )
+                  )
+              )
+          )
+      ) -> True
+  KindProbeFamilyDispatchInput
+    ( KindInputCompleted
+        ( Right
+            ( KindFamilyParentCompleted
+                ( KindProbeFamilySuccessor
+                    ( KindProbeSuccessorWorkerObserved
+                        ( KindFamilyRetirementReturned
+                            ( KindFamilyRetirementReturned
+                                ( KindFamilyRetirementReturned
+                                    (KindProbeSuccessorChainReturned (KindOperationCallbackReturned ProbeAttemptReadbackRecorded) True)
+                                    (Right ())
+                                    True
+                                  )
+                                (Right ())
+                                True
+                              )
+                            (Right ())
+                            True
+                          )
+                      )
+                  )
+              )
+          )
+      ) -> True
   _ -> False
 
 -- Small, fixed manager exit categories carry no input or subprocess output.
@@ -166,7 +265,8 @@ diagnosticCode diagnostic = case diagnostic of
   VerifierReadbackRecorded -> 35
   VerifierClosingUnconfirmed -> 36
 
-dispatchKindProbeFamilyController :: Arguments.HostControllerArguments -> IO KindProbeFamilyDispatchOutcome
+dispatchKindProbeFamilyController
+  :: Arguments.HostControllerArguments -> IO KindProbeFamilyDispatchOutcome
 dispatchKindProbeFamilyController arguments = do
   uid <- getEffectiveUserID
   let work = Identity.hostExecutionWorkEnd (Arguments.controllerOriginalWindow arguments)
@@ -174,60 +274,84 @@ dispatchKindProbeFamilyController arguments = do
   observed <- Bus.withSystemdBus work socket Bus.observeManagerDomain
   case observed of
     Left failure -> pure (KindProbeFamilyDispatchManagerRefused failure)
-    Right domain -> KindProbeFamilyDispatchInput <$> withPinnedKindProbeFamilyInput arguments domain
-      (\bootstrap request program stable -> do
-        prepared <- case request of
-          KindProbeCleanupRequest recovery -> prepareKindProbeRecoveryController bootstrap recovery
-          KindProbeVerifierRequest verifier -> prepareKindProbeVerifierController bootstrap verifier
-          KindProbeSuccessorRequest successor -> prepareKindProbeSuccessorController bootstrap successor
-        result <- case prepared of
-          Left failure -> pure (Left failure)
-          Right preparation -> Right <$> withKindFamilyProcesses preparation program domain
-            (\processes -> do
-              let recovery = case request of
-                    KindProbeCleanupRequest value -> value
-                    KindProbeVerifierRequest value -> probeVerifierRecoveryRequest value
-                    KindProbeSuccessorRequest value -> probeVerifierRecoveryRequest (probeSuccessorVerifier value)
-                  operation = kindRequestOperation (probeRecoveryControllerRequest recovery)
-                  parentStable = do
-                    held <- stable
-                    parent <- Subprocess.verifyOperationSubprocessesBeforeEffect processes
-                    pure (held == Right () && parent == Right ())
-              handoff <- awaitKindLeaseHandoff work bootstrap operation parentStable
-              case handoff of
-                KindLeaseHandoffReady -> case request of
-                  KindProbeCleanupRequest value -> KindProbeFamilyCleanup <$>
-                    recoverKindFamilyProbeWithWorker work bootstrap operation (probeRecoveryId value) processes stable
-                  KindProbeVerifierRequest value -> KindProbeFamilyVerifier <$>
-                    recoverKindFamilyProbeAttemptWithVerifier work bootstrap value processes stable
-                  KindProbeSuccessorRequest value -> KindProbeFamilySuccessor <$>
-                    recoverKindFamilyProbeWithSuccessor work bootstrap value processes stable
-                failure -> pure (KindProbeFamilyHandoffRefused failure))
-        case request of
-          KindProbeVerifierRequest verifier -> do
-            let coordinates = probeVerifierRecoveryRequest verifier
-                operation = kindRequestOperation (probeRecoveryControllerRequest coordinates)
-                namespace = "prodbox-netcheck-" ++ take 12 operation
-                admitted = (== Right ()) <$> stable
-            _ <- withRecoveredKindOperation bootstrap operation $ \lease ->
-              recordProbeRecord bootstrap operation namespace (ProbeVerifierDiagnosticRecord verifier (summarizeVerifier result))
-                ((&&) <$> lease <*> admitted)
-            pure ()
-          KindProbeCleanupRequest _ -> pure ()
-          KindProbeSuccessorRequest successor -> do
-            let coordinates = probeVerifierRecoveryRequest (probeSuccessorVerifier successor)
-                operation = kindRequestOperation (probeRecoveryControllerRequest coordinates)
-                namespace = "prodbox-netcheck-" ++ take 12 operation
-                admitted = (== Right ()) <$> stable
-            _ <- withRecoveredKindOperation bootstrap operation $ \lease ->
-              recordProbeRecord bootstrap operation namespace (ProbeSuccessorDiagnosticRecord successor (summarizeSuccessor result))
-                ((&&) <$> lease <*> admitted)
-            pure ()
-        pure result)
+    Right domain ->
+      KindProbeFamilyDispatchInput
+        <$> withPinnedKindProbeFamilyInput
+          arguments
+          domain
+          ( \bootstrap request program stable -> do
+              prepared <- case request of
+                KindProbeCleanupRequest recovery -> prepareKindProbeRecoveryController bootstrap recovery
+                KindProbeVerifierRequest verifier -> prepareKindProbeVerifierController bootstrap verifier
+                KindProbeSuccessorRequest successor -> prepareKindProbeSuccessorController bootstrap successor
+              result <- case prepared of
+                Left failure -> pure (Left failure)
+                Right preparation ->
+                  Right
+                    <$> withKindFamilyProcesses
+                      preparation
+                      program
+                      domain
+                      ( \processes -> do
+                          let recovery = case request of
+                                KindProbeCleanupRequest value -> value
+                                KindProbeVerifierRequest value -> probeVerifierRecoveryRequest value
+                                KindProbeSuccessorRequest value -> probeVerifierRecoveryRequest (probeSuccessorVerifier value)
+                              operation = kindRequestOperation (probeRecoveryControllerRequest recovery)
+                              parentStable = do
+                                held <- stable
+                                parent <- Subprocess.verifyOperationSubprocessesBeforeEffect processes
+                                pure (held == Right () && parent == Right ())
+                          handoff <- awaitKindLeaseHandoff work bootstrap operation parentStable
+                          case handoff of
+                            KindLeaseHandoffReady -> case request of
+                              KindProbeCleanupRequest value ->
+                                KindProbeFamilyCleanup
+                                  <$> recoverKindFamilyProbeWithWorker work bootstrap operation (probeRecoveryId value) processes stable
+                              KindProbeVerifierRequest value ->
+                                KindProbeFamilyVerifier
+                                  <$> recoverKindFamilyProbeAttemptWithVerifier work bootstrap value processes stable
+                              KindProbeSuccessorRequest value ->
+                                KindProbeFamilySuccessor
+                                  <$> recoverKindFamilyProbeWithSuccessor work bootstrap value processes stable
+                            failure -> pure (KindProbeFamilyHandoffRefused failure)
+                      )
+              case request of
+                KindProbeVerifierRequest verifier -> do
+                  let coordinates = probeVerifierRecoveryRequest verifier
+                      operation = kindRequestOperation (probeRecoveryControllerRequest coordinates)
+                      namespace = "prodbox-netcheck-" ++ take 12 operation
+                      admitted = (== Right ()) <$> stable
+                  _ <- withRecoveredKindOperation bootstrap operation $ \lease ->
+                    recordProbeRecord
+                      bootstrap
+                      operation
+                      namespace
+                      (ProbeVerifierDiagnosticRecord verifier (summarizeVerifier result))
+                      ((&&) <$> lease <*> admitted)
+                  pure ()
+                KindProbeCleanupRequest _ -> pure ()
+                KindProbeSuccessorRequest successor -> do
+                  let coordinates = probeVerifierRecoveryRequest (probeSuccessorVerifier successor)
+                      operation = kindRequestOperation (probeRecoveryControllerRequest coordinates)
+                      namespace = "prodbox-netcheck-" ++ take 12 operation
+                      admitted = (== Right ()) <$> stable
+                  _ <- withRecoveredKindOperation bootstrap operation $ \lease ->
+                    recordProbeRecord
+                      bootstrap
+                      operation
+                      namespace
+                      (ProbeSuccessorDiagnosticRecord successor (summarizeSuccessor result))
+                      ((&&) <$> lease <*> admitted)
+                  pure ()
+              pure result
+          )
 
 -- Diagnostic only: closed constructors deliberately exclude command output,
 -- exceptions and configuration values, and never authorize a successor.
-summarizeVerifier :: Either KindFamilyPreparationError (KindFamilyParentOutcome KindProbeFamilyWorkerOutcome) -> ProbeVerifierDiagnostic
+summarizeVerifier
+  :: Either KindFamilyPreparationError (KindFamilyParentOutcome KindProbeFamilyWorkerOutcome)
+  -> ProbeVerifierDiagnostic
 summarizeVerifier result = case result of
   Left _ -> VerifierPreparationRefused
   Right (KindFamilyParentRefused _) -> VerifierParentRefused
@@ -248,7 +372,9 @@ summarizeVerifier result = case result of
         _ -> VerifierClosingUnconfirmed
       _ -> VerifierClosingUnconfirmed
 
-summarizeSuccessor :: Either KindFamilyPreparationError (KindFamilyParentOutcome KindProbeFamilyWorkerOutcome) -> ProbeVerifierDiagnostic
+summarizeSuccessor
+  :: Either KindFamilyPreparationError (KindFamilyParentOutcome KindProbeFamilyWorkerOutcome)
+  -> ProbeVerifierDiagnostic
 summarizeSuccessor result = case result of
   Left _ -> VerifierPreparationRefused
   Right (KindFamilyParentRefused _) -> VerifierParentRefused
@@ -304,14 +430,26 @@ isKindProbeRecoveryArguments arguments = take 32 key /= drop 32 key
 -- closing; a caller still must settle the cleanup family independently.
 kindProbeRecoveryDispatchCompleted :: KindProbeRecoveryDispatchOutcome -> Bool
 kindProbeRecoveryDispatchCompleted outcome = case outcome of
-  KindProbeRecoveryDispatchInput (KindInputCompleted (Right (KindFamilyParentCompleted
-    (KindProbeRecoveryWorkerObserved (KindFamilyRetirementReturned
-      (KindOperationCallbackReturned ProbeRecoveryCompleted) (Right ()) True))))) -> True
+  KindProbeRecoveryDispatchInput
+    ( KindInputCompleted
+        ( Right
+            ( KindFamilyParentCompleted
+                ( KindProbeRecoveryWorkerObserved
+                    ( KindFamilyRetirementReturned
+                        (KindOperationCallbackReturned ProbeRecoveryCompleted)
+                        (Right ())
+                        True
+                      )
+                  )
+              )
+          )
+      ) -> True
   _ -> False
 
 -- This internal composition does not submit or prove retirement of the
 -- cleanup family. Its caller must settle that family even after a return.
-dispatchKindProbeRecoveryController :: Arguments.HostControllerArguments -> IO KindProbeRecoveryDispatchOutcome
+dispatchKindProbeRecoveryController
+  :: Arguments.HostControllerArguments -> IO KindProbeRecoveryDispatchOutcome
 dispatchKindProbeRecoveryController arguments = do
   uid <- getEffectiveUserID
   let work = Identity.hostExecutionWorkEnd (Arguments.controllerOriginalWindow arguments)
@@ -319,34 +457,59 @@ dispatchKindProbeRecoveryController arguments = do
   observed <- Bus.withSystemdBus work socket Bus.observeManagerDomain
   case observed of
     Left failure -> pure (KindProbeRecoveryDispatchManagerRefused failure)
-    Right domain -> KindProbeRecoveryDispatchInput <$> withPinnedKindProbeRecoveryInput arguments domain
-      (\bootstrap recovery program stable -> do
-        prepared <- prepareKindProbeRecoveryController bootstrap recovery
-        case prepared of
-          Left failure -> pure (Left failure)
-          Right preparation -> Right <$> withKindFamilyProcesses preparation program domain
-            (\processes -> do
-              let operation = kindRequestOperation (probeRecoveryControllerRequest recovery)
-                  parentStable = do
-                    held <- stable
-                    parent <- Subprocess.verifyOperationSubprocessesBeforeEffect processes
-                    pure (held == Right () && parent == Right ())
-              handoff <- awaitKindLeaseHandoff work bootstrap operation parentStable
-              case handoff of
-                KindLeaseHandoffReady -> KindProbeRecoveryWorkerObserved <$>
-                  recoverKindFamilyProbeWithWorker work bootstrap operation (probeRecoveryId recovery) processes stable
-                failure -> pure (KindProbeRecoveryHandoffRefused failure)))
+    Right domain ->
+      KindProbeRecoveryDispatchInput
+        <$> withPinnedKindProbeRecoveryInput
+          arguments
+          domain
+          ( \bootstrap recovery program stable -> do
+              prepared <- prepareKindProbeRecoveryController bootstrap recovery
+              case prepared of
+                Left failure -> pure (Left failure)
+                Right preparation ->
+                  Right
+                    <$> withKindFamilyProcesses
+                      preparation
+                      program
+                      domain
+                      ( \processes -> do
+                          let operation = kindRequestOperation (probeRecoveryControllerRequest recovery)
+                              parentStable = do
+                                held <- stable
+                                parent <- Subprocess.verifyOperationSubprocessesBeforeEffect processes
+                                pure (held == Right () && parent == Right ())
+                          handoff <- awaitKindLeaseHandoff work bootstrap operation parentStable
+                          case handoff of
+                            KindLeaseHandoffReady ->
+                              KindProbeRecoveryWorkerObserved
+                                <$> recoverKindFamilyProbeWithWorker
+                                  work
+                                  bootstrap
+                                  operation
+                                  (probeRecoveryId recovery)
+                                  processes
+                                  stable
+                            failure -> pure (KindProbeRecoveryHandoffRefused failure)
+                      )
+          )
 
 -- This means the controller observed its worker and a completed probe. The
 -- caller still must prove job processing and physical retirement.
 kindFamilyDispatchCompleted :: KindFamilyDispatchOutcome -> Bool
 kindFamilyDispatchCompleted outcome = case outcome of
   KindFamilyDispatchInput
-    (KindInputCompleted (Right (KindFamilyParentCompleted
-      (KindFamilyWorkObserved observed
-        (Just (KindOperationCallbackReturned (KindFamilyPostProbe probe True)))))))
+    ( KindInputCompleted
+        ( Right
+            ( KindFamilyParentCompleted
+                ( KindFamilyWorkObserved
+                    observed
+                    (Just (KindOperationCallbackReturned (KindFamilyPostProbe probe True)))
+                  )
+              )
+          )
+      )
     (KindFamilyResultLease (KindOperationCallbackReturned FamilyResultRecorded)) ->
-          enforcementComplete probe && case confirmedKindWorkerNode observed of Just _ -> True; Nothing -> False
+      enforcementComplete probe && case confirmedKindWorkerNode observed of Just _ -> True; Nothing -> False
   _ -> False
 
 -- The first manager domain is only data for pinned request decoding. The
@@ -367,29 +530,43 @@ dispatchKindFamilyController arguments = do
         prepared <- prepareKindFamilyController bootstrap request
         case prepared of
           Left failure -> pure (Left failure)
-          Right preparation -> Right <$> withKindFamilyProcesses preparation program domain
-            (\processes -> runKindFamilyWorker preparation processes stable)
+          Right preparation ->
+            Right
+              <$> withKindFamilyProcesses
+                preparation
+                program
+                domain
+                (\processes -> runKindFamilyWorker preparation processes stable)
       known <- readIORef retained
       recorded <- case known of
         Nothing -> pure KindFamilyResultNoContext
-        Just (bootstrap, request) -> do
-          let operation = kindRequestOperation request
-              digest = Bytes.unpack (hexSha256 (encodeKindControllerRequest request))
-              outer = Identity.hostExecutionOuterEnd (Arguments.controllerOriginalWindow arguments)
-          now <- getMonotonicTimeNSec
-          if now >= outer || (outer - now) `div` 1000 == 0
-            then pure KindFamilyResultDeadlineExpired
-            else do
-              let remaining = min 10000000 ((outer - now) `div` 1000)
-              result <- timeout (fromIntegral remaining) $ withRecoveredKindOperation bootstrap operation
-                (recordFamilyResult bootstrap operation digest (summarizeFamilyResult loaded))
-              pure (maybe KindFamilyResultTimedOut KindFamilyResultLease result)
+        Just (bootstrap, request) ->
+          recordKindFamilyDispatchResult bootstrap request (summarizeFamilyResult loaded)
       pure (KindFamilyDispatchInput loaded recorded)
+
+-- A retirement observer can briefly borrow the same operation lease.
+-- Retry acquisition within the existing result budget, before the writer runs.
+recordKindFamilyDispatchResult
+  :: BootstrapProjection -> KindControllerRequest -> FamilyResult -> IO KindFamilyResultRecording
+recordKindFamilyDispatchResult bootstrap request summary = do
+  now <- getMonotonicTimeNSec
+  let operation = kindRequestOperation request
+      digest = Bytes.unpack (hexSha256 (encodeKindControllerRequest request))
+      outer = Identity.hostExecutionOuterEnd (kindRequestWindow request)
+  if now >= outer || (outer - now) `div` 1000 == 0
+    then pure KindFamilyResultDeadlineExpired
+    else do
+      let remaining = min 10000000 ((outer - now) `div` 1000)
+          ending = now + remaining * 1000
+      result <-
+        timeout (fromIntegral remaining) (recordFamilyResultUntil ending bootstrap operation digest summary)
+      pure (maybe KindFamilyResultTimedOut KindFamilyResultLease result)
 
 -- Only closed constructors are projected; arbitrary exceptions and captured
 -- subprocess streams are never rendered into the retained summary.
 summarizeFamilyResult
-  :: KindControllerInputOutcome (Either KindFamilyPreparationError (KindFamilyParentOutcome KindFamilyWorkOutcome))
+  :: KindControllerInputOutcome
+       (Either KindFamilyPreparationError (KindFamilyParentOutcome KindFamilyWorkOutcome))
   -> FamilyResult
 summarizeFamilyResult input = case input of
   KindInputRefused _ -> emptyResult FamilyPreparationRefused FamilyInputUnconfirmed
@@ -399,20 +576,82 @@ summarizeFamilyResult input = case input of
   summarize inputClosing result = case result of
     Left _ -> emptyResult FamilyPreparationRefused inputClosing
     Right parent -> case parent of
-      KindFamilyParentRefused _ -> FamilyResult FamilyParentRefused FamilyWorkerUnobserved FamilyParentUnconfirmed inputClosing FamilyPostNotAttempted FamilyPostNotStarted
+      KindFamilyParentRefused _ ->
+        FamilyResult
+          FamilyParentRefused
+          FamilyWorkerUnobserved
+          FamilyParentUnconfirmed
+          inputClosing
+          FamilyPostNotAttempted
+          FamilyPostNotStarted
       KindFamilyParentCompleted work -> fromWork FamilyParentComplete inputClosing work
       KindFamilyParentUnconfirmedAfter work failure -> fromWork (parentClosingFailure failure) inputClosing work
   fromWork parentClosing inputClosing work = case work of
-    KindFamilyWorkHandoffRefused _ -> FamilyResult FamilyWorkerNotObserved FamilyWorkerNotStarted parentClosing inputClosing FamilyPostNotAttempted FamilyPostNotStarted
-    KindFamilyWorkAdmissionRefused -> FamilyResult FamilyWorkerNotObserved FamilyWorkerNotStarted parentClosing inputClosing FamilyPostNotAttempted FamilyPostNotStarted
-    KindFamilyWorkPrerequisitesUnconfirmed reason -> FamilyResult FamilyWorkerNotObserved FamilyWorkerNotStarted parentClosing inputClosing (prerequisiteDisposition reason) FamilyPostNotStarted
-    KindFamilyWorkIoUnconfirmed _ -> FamilyResult FamilyWorkerNotObserved FamilyWorkerIoUnconfirmed parentClosing inputClosing FamilyPostNotAttempted FamilyPostNotStarted
-    KindFamilyWorkIoUnconfirmedAfter observed _ -> FamilyResult (workerPrimary observed) FamilyWorkerIoUnconfirmed parentClosing inputClosing FamilyPostNotAttempted FamilyPostNotStarted
-    KindFamilyWorkDescriptorShapeRefused -> FamilyResult FamilyWorkerNotObserved FamilyWorkerDescriptorRefused parentClosing inputClosing FamilyPostNotAttempted FamilyPostNotStarted
+    KindFamilyWorkHandoffRefused _ ->
+      FamilyResult
+        FamilyWorkerNotObserved
+        FamilyWorkerNotStarted
+        parentClosing
+        inputClosing
+        FamilyPostNotAttempted
+        FamilyPostNotStarted
+    KindFamilyWorkAdmissionRefused ->
+      FamilyResult
+        FamilyWorkerNotObserved
+        FamilyWorkerNotStarted
+        parentClosing
+        inputClosing
+        FamilyPostNotAttempted
+        FamilyPostNotStarted
+    KindFamilyWorkPrerequisitesUnconfirmed reason ->
+      FamilyResult
+        FamilyWorkerNotObserved
+        FamilyWorkerNotStarted
+        parentClosing
+        inputClosing
+        (prerequisiteDisposition reason)
+        FamilyPostNotStarted
+    KindFamilyWorkIoUnconfirmed _ ->
+      FamilyResult
+        FamilyWorkerNotObserved
+        FamilyWorkerIoUnconfirmed
+        parentClosing
+        inputClosing
+        FamilyPostNotAttempted
+        FamilyPostNotStarted
+    KindFamilyWorkIoUnconfirmedAfter observed _ ->
+      FamilyResult
+        (workerPrimary observed)
+        FamilyWorkerIoUnconfirmed
+        parentClosing
+        inputClosing
+        FamilyPostNotAttempted
+        FamilyPostNotStarted
+    KindFamilyWorkDescriptorShapeRefused ->
+      FamilyResult
+        FamilyWorkerNotObserved
+        FamilyWorkerDescriptorRefused
+        parentClosing
+        inputClosing
+        FamilyPostNotAttempted
+        FamilyPostNotStarted
     KindFamilyWorkObserved observed post ->
       let (postPrimary, postClosing) = postDisposition post
-       in FamilyResult (workerPrimary observed) FamilyWorkerComplete parentClosing inputClosing postPrimary postClosing
-  emptyResult primary inputClosing = FamilyResult primary FamilyWorkerNotStarted FamilyParentNotStarted inputClosing FamilyPostNotAttempted FamilyPostNotStarted
+       in FamilyResult
+            (workerPrimary observed)
+            FamilyWorkerComplete
+            parentClosing
+            inputClosing
+            postPrimary
+            postClosing
+  emptyResult primary inputClosing =
+    FamilyResult
+      primary
+      FamilyWorkerNotStarted
+      FamilyParentNotStarted
+      inputClosing
+      FamilyPostNotAttempted
+      FamilyPostNotStarted
 
   inputClosingFailure failure = case failure of
     HostFamily.HostOperationExpired -> FamilyInputExpired
@@ -444,11 +683,15 @@ summarizeFamilyResult input = case input of
     ReconcileNodeProposal {} -> FamilyPostNodeIntentFailed
     ReconcileNodeProposalInvalid {} -> FamilyPostNodeIntentFailed
     _ -> FamilyPostPreconditionFailed
-  workerPrimary observed = case confirmedKindWorkerNode observed of Just _ -> FamilyWorkerConfirmed; Nothing -> FamilyWorkerUnconfirmed
+  workerPrimary observed = case confirmedKindWorkerNode observed of
+    Just _ -> FamilyWorkerConfirmed
+    Nothing -> FamilyWorkerUnconfirmed
   postDisposition post = case post of
     Nothing -> (FamilyPostNotAttempted, FamilyPostNotStarted)
     Just outcome ->
-      let closing = case outcome of KindOperationCallbackReturned _ -> FamilyPostLeaseComplete; _ -> FamilyPostLeaseUnconfirmed
+      let closing = case outcome of
+            KindOperationCallbackReturned _ -> FamilyPostLeaseComplete
+            _ -> FamilyPostLeaseUnconfirmed
        in (maybe FamilyPostNotAttempted actionDisposition (postAction outcome), closing)
   actionDisposition action = case action of
     KindFamilyPostPreconditionUnconfirmed -> FamilyPostPreconditionFailed

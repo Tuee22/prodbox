@@ -14,9 +14,9 @@ Read [AGENTS.md](../AGENTS.md), the [Development Plan Standards](development_pla
 | Phase | Contract | State | Next work / entry condition |
 |---:|---|---|---|
 | 0 | [Contracts and documentation](phase_00_contracts_and_documentation.md) | Complete | Checker, negative fixtures, M00 and owned removals validated; see [evidence](evidence/phase_00_validation.md). |
-| 1 | [CLI contexts, kind and evidence](phase_01_cli_contexts_kind_and_evidence.md) | Active — Next | Finish family submission, scoped completion and exact recovery/read-back; account for retained controlled-publication metadata, then validate automatic kind preparation, real cases and mutations. Earlier evidence remains historical. |
-| 2 | [Vault, MinIO and bootstrap](phase_02_vault_minio_and_bootstrap.md) | Active | Reopened for backup integrity; validate the real scenario and isolated mutation after Phase 1 preparation is proven. |
-| 3 | [Authority and local lifecycle](phase_03_authority_and_local_lifecycle.md) | Active | In progress; resume after the reopened Phase 2 regression is resolved and revalidated. |
+| 1 | [CLI contexts, kind and evidence](phase_01_cli_contexts_kind_and_evidence.md) | Complete | All eight acceptance cases, 27 targeted mutation kills, three calibrations and the current canonical gate passed. Earlier exact test leftovers were retired and independently verified. |
+| 2 | [Vault, MinIO and bootstrap](phase_02_vault_minio_and_bootstrap.md) | Complete | Two clean local cycles, Broker and service interruption, M03, affected M01 cases, exact cleanup and the canonical gate passed. [Evidence](evidence/phase_02_closure_2026_11_25.md) |
+| 3 | [Authority and local lifecycle](phase_03_authority_and_local_lifecycle.md) | Active — Next | No-op and sealed Authority reads qualified. Continue native admission recovery and audited Vault recovery, then finish the remaining acceptance, removals and cumulative gate. |
 | 4 | [Ephemeral credentials](phase_04_ephemeral_credentials.md) | Planned | Phase 3 complete plus real AWS test account/elevated fixture. |
 | 5 | [First complete AWS lifecycle](phase_05_first_complete_aws_lifecycle.md) | Planned | Phase 4 complete; cheap real resource create/recover/delete/read-back. |
 | 6 | [Local platform and applications](phase_06_local_platform_and_applications.md) | Planned | Phase 5 complete; canonical local services, registry, storage and application behavior. |
@@ -30,16 +30,18 @@ Read [AGENTS.md](../AGENTS.md), the [Development Plan Standards](development_pla
 The accepted target uses retained local kind with Vault, MinIO, the existing management roles and application services. Ordinary target `delete` removes all deployment-owned AWS resources and updates retained local state; it does not remove its own management cluster. Production/test roots and credentials are isolated. [Product architecture](../documents/engineering/product_architecture.md) owns these decisions.
 
 The documentation adoption itself did not implement the target. Subsequent
-Phase 0 and Phase 1 work has changed code and tests, but the current binary
+Phase 0 through Phase 2 work has changed code and tests, but the current binary
 still exposes legacy commands and lifecycle behavior alongside incomplete new
 work. Use its actual help for live operations until each replacement slice is
 delivered. Historical test totals and the recent manual AWS cleanup are not
 qualification of the target.
 
 Phase 0 closed only after the checker migration, adverse fixtures, isolated
-mutation campaign, owned removals, and post-removal canonical gate. Phase 1 is
-the current implementation entrypoint. Historical snapshot availability limits
-remain recorded in the Phase 0 evidence; they are not new runtime qualification.
+mutation campaign, owned removals, and post-removal canonical gate. Phase 1
+closed after clean kind runs, its mutation campaign and exact cleanup.
+Phase 2 closed after two clean bootstrap and recovery cycles, its mutation
+campaign and exact cleanup. Phase 3 is the current implementation entrypoint.
+Historical snapshot availability limits remain recorded in the Phase 0 evidence.
 
 ## Implementation inputs
 

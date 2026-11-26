@@ -8,13 +8,13 @@
 > **Purpose**: Actual Vault/MinIO/Broker services boot and recover from retained artifacts; test-only MinIO self-unseal and protected production unlock behave distinctly and preserve the same Vault identity.
 
 **Phase**: 2
-**State**: Active
+**State**: Complete
 **Prerequisites**: Phase 1 complete. No registry service, AWS, public DNS, SES, application platform or later Authority implementation is needed for this bootstrap-owned scope.
 **Acceptance**: A02-01, A02-02, A02-03, A02-04, A02-05, A02-06 in [acceptance_cases.md](acceptance_cases.md).
 **Critical mutations**: M03 in [mutation_cases.md](mutation_cases.md).
 **Owned removals**: L06, L07 in [legacy_tracking_for_deletion.md](legacy_tracking_for_deletion.md).
 **Inherited removals**: B026, B041, B053, B054 in [legacy_tracking_for_deletion.md](legacy_tracking_for_deletion.md).
-**Evidence**: Acceptance, mutation (M03) and cleanup observations are bound in [evidence/phase_02_validation.md](evidence/phase_02_validation.md); L06, L07, B026, B041, B053 and B054 are closed for the new bootstrap path, with original-install residuals under L18.
+**Evidence**: [Current validation record](evidence/phase_02_closure_2026_11_25.md) and [historical baseline](evidence/phase_02_validation.md). L06, L07, B026, B041, B053 and B054 are closed for the new bootstrap path, with original-install residuals under L18.
 
 [Resume from the numerical queue](README.md#resume-here). Follow [development_plan_standards.md](development_plan_standards.md); this file owns its tasks and closure, not another queue.
 
@@ -25,6 +25,445 @@ Actual Vault/MinIO/Broker services boot and recover from retained artifacts; tes
 Only capabilities delivered through this phase may be active in its public commands. Later capabilities stay explicitly unavailable; do not add successful stubs or private-only replacements and postpone public use to Phase 10.
 
 ## Implementation tasks
+
+Entry and service-gate repair (2026-11-25). Phase 1 closed with two clean
+local acceptance runs and all 30 qualifying mutation executions. The M03a,
+M03b and M03c source pins match the checkout. The existing isolated executor
+now exposes them as `test run mutations:phase-02`, plus individually by
+case name. The consolidated campaign `1850537365253977` began at 12:17
+America/Toronto. Its operator SHA-256 is
+`e3a5ef7ffd89347c8bc522b9d6444eb71ba3b39dbd994bd33565abf058c6c731` and
+its source manifest is `546c9f8c521c9ede0d31867758e4f01b94ac2c68ddadc3e1806a447a14677b35`.
+See `.build/phase2-m03-isolated-live-20261125.log`.
+
+Decision (2026-11-25). The service gate uses the settled kind family and
+its original operation lease. Each attempt records the generation, exact
+node and unique probe namespace before running policy traffic. A completed
+attempt can be followed by another. An interrupted or ambiguous attempt
+fences new work on that operation and retains an exact recovery identity.
+The existing lifecycle can retire the exact original kind operation before
+recreation. The old unbound service records stay readable as retained
+evidence and refuse service admission. This follows the exact identity and
+one-writer requirements in [lifecycle.md](../documents/engineering/lifecycle.md)
+under Identity, intent and observations, and the durable-refusal rule at
+line 94 in [the plan standards](development_plan_standards.md).
+Service imports use the selected daemon and exact node. The service
+sequence stops before provisioning credentials if namespace or policy apply
+fails, and credential command failures emit outcome categories without raw
+command output. The protected-policy adverse fixture uses a private fresh
+root and verifies its contents before cleanup. Live proof remains open.
+
+Acceptance coverage repair (2026-11-25). The prior right key arrived by
+pipe, while the terminal supplied only a deliberately wrong key. A02-03
+requires an actual successful prompt. The current probe supplies the scoped
+right key through the pseudo-terminal, records only classifications, and
+checks zero exit, hidden input and direct Vault health while MinIO is down.
+The prompt is emitted after terminal echo has been disabled. The wrong-key
+and no-input controls remain.
+
+A02-05 now starts two Pods with the same Guaranteed-QoS resource envelope
+as the one-shot secret worker. Both must be Running before the limited
+test client token arrives over attach stdin. Each must independently exit
+zero after its put/read comparison. The harness records the Pod intent and
+API UID, uses UID-preconditioned deletion, and brackets exact name absence
+with API readiness. The Broker worker now requests the retained image with
+pull policy `Never`. These changes address the actual scheduling and
+completion requirement at line 22 of
+[resource_governance.md](../documents/engineering/resource_governance.md).
+
+Live service-gate canary (2026-11-25). The first scoped run started at 12:24
+America/Toronto with operator SHA-256
+`fa6e67fc6e8e4ca0d1eaf3a5c0d6b3e6bb254e2553fdd6e3e163681ead4f7ae6`.
+Fresh scope `run-13fa09533bf0d84160f787fa8212c008`, generation
+`febb87773855c5ceaadb8706e60b8458`, enrolled and imported both retained,
+digest-checked Phase 1 artifacts through public commands. The original
+kind operation is `a85cb7d84dbfa78966a6a2407030abca`. The observer saw
+Kubernetes ready, followed by Vault, MinIO, the client and the Broker
+running. Two successive service attempts had distinct probe namespaces
+and scope-bound `ok=true` terminal records. The backup and recreation
+journey remains active. The canary predates the stronger prompt and worker
+observations and cannot qualify those. Logs are
+`.build/phase2-bound-services-real-20261125.log` and
+`.build/phase2-bound-services-exact-observer-20261125.log`.
+
+At 12:44 the first canary exited 1. Its backup/restore report
+`5ce2d5bec8c1152d44381ffbe12a838b` passed all seven independent case 7
+observations, including same-size corruption, retained format 1 refusal,
+same Vault identity and rollback of the test value. That report's source
+manifest is `8ddd1af1f557274efb89d12e78997133f390b671d7dca2fdfa0137d1e9412e3a`.
+The replacement report failed. The original node, volume and network had
+returned exact 404s with the original Docker controls present. The original
+intent remained active because the archive allowlist had no entries for
+the new attempt and probe journals. The archive now derives these exact
+record names from the old operation before publishing its history, after
+the existing independent resource retirement and lease checks. Legacy flat
+service records also remain in that history. The first canary left 35
+service and probe records, fingerprinted without credential payloads in
+`.build/phase2-service-journal-before-archive-20261125.sha256`. The same
+retained scope is being recovered through the updated public binary.
+
+The recovery build `92dec607e52ddebadebe5560d774583334e637d72f6b908be575a980aa1d9f16`
+archived the old operation and created replacement
+`8ab68af275b9d2e735d8757f0da76da1` under the same generation. At 12:51 all
+35 archived service and probe records matched their original bytes. The
+replacement reached readiness. Vault reported initialized and sealed,
+self-unsealed from the retained object, and passed the authenticated round
+trip. The public delete then retired the replacement. An independent
+observer confirmed its exact node, volume and network 404s with matching
+Docker controls. The retained Vault and MinIO directory inodes matched
+before and after delete. See
+`.build/phase2-service-archive-recovery-readback-20261125.log` and
+`.build/phase2-service-archive-recovery-cleanup-20261125.log`.
+At 12:58 the exact failed-run fixture no longer needed secret custody.
+After both operations' exact node, volume and network read-backs and the
+user-manager settlement check, the authorized fallback retired the live
+and retained-copy Vault and MinIO data, disposable backup tree and reader
+credential. Independent descriptor inventory confirmed their absence and
+the lifecycle records retained their digests. See
+`.build/phase2-recovered-run-custody-hand-action-20261125.log`. The failed
+run's original primary verdict and supported cleanup evidence stand.
+
+At 12:56 the same build began a new public case replay under scope
+`run-420e8e3600df18e1c1906dc58080134e`, generation
+`a72ea5e7c03c9eee66c02a8b995132e4`. The focused hidden-input reader and
+PTY helper passed 16 synthetic invocations, with no echoed value. The
+fresh public run still needs to confirm real prompt and worker behavior.
+See `.build/phase2-operator-pty-probe-20261125.log` and
+`.build/phase2-capacity-replay-real-20261125.log`.
+
+At 12:59 the canonical gate stopped in source policy before the build and
+test suites. The PTY helper's Python outcome writer used the terminal
+output token reserved by the Haskell source check. The helper now uses
+the same captured-stdout convention as the earlier runner and emits
+identical classifications. Failed log
+`.build/phase2-current-canonical-20261125.log` remains available.
+
+At 13:18 the corrected public replay exited zero. All eight reports in
+`.build/scenario-evidence/6ad7422b891179d37d07229b0e0bee02/` recorded
+successful primary work, confirmed cleanup and satisfied evidence checks.
+Its source manifest SHA-256 is
+`d1ca01c48517fe8fa36d6f89c3c349ed95ebe88e1886f28aa47cb3514f2dc4e1`.
+The hidden-terminal unlock and all seven worker, capacity and policy
+observations passed. The independent scheduler observer saw both workers
+Ready at once with Guaranteed QoS, pull policy `Never`, and equal requests
+and limits of 250m CPU, 256 MiB memory and 256 MiB ephemeral storage.
+The original operation `511d2a4034737bb20b8d1cc715af85b0` and the replacement
+`873b1b5e04e723780eb5196b5148d563` each reached Kubernetes readiness and
+returned exact node, volume and network 404s in the same daemon and bridge
+scope after supported cleanup. The main log SHA-256 is
+`505edfda1c24e8bc2d5763cf1c91e0c594f26c828504cb04e02e6b7d2b8014af`, and the
+worker envelope log is `.build/phase2-capacity-replay-worker-envelope-20261125.log`,
+SHA-256 `7bee882e6c17fcd90849e6b0ee58647c0594af02d95f36eb96cd8363915210de`.
+At 13:20, after those results and exact settlement, the standing local
+fallback retired the disposable fixture's retained test data, backups and
+reader credential, while preserving the lifecycle records. The hand-action
+log is `.build/phase2-capacity-replay-custody-hand-action-20261125.log`.
+
+The latest build `8b0cc052be927c495f94e769274e48b1df688c5db3edaa2a2aca8bdc7b9784e5`
+started the public Broker scenario and a separate service-attempt
+interruption canary. Their logs are `.build/phase2-broker-real-20261125.log`
+and `.build/phase2-service-interruption-real-20261125.log`.
+The interruption fixture stopped during its initial kind reconcile before
+reaching the service command. Status found a publication attempt without a
+submission. Public control delete confirmed the never-sent retirement and
+that no node, volume or network intent had been recorded. Exit zero and its
+scope are in `.build/phase2-service-interruption-early-cleanup-20261125.log`.
+The first harness omitted the child command's captured diagnostic on
+failure and lacked the explicit user runtime directory supplied by the
+registered scenario. The retry binds that directory, records the diagnostic
+and will run after the Broker scope settles. The first run stopped before
+service-attempt publication.
+
+At 13:34 the separate Broker scenario exited zero with five satisfied
+reports in `.build/scenario-evidence/0683d9a6a00598f36ae96282a1340392/`.
+Its source manifest is
+`041936e8ad0170a02d94a2c0aa297ad39b8ff1c74923d34a322667b45709ca03`.
+The no-input, wrong-password, fence expiry and successful retry,
+same-incarnation Vault replacement, and baseline role allow/deny cases
+passed against actual services. The independent Kubernetes observation
+saw the actual Broker worker enter Running from the pinned local image.
+The wrong-password worker then terminated with exit 1, Guaranteed QoS
+and pull policy `Never`. The original kind operation
+`79bff2be657370bd979e6c647a09b12b` returned exact node, volume and network
+404s under the original Docker daemon and bridge after supported cleanup.
+See `.build/phase2-broker-{real,independent,worker-policy-readback}-20261125.log`.
+After settlement, the authorized local fallback retired the disposable
+Vault/MinIO fixture data and its reader credential, with independent
+absence and lifecycle record preservation confirmed in
+`.build/phase2-broker-custody-hand-action-verified-20261125.log`.
+The first fallback helper stopped at its text-format guard before any
+effect. The corrected guard matched the five unchanged passing reports.
+The service-interruption retry and second clean bootstrap cycle started
+using the same current operator on separate explicitly bound scopes.
+The second cycle exited at startup before any kind family send under
+scope `run-ccb0e875fce82cddd07dbe4a81b13a24`, operation
+`16bbaa042fe00c44808d3c42edb40870`. Its family publication attempt and
+failed reports are retained. A separate public delete confirmed the
+never-sent disposition and absence of any node, volume or network create
+intent; the scope has no Vault/MinIO data. The scenario did not emit its
+initial reconcile diagnostic, so those records establish the failure
+boundary and no deeper cause. The other scope was launching on the same
+Docker daemon at the time. Keep the next setup serial after that scope
+settles. See `.build/phase2-current-clean-repeat-20261125.log` and
+`.build/phase2-current-clean-repeat-early-cleanup-20261125.log`.
+
+M03a qualified at 12:46 in campaign `1850537365253977`. Its compiled
+mutant failed only `bootstrap.production_rejects_test_unlock`. The receipt
+SHA-256 is `bc83735382eb0c553996b05d080a6d9fb9abb65e74e7a112cfd1ea4a8d442c37`.
+Independent read-back confirmed eight workers and the quota volume absent,
+the Docker bridge present and the workspace retired. M03b started next.
+At 13:15 M03b qualified with the sole compiled assertion failure
+`bootstrap.preserves_vault_incarnation`. Its receipt SHA-256 is
+`202936f26b1d3152aa87f35411fff4c9f2731ed69b5e5e21b84bc2afd5d05788`.
+The same independent exact cleanup checks passed. M03c started next.
+
+At 13:42 M03c qualified with only
+`backup.rejects_same_size_corruption` failing on its compiled mutant. Its
+receipt SHA-256 is
+`b3720f162c37128ef3ae0cadaafa211d1aabddccd17bf1818c3078ab914bb481`.
+The campaign exited zero. The independent verifier confirmed all 24 exact
+workers, three quota volumes and case workspaces absent before and after
+positive daemon and bridge reads. See
+`.build/phase2-m03-terminal-verified-20261125.log`. The backup source and
+selected assertion are unchanged. M03a and M03b need replay after the
+unlock repair below.
+
+The service-interruption canary finished at 13:44. It killed the exact
+public service process after the immutable attempt was present. The retry
+refused before a second attempt or either data directory appeared. Public
+teardown settled operation `953049baa90bad62a6fc868d41364739`, and public
+reconcile on the same root and generation archived its exact unchanged
+attempt and created `e5529bf6ddd093b490ecb7c95b92fb22`. Both operations
+reached Kubernetes readiness and independently returned node, volume and
+network 404s after teardown. Evidence is
+`.build/phase2-service-interruption-retry-20261125.log` and
+`.build/phase2-service-interruption-retry-independent-20261125.log`.
+
+The canonical check exited 1 at 13:37, with one of 10,221 unit tests
+failing. The exact-preimage test rejected three stale M01 pins after the
+Phase 2 service gate and archive changes. The current pins and binding
+digests replace those entries in [mutation_cases.md](mutation_cases.md),
+with the same one-site changes and unchanged assertions. These three
+Phase 1 regressions need new isolated receipts. See
+`.build/phase2-pty-output-canonical-20261125.log`.
+
+Decision (2026-11-25). The test unlock interpreter treated every failed
+read as object absence during initialization, and removed its local
+pending custody before it minted the limited client token. The
+fresh-init and ambiguous-custody rules at line 30 in
+[security_and_credentials.md](../documents/engineering/security_and_credentials.md)
+require an exact missing observation and retained intent. The interpreter
+now distinguishes absent from unobservable using a metadata-only MinIO
+request for the exact key. It verifies the selected node and credential
+under the recovered operation lease, records a scope/generation intent
+before init, and retains private pending custody through the authenticated
+client read-back. The real adverse case places a disposable sentinel in
+the test scope, temporarily detaches only its reader policy and verifies
+Vault remains uninitialized and the object survives. The policy and
+sentinel are settled before normal initialization. Validation of these
+changes is in progress.
+
+The first live run of operator
+`d306bb8d690fb5b8c12b948ad6af4099211e2193955c31a8bfa767af0d5eccf6`
+settled at 13:53 before service admission. Operation
+`fe08651a19188fe7dabb594ce16db60e` recorded successful node bootstrap
+steps and a terminal `FamilyWorkerUnconfirmed` with the post phase
+unstarted. No installed Kubernetes credential or Vault initialization
+intent was observed. Supported teardown and independent exact node,
+volume and network 404s settled the scope. See
+`.build/phase2-vault-history-real-20261125.log` and
+`.build/phase2-vault-history-independent-20261125.log`. The next run uses
+a new scope after settlement, with no concurrent formatter.
+
+The pinned-MinIO-client protocol fixture distinguished exact missing key
+from permission denial and object presence under the actual command's
+arguments. Only the controlled HTTP 404 produced the exact JSON missing
+category. The fixture is local and synthetic. See
+`.build/phase2-pinned-minio-head-protocol-20261125.log`.
+
+The canonical replay on the first custody build stopped at a lint hint
+for the private-directory return branch. The guard now uses the existing
+checked-I/O convention and still returns a closed refusal to its caller
+on a bad ownership, mode or directory identity. Targeted formatter and
+lint passed, and the M03a/M03b full-file pins were refreshed. The prior
+lint output is `.build/phase2-vault-history-canonical-20261125.log`.
+The live scenario already in flight keeps its original binary and source
+identity. Continue the pinned checks on the new build after it settles.
+
+The second custody run settled at 14:22 with seven of eight reports
+satisfied in `.build/scenario-evidence/301c5dbcbeb0fe0df6b37c667f7b8bc0/`.
+Its source manifest is
+`3985c0eedb453fdb5d7acd93e78fa7ce44d409254210354ec4ededa1a0caed46`.
+The denied-read case observed the same object and an uninitialized Vault
+without an initialization intent. Normal bootstrap then recorded intent,
+used a private `0600` pending file, and retired that file after the client
+read-back. The interrupted upload also continued and retired its pending
+file. Cases covering the authenticated prompt, backup, workers and
+outages passed. Replacement kind operation
+`baa046260b29d31dc76d95055f2d23aa` reached Kubernetes readiness, then its
+public service attempt retained an incomplete result. The first three
+recreation observations failed. Both exact kind operations ended with
+independent absence, and the retained data and initialization intent
+remain available for recovery. The main log is
+`.build/phase2-vault-history-replay-20261125.log`. The final build
+`69df48c2188e46b951d098fec5658d9a8bd77e69a535122ba7bf5a7dde656952`
+started a same-root recovery canary with uncropped public command output
+in `.build/phase2-vault-history-retained-recovery-20261125.log` and the
+canonical check in `.build/phase2-vault-history-final-canonical-20261125.log`.
+
+The retained recovery canary reproduced a failure in the MinIO reader
+policy step on operation `9de5799c829689ee64fbcb3942e1ee55`. MinIO and
+Vault passed their direct readiness checks, and the same Vault came up
+initialized and sealed. Public `control unlock` authenticated with the
+retained reader, unsealed it and completed the secret read-back. Public
+teardown and the exact independent Docker observer settled the third
+operation. The original failed dispositions and all retained data
+remain in the selected test scope.
+
+Decision (2026-11-25). The one-object read capability at line 35 of
+[security_and_credentials.md](../documents/engineering/security_and_credentials.md)
+requires verification of the actual attached policy. The old command
+reissued creation, account configuration and attachment on every
+reconcile and inferred state from a text count. The service now reads
+MinIO's structured policy and account state before making a change,
+refuses incompatible or incomplete observations, and independently
+reads back any new attachment. The pinned client/server fixture on a
+private loopback endpoint confirmed the exact missing-user and
+missing-policy codes, the policy document shape and retained attachment
+across restart. It did not reproduce the live command-chain failure.
+See `.build/phase2-reader-json-classifications-20261125.log`. Live proof
+of the new reconciliation is in progress.
+
+The reader-repair build
+`949bc98a9bd292ad2c3eb4aad91501edeb945af624f09f730e1c1f89776216b5`
+compiled and passed targeted lint. Its first retained recovery attempt
+reached node bootstrap under operation `7f69a7b542843ed61b0575c4af6bf3d2`
+and stopped before the family post step. The exact node create record
+and terminal worker-unconfirmed record were about 181 seconds apart,
+consistent with the existing 180-second worker window. All node
+bootstrap step results reported zero. Public cleanup confirmed the
+settlement and independent exact Docker reads confirmed three 404s.
+The reader repair still needs its live service proof. Allow the current
+compile campaigns to settle before the next retained setup, and keep
+the original worker budget. See
+`.build/phase2-reader-policy-retained-recovery-20261125.log`.
+
+The previous operator's canonical check exited zero at 14:57 with
+11,218 gated tests. It included the binding regressions and compiled
+the checkout after the reader-source edit. The installed operator at
+start was the previous build, so the current reader build is running
+its own canonical gate in
+`.build/phase2-reader-canary-canonical-20261125.log`.
+
+The `M01-unknown-recreate` regression qualified on its current source,
+with receipt SHA-256
+`01bc7f53ed1f6c3dabde79a31bc9f54872e403cb438a4bff9efbee44dc70ba0a`.
+The independent bracket confirmed its eight exact workers and its
+quota volume absent. M03a qualified on the first custody source, then
+its final-code run `1858395787238840` was inconclusive after a
+baseline build failure. Its private compiler diagnostic retained only
+the generic Cabal failure code. Public cleanup refused the retained
+workspace, and independent read-back confirmed all three exact
+workers and the quota volume absent. The source snapshot remains
+available in that campaign for diagnosis. See
+`.build/phase2-final-M03a-inconclusive-readback-20261125.log`.
+The failed run supplies no mutation kill. Repeat on the same current
+binding after the pending compiles settle.
+
+The current M03b binding qualified at 15:03. Receipt SHA-256
+`3754233246ddc7468309c30ecce744b927ad876b46ed49396f7a6621eb189b99`
+records only `bootstrap.preserves_vault_incarnation` failing.
+`M01-foreign-namespace-cleanup` also qualified. Receipt SHA-256
+`97f255e338c917e11fcca810c92ab79643b6013a07e71da71a500fa9758a1a22`
+records only `network.rejects_foreign_namespace_cleanup` failing.
+Each independent observer confirmed eight exact worker and one quota
+volume 404s plus absent case workspaces. The affected
+`M01-replaced-namespace` case is running next.
+
+The serial retry of the retained scope first confirmed all four prior
+operations absent in the original Docker daemon. Public reconcile then
+refused archive admission before any new launch. Public delete reported
+`HostSubmissionProviderMismatch` when reobserving the older family.
+The rule in `src/Prodbox/Subprocess/HostOperationFamily.hs` at line 867
+requires matching provider and domain to borrow a retained submission
+proof. Preserve that root and its evidence. The current reader build
+started an explicitly enrolled fresh scope
+`run-6aa4721f444f4ce20916c72c64b13fae`, generation
+`5b797c872e48a09d30f1828afece110a`, in
+`.build/phase2-reader-policy-fresh-20261125.log`. The refusal is in
+`.build/phase2-reader-policy-serial-recovery-20261125.log`.
+
+The fresh reader-repair run exited zero at 15:28. All eight reports
+in `.build/scenario-evidence/fda9580c961d88c09f4d93a5fa4debb1/` passed
+independent validation. Source manifest SHA-256
+`9a5a06948b569e47840874cd234d089f171060690fd24e6049da4630eeb7faef`
+and operator SHA-256
+`949bc98a9bd292ad2c3eb4aad91501edeb945af624f09f730e1c1f89776216b5`
+bind the run. The original operation
+`dfe7d27e2bdbad5ce4e1207f18e442a7` and the replacement
+`5bcdb8524e143f98f3bd4883b242cb65` both reached Kubernetes readiness.
+The replacement independently verified the retained reader and policy,
+sealed Vault over its retained storage, then unsealed the same Vault
+identity and read its original secret. The observer recorded the
+two actual bounded workers, policy traffic and exact node, volume and
+network absence for both operations. See
+`.build/phase2-reader-policy-fresh-20261125.log` and
+`.build/phase2-reader-policy-fresh-independent-20261125.log`.
+
+After the supported trajectory settled, the standing local fallback
+retired only disposable Vault, MinIO, backup and reader custody in
+the passing fixture and in the earlier failed fixture. Both operations
+of the passing scope and all four operations of the failed scope were
+independently absent. No named user-manager units or jobs remained and
+there was no pending local unlock custody. Descriptor checks confirmed
+the disposable paths absent and the lifecycle records intact. The
+hand-action logs are
+`.build/phase2-reader-policy-fresh-custody-hand-action-20261125.log`
+and `.build/phase2-reader-regression-custody-hand-action-20261125.log`.
+The second clean public cycle began on a new binding under the same
+operator in `.build/phase2-reader-policy-repeat-20261125.log`.
+
+At 15:32, the `M01-replaced-namespace` replay qualified with only
+`network.rejects_replaced_namespace` failing. Receipt SHA-256
+`28ab68aba10a7f75b8756befeac6a80ca52daecd7c663239e4a0a0f6dea9ea2e`.
+All eight exact workers, the quota volume and both case workspaces
+were independently absent. The three affected M01 cases are terminal.
+The current M03a replay is running as campaign `1860706730629614`.
+
+At 15:33 the current installed reader operator exited zero from
+`./.build/prodbox dev check`. All 11,218 gated tests passed across the
+four suites along with source policy, formatting, lint, the warning-clean
+build and the cumulative mutation-binding checks. See
+`.build/phase2-reader-canary-canonical-20261125.log`.
+
+At 15:40, the current M03a replay qualified with only
+`bootstrap.production_rejects_test_unlock` failing. Its campaign
+`1860706730629614` used source manifest
+`2138cd9aad8f0c52e37778331685bb1e1b9a1526b56b42960ca7344c64fb3227`.
+The receipt SHA-256 is
+`e21ff286ce833cb77f5a94ad05174ceee2ab73e703a23554245c8b744cd58e0f`.
+The independent observer confirmed eight exact worker and one quota
+volume 404s and both workspace paths absent. See
+`.build/phase2-final-M03a-retry-verified-20261125.log`. Every owned M03
+variant and affected M01 regression now has its intended result. The
+second real clean cycle and its exact settlement remain active.
+
+The second clean cycle exited zero at 15:51. All eight reports passed in
+`.build/scenario-evidence/66fc71c7cbd628e28592a723376002fb/` on the same
+operator. Its source manifest is
+`2138cd9aad8f0c52e37778331685bb1e1b9a1526b56b42960ca7344c64fb3227`.
+The original operation `8201ab7c6491463d71256e644abcb843` and the replacement
+`ad949e2a4e63f8a389a36578f6be0a88` reached Kubernetes readiness on the same
+root and generation. The replacement verified the retained reader,
+and the original Vault identity and secret were recovered. The actual
+workers completed under the same declared resource envelope. Supported
+teardown and independent node, volume and network read-back passed for
+both operations. See `.build/phase2-reader-policy-repeat-20261125.log`,
+`.build/phase2-reader-policy-repeat-independent-20261125.log`, and
+`.build/phase2-reader-policy-repeat-worker-envelope-20261125.log`.
+The authorized final disposal of its disposable custody is recorded in
+`.build/phase2-reader-policy-repeat-custody-hand-action-20261125.log`.
+All six owned and inherited legacy rows are Removed.
 
 Entry check corrected 2026-11-20 (nothing implemented yet). An earlier note here
 reported the MinIO artifact as unobtainable because `quay.io/minio/minio` and
@@ -677,8 +1116,8 @@ binding reports no hints. Both current backup and scenario modules also passed
 standalone GHC typechecking against the installed project dependencies; this
 does not establish that the scenario ran.
 
-- [ ] **P02-T04** — Implement init/unseal/baseline, retained-generation checks, bounded interruption continuation and local backup/restore for this scope. Do not reinitialize over missing/corrupt/foreign retained identity; report the exact data-loss/recovery condition.
-- [ ] **P02-T05** — Exercise actual policy traffic and actual concurrent secret workers within Phase 1’s capacity reservation. Observe workload settlement or durable recoverable ownership on every failure/cancellation. Reopened after review of the service gate. On 2026-11-22 the gate was tightened to skip the probe when its attempt write fails and to refuse secret creation unless typed probe cleanup is confirmed and the probe has no primary failure. The probe now records a scope-bound intent and UID under the recovered operation lease, but the service attempt itself is not yet equivalently bound, the fixed probe name does not support a repeat operation, and interruption recovery remains incomplete. Resolve those contracts and revalidate the complete gate before creating secret workers.
+- [x] **P02-T04** — Implement init/unseal/baseline, retained-generation checks, bounded interruption continuation and local backup/restore for this scope. The qualified run proved the exact object-read refusal, private custody continuation, corruption refusal and same-Vault recovery.
+- [x] **P02-T05** — Exercise actual policy traffic and actual concurrent secret workers within Phase 1’s capacity reservation. Observe workload settlement or durable recoverable ownership on every failure/cancellation. The real replay proved policy traffic, both bounded workers and repeat service admission. The dedicated interruption canary observed refusal before another effect, exact cleanup and retention of the original attempt through same-root recreation.
 - [x] **P02-T06** — Run secret round-trips, real seal/unseal, wrong input/missing custody/outage cases, kind recreation, direct status and M03. Explicit audited Authority-mediated rotation/PKI/reset features belong to Phase 3 and are not a bootstrap closure dependency.
 
 ## Real acceptance and independent observation
@@ -692,7 +1131,7 @@ The linked catalog defines the exact real workflow and observer for each case:
 - [x] **A02-03** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result.
 - [x] **A02-04** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result.
 - [x] **A02-05** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result.
-- [ ] **A02-06** — execute and record the cataloged case, its independent observation, adverse control and exact cleanup result.
+- [x] **A02-06** — Real case 7 in run `fda9580c961d88c09f4d93a5fa4debb1` independently confirmed same-size corruption refusal, legacy backup retention, successful rollback and the same Vault identity. Both kind operations retired through the supported command.
 
 A result is incomplete if its independent read-back, scope/source binding, worker settlement, or required cleanup is unavailable. Fixture-only provider behavior, source scans, manifest rendering, process exit and old receipts cannot close a real-system claim. Actual input prerequisites are declared above; no acceptance result depends on an unimplemented larger phase.
 
@@ -720,12 +1159,12 @@ Update implemented correspondence and generated references as the active slice c
 
 ## Completion record
 
-- [ ] All implementation tasks and owned acceptance cases passed.
+- [x] All implementation tasks and owned acceptance cases passed in two current clean cycles.
 - [x] Source/binary/image/config identity, independent observations, budgets and evidence availability are recorded without secret values.
-- [ ] Required source mutations are killed by intended assertions or carry reviewed equivalence evidence; no invalid/inconclusive substitute is counted for the current scope.
-- [ ] Exact resource/credential/worker cleanup and retained-state obligations are terminal for the declared scope.
+- [x] Required source mutations were killed by their intended unchanged assertions. The inconclusive baseline failure is retained with its original outcome.
+- [x] Exact resource, credential and worker cleanup and retained-state obligations are terminal for the declared scope.
 - [x] Owned legacy removals and documentation/generated-reference updates are complete.
-- [ ] Canonical gate and cumulative relevant regressions pass; no hand action is used as qualifying evidence.
+- [x] Canonical gate and cumulative gated regressions pass on the current operator. The supported qualification supplies its own cleanup evidence.
 
 Closure requires advertised bootstrap cases against actual services, retained Vault data through kind recreation, and observed policy and capacity evidence without a future cloud/Authority substitute.
 

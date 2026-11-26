@@ -277,6 +277,7 @@ library
         Prodbox.Control.KindNodeBootstrap
         Prodbox.Control.KubernetesReadiness
         Prodbox.Control.ManagementPolicy
+        Prodbox.Control.ManagementRestore
         Prodbox.Control.NetworkEnforcement
         Prodbox.Control.Recreate
         Prodbox.Control.Reconcile
@@ -327,6 +328,9 @@ library
         Prodbox.Control.KindDockerWorkerRoots
         Prodbox.Control.KindDockerReadGate
         Prodbox.Control.KindDockerReadProtocol
+        Prodbox.Control.KindArchiveTransaction
+        Prodbox.Control.TestRunCleanup
+        Prodbox.Control.TreeInventory
         Prodbox.Control.KindIntent
         Prodbox.Control.KindKubeconfig
         Prodbox.Control.KindKubeconfigFile
@@ -1025,6 +1029,10 @@ library
         Prodbox.Subprocess.NetworkFilter
         Prodbox.Test.MutationOutcome
         Prodbox.Test.ReviewedMutation
+        Prodbox.Test.MutationDependencies
+        Prodbox.Test.MutationDependencyFiles
+        Prodbox.Test.MutationDependencyPlan
+        Prodbox.Test.MutationDisk
         Prodbox.Test.MutationExecutor
         Prodbox.Test.NodeRegistryPreparation
         Prodbox.Test.FixtureTree

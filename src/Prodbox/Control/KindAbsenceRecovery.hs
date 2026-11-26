@@ -11,21 +11,44 @@ module Prodbox.Control.KindAbsenceRecovery
 import Control.Exception (Exception, SomeException, mask, throwIO, try)
 import Prodbox.Config.BootstrapProjection (BootstrapProjection)
 import Prodbox.Control.DockerConnectedInfo
-  ( DockerConnectedInfoResult (..), DockerNodeContainerRemoveResult (..), DockerNodeVarRemoveResult (..) )
+  ( DockerConnectedInfoResult (..)
+  , DockerNodeContainerRemoveResult (..)
+  , DockerNodeVarRemoveResult (..)
+  )
 import Prodbox.Control.DockerPeer (DockerPeerResult (..))
 import Prodbox.Control.KindAbsenceRemoval (AbsenceRemovalOutcome (..), removeRecordedAbsenceControl)
 import Prodbox.Control.KindAbsenceSample (AbsenceSampleOutcome, recordObservedAbsenceSample)
 import Prodbox.Control.KindAbsenceVolumeReadback
-  ( AbsenceVolumePhase (AbsenceVolumesAfterRemoval), AbsenceVolumeReadback (..), observeAbsenceControlVolumes )
-import Prodbox.Control.KindAbsenceVolumeRemoval (AbsenceVolumeRemovalOutcome (..), removeResidualAbsenceVolume)
+  ( AbsenceVolumePhase (AbsenceVolumesAfterRemoval)
+  , AbsenceVolumeReadback (..)
+  , observeAbsenceControlVolumes
+  )
+import Prodbox.Control.KindAbsenceVolumeRemoval
+  ( AbsenceVolumeRemovalOutcome (..)
+  , removeResidualAbsenceVolume
+  )
 import Prodbox.Control.KindLease (KindOperationOutcome (..), withRecoveredKindOperation)
 import Prodbox.Control.KindNodeCreateIntent
-  ( KindAbsencePlan, KindAbsenceWrite (AbsenceRecorded), KindAbsenceIdObservation (..)
-  , KindAbsenceFootprintObservation (..), KindAbsenceControlResultObservation (..)
-  , kindAbsenceOperation, recoverKindAbsenceControlId, recoverKindAbsenceFootprint, recoverKindAbsenceControlResult )
+  ( KindAbsenceControlResultObservation (..)
+  , KindAbsenceFootprintObservation (..)
+  , KindAbsenceIdObservation (..)
+  , KindAbsencePlan
+  , KindAbsenceWrite (AbsenceRecorded)
+  , kindAbsenceOperation
+  , recoverKindAbsenceControlId
+  , recoverKindAbsenceControlResult
+  , recoverKindAbsenceFootprint
+  )
 
-type ControlRemoval = KindOperationOutcome (Either AbsenceRemovalOutcome (DockerPeerResult (DockerConnectedInfoResult AbsenceRemovalOutcome)))
-type VolumeRemoval = KindOperationOutcome (Either AbsenceVolumeRemovalOutcome (DockerPeerResult (DockerConnectedInfoResult AbsenceVolumeRemovalOutcome)))
+type ControlRemoval =
+  KindOperationOutcome
+    (Either AbsenceRemovalOutcome (DockerPeerResult (DockerConnectedInfoResult AbsenceRemovalOutcome)))
+type VolumeRemoval =
+  KindOperationOutcome
+    ( Either
+        AbsenceVolumeRemovalOutcome
+        (DockerPeerResult (DockerConnectedInfoResult AbsenceVolumeRemovalOutcome))
+    )
 
 data ExistingAbsenceRecovery = ExistingAbsenceRecovery
   { existingAbsenceSample :: !(KindOperationOutcome AbsenceSampleOutcome)
@@ -38,8 +61,10 @@ data ExistingAbsenceRecovery = ExistingAbsenceRecovery
 
 -- Keep the primary interruption and any cleanup result or exception together;
 -- its rendered message deliberately excludes arbitrary exception contents.
-data ExistingAbsenceInterrupted = ExistingAbsenceInterrupted
-  !SomeException !(Either SomeException ControlRemoval)
+data ExistingAbsenceInterrupted
+  = ExistingAbsenceInterrupted
+      !SomeException
+      !(Either SomeException ControlRemoval)
 
 instance Show ExistingAbsenceInterrupted where
   show _ = "absence-control recovery was interrupted; inspect retained cleanup records"
@@ -59,11 +84,13 @@ recoverExistingAbsenceControl bootstrap plan ownerStable = mask $ \restore -> do
       if not settled
         then pure (ExistingAbsenceRecovery sample removal Nothing [] Nothing)
         else do
-          before <- restore (observeAbsenceControlVolumes bootstrap plan AbsenceVolumesAfterRemoval ownerStable)
+          before <-
+            restore (observeAbsenceControlVolumes bootstrap plan AbsenceVolumesAfterRemoval ownerStable)
           case before of
             KindOperationCallbackReturned (AbsenceVolumeResidual volumes) -> do
               attempts <- removeVolumes restore volumes
-              after <- restore (observeAbsenceControlVolumes bootstrap plan AbsenceVolumesAfterRemoval ownerStable)
+              after <-
+                restore (observeAbsenceControlVolumes bootstrap plan AbsenceVolumesAfterRemoval ownerStable)
               pure (ExistingAbsenceRecovery sample removal (Just before) attempts (Just after))
             _ -> pure (ExistingAbsenceRecovery sample removal (Just before) [] Nothing)
  where
@@ -95,12 +122,24 @@ recoverExistingAbsenceControl bootstrap plan ownerStable = mask $ \restore -> do
 
 controlReplyRecorded :: ControlRemoval -> Bool
 controlReplyRecorded result = case result of
-  KindOperationCallbackReturned (Right (DockerPeerCompleted (DockerConnectedInfoCompleted
-    (AbsenceRemovalReturned (DockerNodeContainerRemoveReply 204) AbsenceRecorded True)))) -> True
+  KindOperationCallbackReturned
+    ( Right
+        ( DockerPeerCompleted
+            ( DockerConnectedInfoCompleted
+                (AbsenceRemovalReturned (DockerNodeContainerRemoveReply 204) AbsenceRecorded True)
+              )
+          )
+      ) -> True
   _ -> False
 
 volumeReplyRecorded :: VolumeRemoval -> Bool
 volumeReplyRecorded result = case result of
-  KindOperationCallbackReturned (Right (DockerPeerCompleted (DockerConnectedInfoCompleted
-    (AbsenceVolumeRemovalReturned (DockerNodeVarRemoveReply 204) AbsenceRecorded True)))) -> True
+  KindOperationCallbackReturned
+    ( Right
+        ( DockerPeerCompleted
+            ( DockerConnectedInfoCompleted
+                (AbsenceVolumeRemovalReturned (DockerNodeVarRemoveReply 204) AbsenceRecorded True)
+              )
+          )
+      ) -> True
   _ -> False

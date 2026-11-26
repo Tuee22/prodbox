@@ -22,12 +22,19 @@ import Data.List (isPrefixOf, sort)
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 import Prodbox.Config.BootstrapProjection (BootstrapProjection, bootstrapScope)
-import Prodbox.Config.DeploymentScope (DeploymentEnvironment (Test), scopeEnvironment, scopeProjectAnchor)
+import Prodbox.Config.DeploymentScope
+  ( DeploymentEnvironment (Test)
+  , scopeEnvironment
+  , scopeProjectAnchor
+  )
 import Prodbox.Control.KindControllerReceipt qualified as Receipt
 import Prodbox.Control.KindControllerRequest qualified as Request
-import Prodbox.Control.KindIntent (KindIntentObservation (KindIntentMatches), observeKindOwnerFamilyIntent)
-import Prodbox.Control.KindLease qualified as Lease
 import Prodbox.Control.KindFamilyRecovery qualified as Recovery
+import Prodbox.Control.KindIntent
+  ( KindIntentObservation (KindIntentMatches)
+  , observeKindOwnerFamilyIntent
+  )
+import Prodbox.Control.KindLease qualified as Lease
 import Prodbox.Subprocess.HostControllerInputRetirement qualified as InputRetirement
 import Prodbox.Subprocess.HostControllerInputs qualified as Inputs
 import Prodbox.Subprocess.HostControllerPublication qualified as Publication
@@ -100,7 +107,9 @@ claimEmptyFixtureRoot path = do
     owner <- getEffectiveUserID
     let runtime = "/run/user/" ++ show owner
     runtimeStatus <- getSymbolicLinkStatus runtime
-    unless (isDirectory runtimeStatus && safeEntry owner runtimeStatus) (ioError (userError "unsafe fixture runtime"))
+    unless
+      (isDirectory runtimeStatus && safeEntry owner runtimeStatus)
+      (ioError (userError "unsafe fixture runtime"))
     bracket (Posix.openFd runtime Posix.ReadOnly directoryFlags) Posix.closeFd $ \runtimeFd -> do
       runtimeHeld <- getFdStatus runtimeFd
       unless (sameIdentity runtimeStatus runtimeHeld) (ioError (userError "fixture runtime changed"))
@@ -110,11 +119,18 @@ claimEmptyFixtureRoot path = do
       bracket (Posix.openFd path Posix.ReadOnly directoryFlags) Posix.closeFd $ \directory -> do
         held <- getFdStatus directory
         names <- listDirectory (fdPath directory)
-        unless (canonical == path && isDirectory named && safeEntry owner named
-          && sameEntry named held && null names) (ioError (userError "fixture root is not empty and private"))
+        unless
+          ( canonical == path
+              && isDirectory named
+              && safeEntry owner named
+              && sameEntry named held
+              && null names
+          )
+          (ioError (userError "fixture root is not empty and private"))
         runtimeAfter <- getSymbolicLinkStatus runtime
         runtimeHeldAfter <- getFdStatus runtimeFd
-        unless (sameIdentity runtimeStatus runtimeAfter && sameIdentity runtimeAfter runtimeHeldAfter)
+        unless
+          (sameIdentity runtimeStatus runtimeAfter && sameIdentity runtimeAfter runtimeHeldAfter)
           (ioError (userError "fixture runtime changed"))
         pure (FixtureRootClaim path held runtime runtimeStatus prior)
   pure (either (const Nothing) Just (attempted :: Either IOException FixtureRootClaim))
@@ -123,7 +139,8 @@ claimEmptyFixtureRoot path = do
 -- previously claimed test root, an exact owner-first operation and a durable
 -- never-sent publication whose inputs are already terminal. Unknown entries,
 -- changed trees, live publishers and foreign scopes are left untouched.
-cleanupNeverSentKindFixturePublication :: FixtureRootClaim -> BootstrapProjection -> String -> IO Bool
+cleanupNeverSentKindFixturePublication
+  :: FixtureRootClaim -> BootstrapProjection -> String -> IO Bool
 cleanupNeverSentKindFixturePublication claim@(FixtureRootClaim anchor _ _ _ prior) bootstrap operation
   | scopeEnvironment scope /= Test || scopeProjectAnchor scope /= anchor = pure False
   | otherwise = case Request.kindControllerOperationKey operation of
@@ -131,47 +148,60 @@ cleanupNeverSentKindFixturePublication claim@(FixtureRootClaim anchor _ _ _ prio
       Just key -> do
         now <- getMonotonicTimeNSec
         let budget = 10000000000 :: Word64
-        if now > maxBound - budget then pure False else do
-          let ending = now + budget
-          uid <- getEffectiveUserID
-          let path = Publication.hostControllerPublishedDirectory Identity.KindController uid key
-          if takeFileName path `elem` prior then pure False else do
-            result <- Lease.withRecoveredKindOperation bootstrap operation $ \stable -> do
-              rootBefore <- fixtureClaimStable claim
-              protocol <- observeKindOwnerFamilyIntent bootstrap
-              launch <- Receipt.observeFamilyLaunch bootstrap operation stable
-              marker <- Receipt.observeFamilyPublicationAttempt bootstrap operation stable
-              unchanged <- stable
-              case (rootBefore, protocol, launch, marker, unchanged) of
-                (True, KindIntentMatches current, Receipt.FamilyLaunchObserved request, Receipt.FamilyLaunchObserved attempted, True)
-                  | current == operation && request == attempted -> do
-                      namesBefore <- try (sort <$> listDirectory path) :: IO (Either IOException [FilePath])
-                      let expectedNames = ["publication-birth.cbor", "retirement-prepared.cbor", "retirement-terminal.cbor"]
-                      if namesBefore /= Right expectedNames then pure False else do
-                        statuses <- try (traverse (getSymbolicLinkStatus . (path </>)) expectedNames) :: IO (Either IOException [FileStatus])
-                        snapshot <- case statuses of
-                          Right files | all (\file -> isRegularFile file && safeEntry uid file) files -> captureFixtureTree path
-                          _ -> pure Nothing
-                        case snapshot of
-                          Nothing -> pure False
-                          Just tree -> do
-                            retired <- InputRetirement.recoverNeverSentHostControllerInputs ending Identity.KindController key
-                            verified <- Publication.withRecoveredHostPublicationNeverSent Identity.KindController ending key $ \owner -> do
-                              before <- Publication.verifyHostPublicationNeverSentBefore ending owner
-                              unchangedTree <- verifyFixtureTree tree
-                              after <- Publication.verifyHostPublicationNeverSentBefore ending owner
-                              pure (before, unchangedTree, after)
-                            rootAfter <- fixtureClaimStable claim
-                            held <- stable
-                            case (retired, verified, rootAfter, held) of
-                              (Right _, Right (Right (), True, Right ()), True, True) -> do
-                                removed <- cleanupFixtureTree tree
-                                final <- stable
-                                rootFinal <- fixtureClaimStable claim
-                                pure (removed && final && rootFinal)
-                              _ -> pure False
-                _ -> pure False
-            pure (result == Lease.KindOperationCallbackReturned True)
+        if now > maxBound - budget
+          then pure False
+          else do
+            let ending = now + budget
+            uid <- getEffectiveUserID
+            let path = Publication.hostControllerPublishedDirectory Identity.KindController uid key
+            if takeFileName path `elem` prior
+              then pure False
+              else do
+                result <- Lease.withRecoveredKindOperation bootstrap operation $ \stable -> do
+                  rootBefore <- fixtureClaimStable claim
+                  protocol <- observeKindOwnerFamilyIntent bootstrap
+                  launch <- Receipt.observeFamilyLaunch bootstrap operation stable
+                  marker <- Receipt.observeFamilyPublicationAttempt bootstrap operation stable
+                  unchanged <- stable
+                  case (rootBefore, protocol, launch, marker, unchanged) of
+                    ( True
+                      , KindIntentMatches current
+                      , Receipt.FamilyLaunchObserved request
+                      , Receipt.FamilyLaunchObserved attempted
+                      , True
+                      )
+                        | current == operation && request == attempted -> do
+                            namesBefore <- try (sort <$> listDirectory path) :: IO (Either IOException [FilePath])
+                            let expectedNames = ["publication-birth.cbor", "retirement-prepared.cbor", "retirement-terminal.cbor"]
+                            if namesBefore /= Right expectedNames
+                              then pure False
+                              else do
+                                statuses <-
+                                  try (traverse (getSymbolicLinkStatus . (path </>)) expectedNames)
+                                    :: IO (Either IOException [FileStatus])
+                                snapshot <- case statuses of
+                                  Right files | all (\file -> isRegularFile file && safeEntry uid file) files -> captureFixtureTree path
+                                  _ -> pure Nothing
+                                case snapshot of
+                                  Nothing -> pure False
+                                  Just tree -> do
+                                    retired <- InputRetirement.recoverNeverSentHostControllerInputs ending Identity.KindController key
+                                    verified <- Publication.withRecoveredHostPublicationNeverSent Identity.KindController ending key $ \owner -> do
+                                      before <- Publication.verifyHostPublicationNeverSentBefore ending owner
+                                      unchangedTree <- verifyFixtureTree tree
+                                      after <- Publication.verifyHostPublicationNeverSentBefore ending owner
+                                      pure (before, unchangedTree, after)
+                                    rootAfter <- fixtureClaimStable claim
+                                    held <- stable
+                                    case (retired, verified, rootAfter, held) of
+                                      (Right _, Right (Right (), True, Right ()), True, True) -> do
+                                        removed <- cleanupFixtureTree tree
+                                        final <- stable
+                                        rootFinal <- fixtureClaimStable claim
+                                        pure (removed && final && rootFinal)
+                                      _ -> pure False
+                    _ -> pure False
+                pure (result == Lease.KindOperationCallbackReturned True)
  where
   scope = bootstrapScope bootstrap
 
@@ -182,7 +212,11 @@ fixtureClaimStable (FixtureRootClaim path expected runtime runtimeExpected _) = 
     bracket (Posix.openFd path Posix.ReadOnly directoryFlags) Posix.closeFd $ \directory -> do
       held <- getFdStatus directory
       currentRuntime <- getSymbolicLinkStatus runtime
-      pure (sameIdentity expected named && sameIdentity named held && sameIdentity runtimeExpected currentRuntime)
+      pure
+        ( sameIdentity expected named
+            && sameIdentity named held
+            && sameIdentity runtimeExpected currentRuntime
+        )
   pure (either (const False) id (observed :: Either IOException Bool))
 
 -- The caller supplies the independently observed absence of fixture provider
@@ -197,57 +231,84 @@ cleanupSettledKindFixturePublication claim@(FixtureRootClaim anchor _ _ _ prior)
       Just key -> do
         now <- getMonotonicTimeNSec
         let budget = 30000000000 :: Word64
-        if now > maxBound - budget then pure False else do
-          uid <- getEffectiveUserID
-          let ending = now + budget
-              path = Publication.hostControllerPublishedDirectory Identity.KindController uid key
-              requestPath = path </> Publication.hostControllerRequestName
-              submission = takeFileName (Inputs.hostControllerSubmissionPath requestPath key)
-              names = sort ["publication-birth.cbor", "publication-possible-send.cbor", "retirement-prepared.cbor", "retirement-terminal.cbor", submission]
-          if takeFileName path `elem` prior then pure False else do
-            settled <- Recovery.withKindFamilyRetirement ending bootstrap operation $ \owner ->
-              Lease.withRecoveredKindOperation bootstrap operation $ \stable -> do
-                root <- fixtureClaimStable claim
-                protocol <- observeKindOwnerFamilyIntent bootstrap
-                launch <- Receipt.observeFamilyLaunch bootstrap operation stable
-                marker <- Receipt.observeFamilyPublicationAttempt bootstrap operation stable
-                effectFree <- noEffects
-                physical <- Recovery.verifyKindFamilyRetirement owner stable
-                case (root, protocol, launch, marker, effectFree, physical) of
-                  (True, KindIntentMatches current, Receipt.FamilyLaunchObserved request, Receipt.FamilyLaunchObserved attempted, True, Right ())
-                    | current == operation && request == attempted -> do
-                        retired <- Recovery.retireKindFamilyPublishedInputs ending owner stable
-                        listed <- try (sort <$> listDirectory path) :: IO (Either IOException [FilePath])
-                        statuses <- try (traverse (getSymbolicLinkStatus . (path </>)) names) :: IO (Either IOException [FileStatus])
-                        snapshot <- case (retired, listed, statuses) of
-                          (Recovery.KindFamilyInputRetirement (Right ()) (Right ()) True, Right actual, Right files)
-                            | actual == names && all (\file -> isRegularFile file && safeEntry uid file) files -> captureFixtureTree path
-                          _ -> pure Nothing
-                        physicalAfter <- Recovery.verifyKindFamilyRetirement owner stable
-                        rootAfter <- fixtureClaimStable claim
-                        effectsAfter <- noEffects
-                        pure $ if physicalAfter == Right () && rootAfter && effectsAfter then (request,) <$> snapshot else Nothing
-                  _ -> pure Nothing
-            case settled of
-              Recovery.KindFamilyRetirementReturned (Lease.KindOperationCallbackReturned (Just (request, tree))) (Right ()) True -> do
-                final <- Lease.withRecoveredKindOperation bootstrap operation $ \stable -> do
-                  root <- fixtureClaimStable claim
-                  protocol <- observeKindOwnerFamilyIntent bootstrap
-                  launch <- Receipt.observeFamilyLaunch bootstrap operation stable
-                  marker <- Receipt.observeFamilyPublicationAttempt bootstrap operation stable
-                  effectFree <- noEffects
-                  held <- stable
-                  if root && protocol == KindIntentMatches operation && launch == Receipt.FamilyLaunchObserved request
-                    && marker == Receipt.FamilyLaunchObserved request && effectFree && held
-                    then do
-                      removed <- cleanupFixtureTree tree
-                      after <- stable
-                      rootAfter <- fixtureClaimStable claim
-                      effectsAfter <- noEffects
-                      pure (removed && after && rootAfter && effectsAfter)
-                    else pure False
-                pure (final == Lease.KindOperationCallbackReturned True)
-              _ -> pure False
+        if now > maxBound - budget
+          then pure False
+          else do
+            uid <- getEffectiveUserID
+            let ending = now + budget
+                path = Publication.hostControllerPublishedDirectory Identity.KindController uid key
+                requestPath = path </> Publication.hostControllerRequestName
+                submission = takeFileName (Inputs.hostControllerSubmissionPath requestPath key)
+                names =
+                  sort
+                    [ "publication-birth.cbor"
+                    , "publication-possible-send.cbor"
+                    , "retirement-prepared.cbor"
+                    , "retirement-terminal.cbor"
+                    , submission
+                    ]
+            if takeFileName path `elem` prior
+              then pure False
+              else do
+                settled <- Recovery.withKindFamilyRetirement ending bootstrap operation $ \owner ->
+                  Lease.withRecoveredKindOperation bootstrap operation $ \stable -> do
+                    root <- fixtureClaimStable claim
+                    protocol <- observeKindOwnerFamilyIntent bootstrap
+                    launch <- Receipt.observeFamilyLaunch bootstrap operation stable
+                    marker <- Receipt.observeFamilyPublicationAttempt bootstrap operation stable
+                    effectFree <- noEffects
+                    physical <- Recovery.verifyKindFamilyRetirement owner stable
+                    case (root, protocol, launch, marker, effectFree, physical) of
+                      ( True
+                        , KindIntentMatches current
+                        , Receipt.FamilyLaunchObserved request
+                        , Receipt.FamilyLaunchObserved attempted
+                        , True
+                        , Right ()
+                        )
+                          | current == operation && request == attempted -> do
+                              retired <- Recovery.retireKindFamilyPublishedInputs ending owner stable
+                              listed <- try (sort <$> listDirectory path) :: IO (Either IOException [FilePath])
+                              statuses <-
+                                try (traverse (getSymbolicLinkStatus . (path </>)) names) :: IO (Either IOException [FileStatus])
+                              snapshot <- case (retired, listed, statuses) of
+                                (Recovery.KindFamilyInputRetirement (Right ()) (Right ()) True, Right actual, Right files)
+                                  | actual == names && all (\file -> isRegularFile file && safeEntry uid file) files ->
+                                      captureFixtureTree path
+                                _ -> pure Nothing
+                              physicalAfter <- Recovery.verifyKindFamilyRetirement owner stable
+                              rootAfter <- fixtureClaimStable claim
+                              effectsAfter <- noEffects
+                              pure $
+                                if physicalAfter == Right () && rootAfter && effectsAfter then (request,) <$> snapshot else Nothing
+                      _ -> pure Nothing
+                case settled of
+                  Recovery.KindFamilyRetirementReturned
+                    (Lease.KindOperationCallbackReturned (Just (request, tree)))
+                    (Right ())
+                    True -> do
+                      final <- Lease.withRecoveredKindOperation bootstrap operation $ \stable -> do
+                        root <- fixtureClaimStable claim
+                        protocol <- observeKindOwnerFamilyIntent bootstrap
+                        launch <- Receipt.observeFamilyLaunch bootstrap operation stable
+                        marker <- Receipt.observeFamilyPublicationAttempt bootstrap operation stable
+                        effectFree <- noEffects
+                        held <- stable
+                        if root
+                          && protocol == KindIntentMatches operation
+                          && launch == Receipt.FamilyLaunchObserved request
+                          && marker == Receipt.FamilyLaunchObserved request
+                          && effectFree
+                          && held
+                          then do
+                            removed <- cleanupFixtureTree tree
+                            after <- stable
+                            rootAfter <- fixtureClaimStable claim
+                            effectsAfter <- noEffects
+                            pure (removed && after && rootAfter && effectsAfter)
+                          else pure False
+                      pure (final == Lease.KindOperationCallbackReturned True)
+                  _ -> pure False
  where
   scope = bootstrapScope bootstrap
 

@@ -198,10 +198,12 @@ import Prodbox.ControlPlane.AdminActionEndpoint
   , adminActionEndpointMaximumBytes
   )
 import Prodbox.ControlPlane.AdmissionJournalMirror
-  ( initialiseJournalMirror
+  ( initialiseRetainedJournalMirror
+  , journalCustodyMountDirectory
   , journalMountDirectory
-  , mirrorAdmissionRepository
-  , observeJournalMirror
+  , mirrorRetainedAdmissionRepository
+  , observeJournalInitialization
+  , observeRetainedJournalMirror
   )
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
   ( AuthenticatedRoleHandler (..)
@@ -2591,7 +2593,11 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession store coordinates 
         journalMounted <- doesDirectoryExist journalMountDirectory
         journalMirrorResult <-
           if journalMounted
-            then initialiseJournalMirror journalMountDirectory plainAdmissionRepository
+            then
+              initialiseRetainedJournalMirror
+                journalMountDirectory
+                journalCustodyMountDirectory
+                plainAdmissionRepository
             else pure (Right ())
         let baseAdmissionRepository = case journalMirrorResult of
               Left _ ->
@@ -2600,7 +2606,11 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession store coordinates 
                   , compareAndSwapAuthorityAdmission = \_ _ -> pure (Left "journal-mirror-unavailable")
                   }
               Right ()
-                | journalMounted -> mirrorAdmissionRepository journalMountDirectory plainAdmissionRepository
+                | journalMounted ->
+                    mirrorRetainedAdmissionRepository
+                      journalMountDirectory
+                      journalCustodyMountDirectory
+                      plainAdmissionRepository
                 | otherwise -> plainAdmissionRepository
             admissionRepository =
               authorityAdmissionWithRetainedEpoch vaultSession baseAdmissionRepository
@@ -4951,9 +4961,11 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
         (True, Right namespace, Right reviewer) ->
           withSupervisedChild
             ( runAuthorityJournalReadServer
+                clusterId
                 namespace
                 reviewer
-                (observeJournalMirror journalMountDirectory)
+                (observeRetainedJournalMirror journalMountDirectory journalCustodyMountDirectory)
+                (observeJournalInitialization journalMountDirectory journalCustodyMountDirectory)
             )
             (const retrying)
         _ -> once

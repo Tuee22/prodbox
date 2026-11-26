@@ -18,6 +18,8 @@ module Prodbox.Control.KindNodeBootstrap
   , bootstrapReadReply
   , bootstrapInputReply
   , bootstrapStepSlug
+  , JournalRecordObservation (..)
+  , observeJournalRecord
   , writeJournalRecord
   ) where
 
@@ -243,6 +245,58 @@ readSome fd = ByteString.concat <$> go (0 :: Int)
 -- with its directory. An existing record is never replaced.
 writeJournalRecord :: BootstrapProjection -> FilePath -> Aeson.Value -> IO Bool
 writeJournalRecord = writeRecord
+
+data JournalRecordObservation
+  = JournalRecordMissing
+  | JournalRecordObserved !Aeson.Value
+  | JournalRecordUnobservable
+  deriving (Eq, Show)
+
+-- | Observe a closed caller-supplied record name without following a link.
+-- The held scope and named entry must still match after the bounded read.
+observeJournalRecord :: BootstrapProjection -> FilePath -> IO JournalRecordObservation
+observeJournalRecord bootstrap name = do
+  result <- timeout 10000000 $ try $ withScopeRootDescriptor (bootstrapScope bootstrap) $ \root stable -> do
+    opened <- try (Posix.openFdAt (Just root) name Posix.ReadOnly readFlags)
+    case opened of
+      Left (failure :: IOException) -> do
+        unchanged <- stable
+        pure $
+          if unchanged && isDoesNotExistError failure then JournalRecordMissing else JournalRecordUnobservable
+      Right file -> bracket (pure file) Posix.closeFd $ \held -> do
+        owner <- toInteger <$> getEffectiveUserID
+        before <- Files.getFdStatus held
+        if not (safeRecord before owner)
+          then pure JournalRecordUnobservable
+          else do
+            bytes <- PosixBytes.fdRead held 4097
+            after <- Files.getFdStatus held
+            named <-
+              bracket (Posix.openFdAt (Just root) name Posix.ReadOnly readFlags) Posix.closeFd Files.getFdStatus
+            unchanged <- stable
+            pure $ case Aeson.decodeStrict' bytes of
+              Just value
+                | unchanged
+                , fromIntegral (ByteString.length bytes) == Files.fileSize before
+                , fileVersion before == fileVersion after
+                , fileVersion after == fileVersion named ->
+                    JournalRecordObserved value
+              _ -> JournalRecordUnobservable
+  pure $ case result of
+    Just (Right (Right observed)) -> observed
+    Just (Left (_ :: IOException)) -> JournalRecordUnobservable
+    _ -> JournalRecordUnobservable
+ where
+  fileVersion status =
+    ( Files.deviceID status
+    , Files.fileID status
+    , Files.fileOwner status
+    , Files.fileMode status
+    , Files.fileSize status
+    , Files.linkCount status
+    , Files.modificationTimeHiRes status
+    , Files.statusChangeTimeHiRes status
+    )
 
 -- Exclusive create then fsync of the file and the root: the record exists
 -- durably before the effect it announces.

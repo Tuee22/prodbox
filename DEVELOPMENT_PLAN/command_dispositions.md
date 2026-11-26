@@ -12,10 +12,10 @@
 Captured from the existing built binary's `commands --json` at source baseline `583443f`: **138 leaves, 65 distinct long-option names, 554 inherited/leaf option occurrences**. The generated [current command reference](../documents/cli/commands.md) remains a current-binary artifact. This table is the migration contract, not a claim that target paths run today. Phase 0 must bind this capture to source `CommandSpec` and test exact coverage before new parser work.
 
 Phase 1 adds an inherited `--config` occurrence to each current leaf; local
-runtime `--config` occurrences remain separate. The selected path currently
-works for authored configuration validation, bootstrap setup and local control
-status/plan. Other
-commands refuse it until their handlers carry the selected context.
+runtime `--config` occurrences remain separate. At baseline the selected
+path worked for authored configuration validation, bootstrap setup and local
+control status and plan. Later phases activate the selected context through
+their owned handlers and acceptance cases.
 
 Each current leaf has one disposition and final owning phase. The required-options column captures inherited and leaf requiredness from the current registry; it does not independently prove parser behavior. Earlier partial capability activation is allowed only with real acceptance. For operator/maintenance leaves, the listed owner closes their retained scope. Internalized launcher rows owned by Phase 1 close only namespace/parser/visibility relocation with unchanged authenticated dispatch; they do not claim that later Authority, Provisioner, TLS or application runtime behavior already works. Those actual capabilities are validated by their consuming phases in the component/objective catalogs. Temporary cleanup for original identities belongs to L18/Phase 10, not a second ordinary command. Every alias and short option must follow its long-option disposition. Meaningful positional operands are specified after the leaf table.
 
@@ -111,7 +111,7 @@ Disposition `Preserved` retains capability with the common context/engine. `Repl
 | C084 | `prodbox internal-rpc-birth-controller` | `prodbox internal rpc-birth-controller` | Internalized | 1 | Internal | `--verbose`, `--version`, `--config`, `--request`, `--input-fingerprint`, `--operation-key`, `--outer-ns`, `--work-ns`, `--hard-ns`, `--stop-ns`, `--finish-ns`, `--config` | `--config`, `--request`, `--input-fingerprint`, `--operation-key`, `--outer-ns`, `--work-ns`, `--hard-ns`, `--stop-ns`, `--finish-ns` |
 | C085 | `prodbox nuke` | `prodbox delete / admin control purge-data` | Removed | 8 | Operator / Maintenance | `--verbose`, `--version`, `--dry-run`, `--plan-file`, `--receipt`, `--local-data`, `--config` | — |
 | C086 | `prodbox test init` | `prodbox test init` | Preserved | 1 | Developer | `--verbose`, `--version`, `--force`, `--config` | — |
-| C087 | `prodbox test run` | `prodbox test run NAME` | Preserved | 1 | Developer | `--verbose`, `--version`, `--coverage`, `--cov-fail-under`, `--substrate`, `--config` | — |
+| C087 | `prodbox test run` | `prodbox test run NAME` | Preserved | 1 | Developer | `--verbose`, `--version`, `--coverage`, `--cov-fail-under`, `--substrate`, `--config`, `--runtime-socket` | — |
 | C088 | `prodbox test all` | `prodbox test run all` | Replaced | 10 | Developer | `--verbose`, `--version`, `--coverage`, `--cov-fail-under`, `--substrate`, `--config` | — |
 | C089 | `prodbox test lint` | `prodbox dev check` | Replaced | 0 | Developer | `--verbose`, `--version`, `--config` | — |
 | C090 | `prodbox test unit` | `prodbox test run unit` | Replaced | 1 | Developer | `--verbose`, `--version`, `--coverage`, `--cov-fail-under`, `--substrate`, `--config` | — |
@@ -186,7 +186,21 @@ Disposition `Preserved` retains capability with the common context/engine. `Repl
 | C159 | `prodbox control lifecycle-status` | `prodbox control lifecycle-status` | Preserved | 3 | Operator | `--verbose`, `--version`, `--config` | — |
 | C157 | `prodbox control broker-baseline` | `prodbox control broker-baseline` | Preserved | 2 | Operator | `--verbose`, `--version`, `--config` | — |
 | C162 | `prodbox test status` | `prodbox test status` | Preserved | 1 | Developer | `--verbose`, `--version`, `--config` | — |
+| C164 | `prodbox test cleanup` | `prodbox test cleanup RUN_ID` | Preserved | 1 | Developer | `--verbose`, `--version`, `--config` | — |
 | C163 | `prodbox internal-kind-family-controller` | `prodbox internal kind-family-controller` | Internalized | 1 | Internal | `--verbose`, `--version`, `--config`, `--request`, `--input-fingerprint`, `--operation-key`, `--outer-ns`, `--work-ns`, `--hard-ns`, `--stop-ns`, `--finish-ns`, `--config` | `--config`, `--request`, `--input-fingerprint`, `--operation-key`, `--outer-ns`, `--work-ns`, `--hard-ns`, `--stop-ns`, `--finish-ns` |
+| C165 | `prodbox status` | `prodbox status` | Preserved | 3 | Operator | `--verbose`, `--version`, `--config` | — |
+| C166 | `prodbox plan delete` | `prodbox plan delete` | Preserved | 3 | Operator | `--verbose`, `--version`, `--config` | — |
+| C167 | `prodbox plan reconcile` | `prodbox plan reconcile` | Preserved | 3 | Operator | `--verbose`, `--version`, `--config` | — |
+| C168 | `prodbox operations list` | `prodbox operations list` | Preserved | 3 | Operator | `--verbose`, `--version`, `--config` | — |
+| C169 | `prodbox operations show` | `prodbox operations show ID` | Preserved | 3 | Operator | `--verbose`, `--version`, `--config` | — |
+| C170 | `prodbox operations resume` | `prodbox operations resume ID` | Preserved | 3 | Operator | `--verbose`, `--version`, `--config` | — |
+| C171 | `prodbox operations cancel` | `prodbox operations cancel ID` | Preserved | 3 | Operator | `--verbose`, `--version`, `--config` | — |
+| C172 | `prodbox admin vault pki status` | `prodbox admin vault pki status` | Preserved | 3 | Operator | `--verbose`, `--version`, `--config` | — |
+| C173 | `prodbox admin vault pki issue-test-cert` | `prodbox admin vault pki issue-test-cert` | Preserved | 3 | Operator | `--verbose`, `--version`, `--config` | — |
+| C174 | `prodbox admin vault status` | `prodbox admin vault status` | Preserved | 3 | Maintenance | `--verbose`, `--version`, `--config` | — |
+| C175 | `prodbox admin vault rotate-unlock-bundle` | `prodbox admin vault rotate-unlock-bundle` | Preserved | 3 | Maintenance | `--verbose`, `--version`, `--generation`, `--operation-id`, `--config` | `--generation`, `--operation-id` |
+| C176 | `prodbox admin vault rotate-transit-key` | `prodbox admin vault rotate-transit-key KEY` | Preserved | 3 | Maintenance | `--verbose`, `--version`, `--generation`, `--operation-id`, `--config` | `--generation`, `--operation-id` |
+| C177 | `prodbox admin vault reset-ambiguous-initialization` | `prodbox admin vault reset-ambiguous-initialization` | Preserved | 3 | Maintenance | `--verbose`, `--version`, `--generation`, `--operation-id`, `--yes`, `--config` | `--generation`, `--operation-id`, `--yes` |
 
 ## Option disposition
 
@@ -215,6 +229,7 @@ This list accounts for every distinct baseline long option; the leaf table recor
 | `--emit-readonly-script` | — | Preserve read-only provider diagnostics with their declared field; never emit a mutating fallback script. |
 | `--finish-ns` | — | Internalize with authenticated worker/controller launch; preserve exact immutable binding and validation, never an ordinary operator permission shortcut. |
 | `--force` | — | Preserve overwrite only for authored test-plan generation; never force infrastructure or retained-state reset. |
+| `--generation` | — | Bind scoped Vault maintenance to the explicitly confirmed original storage generation. |
 | `--fresh-test` | — | Preserve exclusive creation of a new test root; refuse production, existing roots and incomplete enrollment. |
 | `--hard-ns` | — | Internalize with authenticated worker/controller launch; preserve exact immutable binding and validation, never an ordinary operator permission shortcut. |
 | `--image-digest` | — | Internalize with authenticated worker/controller launch; preserve exact immutable binding and validation, never an ordinary operator permission shortcut. |
@@ -228,7 +243,7 @@ This list accounts for every distinct baseline long option; the leaf table recor
 | `--namespace` | `-n` | Preserve exact selected-cluster namespace diagnostics; no ambient kubeconfig. |
 | `--node-id` | — | Preserve gateway config-generation identity; match selected context. |
 | `--operation` | — | Internalize with authenticated worker/controller launch; preserve exact immutable binding and validation, never an ordinary operator permission shortcut. |
-| `--operation-id` | — | Internalize with authenticated worker/controller launch; preserve exact immutable binding and validation, never an ordinary operator permission shortcut. |
+| `--operation-id` | — | Bind authenticated worker launches and scoped Vault maintenance retries to their original immutable operation. |
 | `--operation-key` | — | Internalize with authenticated worker/controller launch; preserve exact immutable binding and validation, never an ordinary operator permission shortcut. |
 | `--outer-ns` | — | Internalize with authenticated worker/controller launch; preserve exact immutable binding and validation, never an ordinary operator permission shortcut. |
 | `--permit-id` | — | Internalize with authenticated worker/controller launch; preserve exact immutable binding and validation, never an ordinary operator permission shortcut. |
@@ -248,6 +263,7 @@ This list accounts for every distinct baseline long option; the leaf table recor
 | `--status-unverified` | — | Preserve unverified-email filtering; it cannot manufacture verified state. |
 | `--stop-ns` | — | Internalize with authenticated worker/controller launch; preserve exact immutable binding and validation, never an ordinary operator permission shortcut. |
 | `--substrate` | — | Replace with explicit `--target local\|aws` for applicable service/application actions or the test plan variant. Local control is always kind. |
+| `--runtime-socket` | — | Select an explicit absolute Docker Unix socket for fresh Phase 1 test setup. The test runner allocates its own scope and verifies the selected daemon. |
 | `--tail` | — | Preserve bounded per-container logs on the selected target. |
 | `--target` | — | Internal worker target remains exact signed identity; public target selection uses explicit local/aws context and does not accept a worker permit. |
 | `--target-agent-identity` | — | Internalize with authenticated worker/controller launch; preserve exact immutable binding and validation, never an ordinary operator permission shortcut. |
@@ -297,9 +313,11 @@ The captured registry JSON does not serialize positional operand metadata. `CLI.
 
 New paths with no baseline leaf are explicitly owned: `plan reconcile/delete`, `operations list/show/resume/cancel`, `control delete` and aggregate `status` in Phase 3; initial `control reconcile/status` in Phase 1 then management services in Phase 2; `test list/status/cleanup` and bounded mutation execution in Phase 1 (cloud cleanup extends with introduced families); `services logs` in Phase 6; credential status in Phase 4; federation status in Phase 9. Real cloud/application reconcile becomes available only in its owning phase.
 
-`test status RUN_ID` currently supports read-only inspection of retained local
-mutation-campaign records. It reports incomplete without observing Docker,
-worker settlement or cleanup; other test-run status and cleanup remain open.
+`test status RUN_ID` supports read-only inspection of retained local
+mutation-campaign records and reports the actual scope of that read.
+`test cleanup RUN_ID` retains the numeric mutation campaign path from Phase
+1. Phase 3 adds retirement of a registered disposable test root through the
+selected context, including exact control read-back and retained receipts.
 
 Target `reconcile --target aws` means the EKS application projection and closes in Phase 8; the cheap Phase 5 S3 resource uses the separately named `admin aws stack storage-canary` / test family without pretending EKS exists. The ordinary root `delete` handles all families admitted so far, starting with credential-family resources in Phase 4.
 

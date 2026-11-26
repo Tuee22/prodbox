@@ -41,6 +41,7 @@ import Prodbox.Bootstrap.Broker.TokenReview
   , BrokerTokenReviewUser (..)
   , BrokerTokenReviewer (..)
   )
+import Prodbox.ControlPlane.AdmissionJournalMirror (JournalInitialization (..))
 import Prodbox.ControlPlane.Deadline (RemainingDuration (..), deadlineAtOffset)
 import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
 import Prodbox.ControlPlane.ListenPort (authorityJournalReadPortNumber)
@@ -97,27 +98,43 @@ verdictCode verdict = case verdict of
   AdmittedPending _ -> "admitted-pending"
   RecoveryRequired _ -> "recovery-required"
 
-renderVerdictAnswer :: Text -> AdmissionVerdict -> ByteString
-renderVerdictAnswer observedAt verdict =
+renderVerdictAnswer :: Text -> Text -> AdmissionVerdict -> ByteString
+renderVerdictAnswer clusterId observedAt verdict =
+  renderJournalAnswer clusterId observedAt verdict JournalInitializationLegacy
+
+renderJournalAnswer :: Text -> Text -> AdmissionVerdict -> JournalInitialization -> ByteString
+renderJournalAnswer clusterId observedAt verdict initialization =
   LazyByteString.toStrict
     ( Aeson.encode
         ( Aeson.object
-            [ "verdict" .= verdictCode verdict
+            [ "cluster_id" .= clusterId
+            , "verdict" .= verdictCode verdict
             , "observed_at" .= observedAt
             , "detail" .= Text.pack (renderVerdict verdict)
+            , "initialization" .= record
             ]
         )
     )
     <> "\n"
+ where
+  record = case (verdict, initialization) of
+    (AdmittedPending pending, JournalInitializationArmed identifier)
+      | pending == [identifier] -> Just (operation "pending" identifier)
+    (RecoveryRequired _, _) -> Nothing
+    (_, JournalInitializationComplete identifier) -> Just (operation "complete" identifier)
+    _ -> Nothing
+  operation phase identifier = Aeson.object ["state" .= (phase :: Text), "operation_id" .= identifier]
 
 -- | Serve until cancelled. Connections are handled one at a time, each bounded
 -- in time, because this is a narrow read.
 runAuthorityJournalReadServer
   :: Text
+  -> Text
   -> BrokerTokenReviewer
   -> IO JournalObservation
+  -> IO JournalInitialization
   -> IO ()
-runAuthorityJournalReadServer namespace reviewer observe =
+runAuthorityJournalReadServer clusterId namespace reviewer observe observeInitialization =
   withSocketsDo $
     bracket open close $ \listener ->
       forever $ do
@@ -158,10 +175,14 @@ runAuthorityJournalReadServer namespace reviewer observe =
                   Left refusal -> sendAll client (renderHttpResponse refusal "refused\n")
                   Right () -> do
                     observation <- observe
+                    initialization <- observeInitialization
                     observedAt <- Text.pack . formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" <$> getCurrentTime
                     sendAll
                       client
-                      (renderHttpResponse ReplyOk (renderVerdictAnswer observedAt (classifyAdmission observation)))
+                      ( renderHttpResponse
+                          ReplyOk
+                          (renderJournalAnswer clusterId observedAt (classifyAdmission observation) initialization)
+                      )
       _ -> sendAll client (renderHttpResponse ReplyBadRequest "bad-request\n")
 
   readHead client = go ByteString.empty

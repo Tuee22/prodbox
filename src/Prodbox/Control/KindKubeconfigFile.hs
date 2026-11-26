@@ -17,9 +17,9 @@ import Control.Exception (IOException, bracket, try)
 import Control.Monad (unless)
 import Data.Aeson qualified as Aeson
 import Data.Bits ((.&.), (.|.))
+import Data.ByteString qualified as ByteString
 import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Lazy qualified as LazyByteString
-import Data.ByteString qualified as ByteString
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Foreign.C.Error (throwErrnoIfMinus1, throwErrnoIfMinus1_)
@@ -36,7 +36,11 @@ import Prodbox.Config.DeploymentScope
   , withScopeRootDescriptor
   )
 import Prodbox.Control.KindKubeconfig
-  ( KindKubeconfig, kindKubeconfigContext, kindKubeconfigServer, withKindKubeconfigMaterial )
+  ( KindKubeconfig
+  , kindKubeconfigContext
+  , kindKubeconfigServer
+  , withKindKubeconfigMaterial
+  )
 import Prodbox.Control.KindKubeconfigYaml (KindKubeconfigDecodeError, decodeKindKubeconfig)
 import System.IO (SeekMode (AbsoluteSeek))
 import System.IO.Error (isEOFError)
@@ -52,13 +56,13 @@ import System.Posix.Files
   , isRegularFile
   , linkCount
   , modificationTimeHiRes
-  , statusChangeTimeHiRes
   , setFdMode
+  , statusChangeTimeHiRes
   )
 import System.Posix.IO qualified as Posix
 import System.Posix.IO.ByteString qualified as PosixBytes
-import System.Posix.Types (Fd (..), UserID)
 import System.Posix.Process (getProcessID)
+import System.Posix.Types (Fd (..), UserID)
 import System.Posix.User (getEffectiveUserID)
 import System.Timeout (timeout)
 
@@ -111,30 +115,44 @@ withKindKubeconfigSnapshotBound bootstrap action = do
     Left failure -> pure (Left failure)
     Right config -> do
       created <- try $ withCString "prodbox-kubeconfig" $ \name ->
-        Fd <$> throwErrnoIfMinus1 "memfd_create" (createMemoryFile name (memoryCloseOnExec .|. memoryAllowSealing))
+        Fd
+          <$> throwErrnoIfMinus1 "memfd_create" (createMemoryFile name (memoryCloseOnExec .|. memoryAllowSealing))
       case created of
         Left (_ :: IOException) -> pure (Left KindKubeconfigFileUnobservable)
         Right descriptor -> bracket (pure descriptor) Posix.closeFd $ \file@(Fd raw) -> do
           prepared <- try $ withKindKubeconfigMaterial config $ \ca cert key -> do
             let context = kindKubeconfigContext config
                 encoded = TextEncoding.decodeUtf8 . Base64.encode
-                bytes = LazyByteString.toStrict $ Aeson.encode $ Aeson.object
-                  [ "apiVersion" Aeson..= ("v1" :: String)
-                  , "kind" Aeson..= ("Config" :: String)
-                  , "current-context" Aeson..= context
-                  , "clusters" Aeson..= [Aeson.object
-                      [ "name" Aeson..= context
-                      , "cluster" Aeson..= Aeson.object ["server" Aeson..= kindKubeconfigServer config, "certificate-authority-data" Aeson..= encoded ca]
-                      ]]
-                  , "contexts" Aeson..= [Aeson.object
-                      [ "name" Aeson..= context
-                      , "context" Aeson..= Aeson.object ["cluster" Aeson..= context, "user" Aeson..= context]
-                      ]]
-                  , "users" Aeson..= [Aeson.object
-                      [ "name" Aeson..= context
-                      , "user" Aeson..= Aeson.object ["client-certificate-data" Aeson..= encoded cert, "client-key-data" Aeson..= encoded key]
-                      ]]
-                  ]
+                bytes =
+                  LazyByteString.toStrict $
+                    Aeson.encode $
+                      Aeson.object
+                        [ "apiVersion" Aeson..= ("v1" :: String)
+                        , "kind" Aeson..= ("Config" :: String)
+                        , "current-context" Aeson..= context
+                        , "clusters"
+                            Aeson..= [ Aeson.object
+                                         [ "name" Aeson..= context
+                                         , "cluster"
+                                             Aeson..= Aeson.object
+                                               ["server" Aeson..= kindKubeconfigServer config, "certificate-authority-data" Aeson..= encoded ca]
+                                         ]
+                                     ]
+                        , "contexts"
+                            Aeson..= [ Aeson.object
+                                         [ "name" Aeson..= context
+                                         , "context" Aeson..= Aeson.object ["cluster" Aeson..= context, "user" Aeson..= context]
+                                         ]
+                                     ]
+                        , "users"
+                            Aeson..= [ Aeson.object
+                                         [ "name" Aeson..= context
+                                         , "user"
+                                             Aeson..= Aeson.object
+                                               ["client-certificate-data" Aeson..= encoded cert, "client-key-data" Aeson..= encoded key]
+                                         ]
+                                     ]
+                        ]
                 writeAll remaining
                   | ByteString.null remaining = pure ()
                   | otherwise = do

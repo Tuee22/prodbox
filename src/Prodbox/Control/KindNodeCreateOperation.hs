@@ -31,6 +31,7 @@ module Prodbox.Control.KindNodeCreateOperation
   , KindNodeRemoveAction (..)
   , withNewConnectedKindNodeRemove
   , withNewConnectedKindNodeRemoveGuarded
+  , withRecoveredConnectedKindNodeRemoveGuarded
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -42,11 +43,16 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.Config.BootstrapProjection
   ( BootstrapProjection
+  , bootstrapKindPlan
   , bootstrapRuntimeSocket
   , bootstrapScope
   )
 import Prodbox.Config.DeploymentScope (scopeKindName)
-import Prodbox.Config.KindPlan (KindNodeCreateInput (nodeCreateArguments, nodeCreateImageId))
+import Prodbox.Config.KindPlan
+  ( KindNodeCreateInput (nodeCreateArguments, nodeCreateImageId)
+  , KindNodeRuntimeMode (..)
+  , kindNodeCreateMode
+  )
 import Prodbox.Control.DockerConnectedInfo
   ( DockerConnectedInfo (..)
   , DockerConnectedInfoFailure
@@ -62,6 +68,7 @@ import Prodbox.Control.DockerConnectedInfo
   , DockerNodeContainerStartResult (..)
   , DockerSession
   , createDockerSessionKindNode
+  , dockerKindNodeRuntime
   , inspectDockerSessionKindNode
   , observeDockerSessionKindNodeConfigPath
   , readDockerSessionKindInfo
@@ -116,6 +123,7 @@ import Prodbox.Control.KindNodeCreateIntent
   , KindNodeRemoveAttemptObservation (..)
   , KindNodeRemoveAttemptWrite (..)
   , KindNodeRemoveControlObservation (..)
+  , KindNodeRemovePass (..)
   , KindNodeRemoveResultObservation (..)
   , KindNodeRemoveResultWrite (..)
   , KindNodeStartAttemptObservation (..)
@@ -129,8 +137,10 @@ import Prodbox.Control.KindNodeCreateIntent
   , observeKindNodeCreateAttempt
   , observeKindNodeCreateResult
   , observeKindNodeRemoveAttempt
+  , observeKindNodeRemoveAttemptFor
   , observeKindNodeRemoveControl
-  , observeKindNodeRemoveResult
+  , observeKindNodeRemoveRecoveryPredecessor
+  , observeKindNodeRemoveResultFor
   , observeKindNodeStartAttempt
   , observeKindNodeStartResult
   , observeRecordedKindNodeCreateIntent
@@ -140,7 +150,8 @@ import Prodbox.Control.KindNodeCreateIntent
   , recordKindNodeCreateAttempt
   , recordKindNodeCreateResult
   , recordKindNodeRemoveAttempt
-  , recordKindNodeRemoveResult
+  , recordKindNodeRemoveRecoveryAttempt
+  , recordKindNodeRemoveResultFor
   , recordKindNodeStartAttempt
   , recordKindNodeStartResult
   )
@@ -196,7 +207,9 @@ runKindNodeCreateOnSession bootstrap operation session (DockerConnectedInfo iden
   case proposal of
     NodeCreateRecoveryRecorded intent
       | kindNodeCreateDaemon intent == DockerDaemonObserved identifier identity -> do
-          admitted <- try (admit intent session stable)
+          admitted <- try $ do
+            allowed <- verifyKindNodeRuntime intent
+            if allowed then admit intent session stable else pure False
           case (admitted :: Either IOException Bool) of
             Right True -> do
               written <- recordKindNodeCreateAttempt bootstrap intent stable
@@ -228,6 +241,14 @@ runKindNodeCreateOnSession bootstrap operation session (DockerConnectedInfo iden
             _ -> pure NodeCreateActionAdmissionRefused
       | otherwise -> pure NodeCreateActionDaemonMismatch
     other -> pure (NodeCreateActionProposalRefused other)
+ where
+  verifyKindNodeRuntime intent =
+    case kindNodeCreateMode (bootstrapKindPlan bootstrap) (kindNodeCreateInput intent) of
+      Just KindNodeRootful -> pure True
+      Just KindNodeRootless -> do
+        observed <- readDockerSessionKindInfo session identifier
+        pure $ (either (const Nothing) dockerKindNodeRuntime observed) == Just KindNodeRootless
+      Nothing -> pure False
 
 -- | Retain a candidate observed for an uncertain create. The exact candidate
 -- is inspected over the held session and independently sampled by the writer.
@@ -1033,7 +1054,24 @@ withNewConnectedKindNodeRemoveGuarded
   -> (IO Bool -> IO Bool)
   -> (KindNodeCreateIntent -> String -> DockerSession -> IO Bool -> IO Bool)
   -> IO (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult KindNodeRemoveAction)))
-withNewConnectedKindNodeRemoveGuarded bootstrap operation settlementStable admit =
+withNewConnectedKindNodeRemoveGuarded = withKindNodeRemoveGuarded InitialNodeRemoval
+
+withRecoveredConnectedKindNodeRemoveGuarded
+  :: BootstrapProjection
+  -> String
+  -> (IO Bool -> IO Bool)
+  -> (KindNodeCreateIntent -> String -> DockerSession -> IO Bool -> IO Bool)
+  -> IO (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult KindNodeRemoveAction)))
+withRecoveredConnectedKindNodeRemoveGuarded = withKindNodeRemoveGuarded RetryNodeRemoval
+
+withKindNodeRemoveGuarded
+  :: KindNodeRemovePass
+  -> BootstrapProjection
+  -> String
+  -> (IO Bool -> IO Bool)
+  -> (KindNodeCreateIntent -> String -> DockerSession -> IO Bool -> IO Bool)
+  -> IO (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult KindNodeRemoveAction)))
+withKindNodeRemoveGuarded pass bootstrap operation settlementStable admit =
   withRecoveredKindOperation bootstrap operation $ \operationStable ->
     withConnectedDockerInfo 180000000 (bootstrapRuntimeSocket bootstrap) $ \session (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable -> do
       let stable = settlementStable ((&&) <$> operationStable <*> peerStable)
@@ -1058,13 +1096,25 @@ withNewConnectedKindNodeRemoveGuarded bootstrap operation settlementStable admit
         other -> pure (NodeRemoveActionProposalRefused other)
  where
   removeAdmitted intent containerId session stable = do
-    written <- recordKindNodeRemoveAttempt bootstrap intent containerId stable
+    written <- case pass of
+      InitialNodeRemoval -> recordKindNodeRemoveAttempt bootstrap intent containerId stable
+      RetryNodeRemoval -> recordKindNodeRemoveRecoveryAttempt bootstrap intent containerId stable
     case written of
       NodeRemoveAttemptRecorded -> do
         let markerStable = do
-              marker <- observeKindNodeRemoveAttempt bootstrap intent containerId stable
-              control <- observeKindNodeRemoveControl bootstrap intent containerId stable
-              if marker /= NodeRemoveAttemptMatches || control /= NodeRemoveControlMatches
+              before <- stable
+              marker <-
+                if before
+                  then observeKindNodeRemoveAttemptFor pass bootstrap intent containerId (pure True)
+                  else pure NodeRemoveAttemptUnobservable
+              control <-
+                if before
+                  then observeKindNodeRemoveControl bootstrap intent containerId (pure True)
+                  else pure NodeRemoveControlUnobservable
+              predecessor <- case pass of
+                InitialNodeRemoval -> pure True
+                RetryNodeRemoval -> observeKindNodeRemoveRecoveryPredecessor bootstrap intent containerId
+              if marker /= NodeRemoveAttemptMatches || control /= NodeRemoveControlMatches || not predecessor
                 then pure False
                 else do
                   currentNode <-
@@ -1075,7 +1125,13 @@ withNewConnectedKindNodeRemoveGuarded bootstrap operation settlementStable admit
                       afterAdmission <- stable
                       pure (allowed && afterAdmission)
                     _ -> pure False
-        prior <- observeKindNodeRemoveResult bootstrap intent containerId markerStable
+        -- Hold the operation lease while collecting the local result. Keep
+        -- the physical admission checks outside the record reader's deadline.
+        opening <- markerStable
+        prior <-
+          if opening
+            then observeKindNodeRemoveResultFor pass bootstrap intent containerId (pure True)
+            else pure NodeRemoveResultUnobservable
         case prior of
           NodeRemoveResultMissing -> do
             ready <- markerStable
@@ -1083,14 +1139,21 @@ withNewConnectedKindNodeRemoveGuarded bootstrap operation settlementStable admit
               then pure NodeRemoveActionChanged
               else do
                 -- After removal, inspect may no longer find the node.
-                let receiptStable =
-                      (== NodeRemoveAttemptMatches) <$> observeKindNodeRemoveAttempt bootstrap intent containerId stable
+                let receiptStable = do
+                      before <- stable
+                      marker <-
+                        if before
+                          then observeKindNodeRemoveAttemptFor pass bootstrap intent containerId (pure True)
+                          else pure NodeRemoveAttemptUnobservable
+                      after <- stable
+                      pure (before && marker == NodeRemoveAttemptMatches && after)
                 let effectStable = do
                       marker <- receiptStable
-                      control <- observeKindNodeRemoveControl bootstrap intent containerId stable
-                      pure (marker && control == NodeRemoveControlMatches)
+                      control <- observeKindNodeRemoveControl bootstrap intent containerId (pure True)
+                      after <- stable
+                      pure (marker && control == NodeRemoveControlMatches && after)
                 result <- removeDockerSessionKindNode session containerId markerStable effectStable
-                receipt <- recordKindNodeRemoveResult bootstrap intent containerId result receiptStable
+                receipt <- recordKindNodeRemoveResultFor pass bootstrap intent containerId result receiptStable
                 after <- try receiptStable
                 pure $ case (after :: Either IOException Bool) of
                   Right True -> NodeRemoveActionReturned result receipt

@@ -33,19 +33,21 @@ import Prodbox.CLI.Command
   , CommandListingFormat (..)
   , CommandRequest (..)
   , ConfigCommand (..)
-  , CoverageFlags (..)
   , GatewayCommand (..)
   , NativeCommand (..)
+  , OperationCommand (..)
   , TestCommand (..)
   , TestScope (..)
+  , VaultMaintenanceCommand (..)
+  , VaultPkiCommand (..)
   , WorkloadCommand (..)
   )
 import Prodbox.CLI.Docs (renderCommandHelp)
 import Prodbox.CLI.Json (renderCommandJson)
 import Prodbox.CLI.Output
   ( writeError
-  , writeOutputLine
   , writeOutput
+  , writeOutputLine
   )
 import Prodbox.CLI.Parser
   ( Options (..)
@@ -58,6 +60,8 @@ import Prodbox.CLI.Vault
   ( brokerBaselineSelected
   , brokerInitializeSelected
   , brokerUnsealSelected
+  , runVaultMaintenanceSelected
+  , runVaultPkiSelected
   )
 import Prodbox.Config.BootstrapProjection
   ( BootstrapProjection
@@ -83,15 +87,18 @@ import Prodbox.Control.ArtifactImport
   , discardBootstrapArtifactStaging
   , importBootstrapArtifact
   )
-import Prodbox.Control.AuthorityDeploy (deployAuthority)
-import Prodbox.Control.AuthorityJournalClient (AdmissionSource (..), currentAdmission)
+import Prodbox.Control.AuthorityDeploy (deployAuthority, deployAuthorityWithAdmission)
+import Prodbox.Control.AuthorityJournalClient
+  ( AdmissionSource (..)
+  , AuthorityRemovalObservation (..)
+  , admitKindTeardown
+  , currentAdmission
+  , currentAuthorityInitialization
+  , observeAuthorityRemoval
+  )
 import Prodbox.Control.Backup (backupServices, renderBackupOutcome, restoreServices)
 import Prodbox.Control.BrokerClientCommand (brokerVaultStatus)
 import Prodbox.Control.Delete (DeleteStep (..), deleteNewTestIdentity, recoverProbeForDelete)
-import Prodbox.Control.KindFamilyDispatcher
-  ( dispatchKindFamilyController, kindFamilyDispatchCompleted
-  , dispatchKindProbeFamilyController, isKindProbeRecoveryArguments, kindProbeFamilyDispatchCompleted, kindProbeFamilyDispatchFailureCode )
-import Prodbox.Control.KindControllerInput (isKindProbeSuccessorArguments)
 import Prodbox.Control.DockerConnectedInfo
   ( DockerConnectedInfoFailure
   , DockerConnectedInfoResult (..)
@@ -100,34 +107,87 @@ import Prodbox.Control.DockerConnectedInfo
   )
 import Prodbox.Control.DockerPeer (DockerPeer (..), DockerPeerResult (..), withConnectedDockerPeer)
 import Prodbox.Control.HostPorts (dockerNameRefusal, hostPortRefusal)
+import Prodbox.Control.KindAbsenceStatus
+  ( observeAbsenceInventoryStatus
+  , observeAbsenceJournalStatus
+  , renderAbsenceInventoryStatus
+  , renderAbsenceJournalStatus
+  )
 import Prodbox.Control.KindController
   ( kindHostCapacityRefusal
   , runKindControllerEntry
   )
-import Prodbox.Control.KindControllerReceipt (observeControllerSubmissionStatus, observeControllerFreshProvider, observeControllerFreshSender, observeControllerManagerRead, observeFamilyResultStatus)
-import Prodbox.Control.KindFamilyLaunch (KindFamilyLaunchOutcome (..), KindFamilyLaunchClosing (..), launchFreshKindFamily)
+import Prodbox.Control.KindControllerInput (isKindProbeSuccessorArguments)
+import Prodbox.Control.KindControllerReceipt
+  ( FamilyLaunchObservation (..)
+  , observeControllerFreshProvider
+  , observeControllerFreshSender
+  , observeControllerManagerRead
+  , observeControllerSubmissionStatus
+  , observeFamilyLaunch
+  , observeFamilyPrePublicationCancellation
+  , observeFamilyPublicationAttempt
+  , observeFamilyResult
+  , observeFamilyResultStatus
+  )
+import Prodbox.Control.KindControllerRequest (kindRequestWindow)
+import Prodbox.Control.KindDockerClient (runKindDockerClient)
+import Prodbox.Control.KindFamilyDispatcher
+  ( dispatchKindFamilyController
+  , dispatchKindProbeFamilyController
+  , isKindProbeRecoveryArguments
+  , kindFamilyDispatchCompleted
+  , kindProbeFamilyDispatchCompleted
+  , kindProbeFamilyDispatchFailureCode
+  )
+import Prodbox.Control.KindFamilyLaunch
+  ( KindFamilyLaunchClosing (..)
+  , KindFamilyLaunchOutcome (..)
+  , launchFreshKindFamily
+  , launchKindFamily
+  , prepareFreshKindFamilyRequest
+  )
 import Prodbox.Control.KindFamilyRecovery
   ( KindFamilyCompletionStep (..)
   , KindFamilyCompletionWait (..)
+  , KindFamilyPrePublicationOutcome (..)
+  , KindFamilyPublicationState (..)
   , KindFamilyRetirementOutcome (..)
   , awaitKindFamilyCompletionWith
+  , classifyKindFamilyPublication
   , kindFamilyReadinessComplete
   , observeKindFamilyCompletion
   , observeKindFamilySubmissionStatus
+  , recoverNeverSentKindFamilyInputs
   , recoverNeverSentKindProbeInputs
   , recoverNeverSentKindProbeVerifierInputs
-  , recoverNeverSentKindFamilyInputs
+  , withCancelledPrePublicationKindFamily
+  , withCancelledUnlaunchedOwnerFamily
   )
-import Prodbox.Control.KindIntent (KindIntentObservation (KindIntentMatches), observeKindFamilyIntent)
-import Prodbox.Control.KindAbsenceStatus
-  ( observeAbsenceJournalStatus, observeAbsenceInventoryStatus
-  , renderAbsenceJournalStatus, renderAbsenceInventoryStatus )
-import Prodbox.Control.KindDockerClient (runKindDockerClient)
-import Prodbox.Control.KindLease (KindOperationOutcome (..), withRecoveredKindOperation)
+import Prodbox.Control.KindIntent
+  ( KindIntentObservation (KindIntentMatches, KindIntentMissing)
+  , observeKindFamilyIntent
+  , observeKindOwnerFamilyIntent
+  , observeKindTeardownAdmission
+  )
+import Prodbox.Control.KindKubeconfigFile (withKindKubeconfigSnapshot)
+import Prodbox.Control.KindLease
+  ( KindLeaseOutcome (KindLeaseCompleted)
+  , KindOperationOutcome (..)
+  , withKindLease
+  , withRecoveredKindOperation
+  )
 import Prodbox.Control.KindRuntimeConfig (renderKindConfigForArchive)
 import Prodbox.Control.KubernetesReadiness
   ( observeKubernetesReadiness
   , renderKubernetesReadiness
+  )
+import Prodbox.Control.ManagementRestore
+  ( CompletedRestoreObservation (..)
+  , ManagementRestoreOperation (..)
+  , managementRestoreIdle
+  , observeCompletedManagementRestore
+  , observeManagementRestoreOperation
   )
 import Prodbox.Control.NetworkEnforcement
   ( ProbeJournalObservation (ProbeJournalVerifierPending)
@@ -169,28 +229,31 @@ import Prodbox.Control.Status
   , renderControlObservation
   , renderControlStatusError
   )
+import Prodbox.Control.TestRunCleanup (resumeTestRunCleanup, retireSettledTestRun)
 import Prodbox.Control.Unlock (renderUnlockOutcome, unlockVault)
+import Prodbox.ControlPlane.AdmissionJournalMirror (JournalInitialization (..))
 import Prodbox.Error (fatalError)
 import Prodbox.Lifecycle.AdmissionHistory
   ( AdmissionVerdict (..)
-  , noChangeAllowed
   , renderVerdict
   )
 import Prodbox.Native (runNativeCommand)
 import Prodbox.Repo (findRepoRoot, resolveTier0ConfigPath)
 import Prodbox.Settings (SelectedSettingsValidation (..), validateSelectedSettingsAtPath)
 import Prodbox.Subprocess.SystemdBus (BusError, SystemDockerObservation (..), observeSystemDocker)
-import Prodbox.Substrate (Substrate (SubstrateHomeLocal))
+import Prodbox.Subprocess.SystemdIdentity (hostExecutionOuterEnd)
 import Prodbox.TestRunner
-  ( renderNamedLocalTestList
+  ( namedMutationSuite
+  , renderNamedLocalTestList
+  , runMutationCampaignCleanup
   , runSelectedMutationCatalog
+  , runSelectedMutationStatus
   , runSelectedPhaseScenario
   , runSelectedPhaseThreeScenario
   , runSelectedPhaseTwoBrokerScenario
   , runSelectedPhaseTwoScenario
   , validatePhaseOneOptions
   )
-import Prodbox.Test.MutationExecutor (runMutationCampaignStatus)
 import System.Environment (getArgs, getProgName)
 import System.Exit (ExitCode (ExitFailure), exitSuccess, exitWith)
 import System.FilePath ((</>))
@@ -251,6 +314,12 @@ runSelectedCommand :: FilePath -> CommandRequest -> IO ()
 runSelectedCommand selected request = case request of
   RunControlStatus -> runControlStatus selected
   RunControlLifecycleStatus -> runControlLifecycleStatus selected
+  RunLifecycleStatus -> runLifecycleStatus selected
+  RunPlanDelete -> runPlanDelete selected
+  RunPlanReconcile -> runPlanReconcile selected
+  RunOperations action -> runOperations selected action
+  RunScopedVaultPki action -> runScopedVaultPki selected action
+  RunScopedVaultMaintenance action -> runScopedVaultMaintenance selected action
   RunOrdinaryDelete -> runOrdinaryDelete selected
   RunControlAuthorityDeploy -> runControlAuthorityDeploy selected
   RunControlPlan -> runControlPlan selected
@@ -269,13 +338,17 @@ runSelectedCommand selected request = case request of
   RunControlArtifactDiscard role -> runControlArtifactDiscard selected role
   RunControlInspectNodeArchive -> runControlInspectNodeArchive selected
   RunControlInspectImageAttempt operation -> runControlInspectImageAttempt selected operation
+  RunTestCleanup runId -> runSelectedTestRunCleanup selected runId
   RunNative (NativeConfig (ConfigSetup options)) -> runSelectedBootstrapSetup selected options >>= exitWith
   RunNative (NativeConfig (ConfigSetupFreshTest options)) -> runSelectedFreshTestBootstrapSetup selected options >>= exitWith
   RunNative (NativeTest command@(TestCommand (TestRun "phase-01") _ _ _)) -> runSelectedPhaseOneCommand selected command
   RunNative (NativeTest (TestCommand (TestRun "phase-02") _ _ _)) -> runSelectedPhaseTwoScenario selected >>= exitWith
   RunNative (NativeTest (TestCommand (TestRun "phase-02-broker") _ _ _)) -> runSelectedPhaseTwoBrokerScenario selected >>= exitWith
   RunNative (NativeTest (TestCommand (TestRun "phase-03") _ _ _)) -> runSelectedPhaseThreeScenario selected >>= exitWith
-  RunNative (NativeTest command@(TestCommand (TestRun "phase-01-mutation") _ _ _)) -> runMutationCommand command
+  RunNative (NativeTest (TestCommand (TestRunAtRuntimeSocket _ _) _ _ _)) ->
+    failWith "The runtime socket option requires fresh setup without a selected configuration."
+  RunNative (NativeTest command@(TestCommand (TestRun suite) _ _ _))
+    | namedMutationSuite suite -> runSelectedMutationCatalog command >>= exitWith
   RunNative (NativeConfig ConfigValidate) -> do
     result <- validateSelectedSettingsAtPath selected
     either
@@ -295,23 +368,20 @@ runSelectedPhaseOneCommand selected command = runPhaseOneCommand command (runSel
 runPhaseOneCommand :: TestCommand -> IO ExitCode -> IO ()
 runPhaseOneCommand command action = either failWith (const (action >>= exitWith)) (validatePhaseOneOptions command)
 
-runMutationCommand :: TestCommand -> IO ()
-runMutationCommand command
-  | testCoverage command /= CoverageFlags False Nothing =
-      failWith "Coverage is not supported by the isolated mutation runner."
-  | testSubstrate command /= SubstrateHomeLocal =
-      failWith "The isolated mutation runner does not select an AWS substrate."
-  | testRecordProfile command =
-      failWith "The isolated mutation runner does not record a capacity profile."
-  | otherwise = runSelectedMutationCatalog >>= exitWith
-
 runCommandRequest :: CommandRequest -> IO ()
 runCommandRequest request =
   case request of
     RunTestList -> writeOutput renderNamedLocalTestList
-    RunTestStatus runId -> runMutationCampaignStatus runId >>= exitWith
+    RunTestStatus runId -> runSelectedMutationStatus runId >>= exitWith
+    RunTestCleanup runId -> runTestRunCleanup runId
     RunControlStatus -> resolveTier0ConfigPath "." >>= runControlStatus
     RunControlLifecycleStatus -> resolveTier0ConfigPath "." >>= runControlLifecycleStatus
+    RunLifecycleStatus -> resolveTier0ConfigPath "." >>= runLifecycleStatus
+    RunPlanDelete -> resolveTier0ConfigPath "." >>= runPlanDelete
+    RunPlanReconcile -> resolveTier0ConfigPath "." >>= runPlanReconcile
+    RunOperations action -> resolveTier0ConfigPath "." >>= (\selected -> runOperations selected action)
+    RunScopedVaultPki action -> resolveTier0ConfigPath "." >>= (\selected -> runScopedVaultPki selected action)
+    RunScopedVaultMaintenance action -> resolveTier0ConfigPath "." >>= (\selected -> runScopedVaultMaintenance selected action)
     RunOrdinaryDelete -> resolveTier0ConfigPath "." >>= runOrdinaryDelete
     RunControlAuthorityDeploy -> resolveTier0ConfigPath "." >>= runControlAuthorityDeploy
     RunControlPlan -> resolveTier0ConfigPath "." >>= runControlPlan
@@ -330,22 +400,28 @@ runCommandRequest request =
     RunControlArtifactDiscard role -> resolveTier0ConfigPath "." >>= \selected -> runControlArtifactDiscard selected role
     RunControlInspectNodeArchive -> resolveTier0ConfigPath "." >>= runControlInspectNodeArchive
     RunControlInspectImageAttempt operation -> resolveTier0ConfigPath "." >>= \selected -> runControlInspectImageAttempt selected operation
-    RunNative (NativeTest command@(TestCommand (TestRun "phase-01-mutation") _ _ _)) -> runMutationCommand command
+    RunNative (NativeTest command@(TestCommand (TestRun suite) _ _ _))
+      | namedMutationSuite suite -> runSelectedMutationCatalog command >>= exitWith
     RunInternalKindController arguments -> runKindControllerEntry arguments >>= exitWith
     RunInternalKindFamilyController arguments ->
-      if isKindProbeRecoveryArguments arguments then do
-        outcome <- dispatchKindProbeFamilyController arguments
-        if kindProbeFamilyDispatchCompleted outcome then exitSuccess
-          else do
-            successor <- isKindProbeSuccessorArguments arguments
-            if successor then do
-              writeError (fatalError (Text.pack "Kind probe recovery incomplete; inspect the retained operation."))
-              exitWith (ExitFailure (kindProbeFamilyDispatchFailureCode outcome))
-            else failWith "Kind probe recovery incomplete; inspect the retained operation."
-      else do
-        outcome <- dispatchKindFamilyController arguments
-        if kindFamilyDispatchCompleted outcome then exitSuccess
-          else failWith "Kind family controller incomplete; inspect the retained operation."
+      if isKindProbeRecoveryArguments arguments
+        then do
+          outcome <- dispatchKindProbeFamilyController arguments
+          if kindProbeFamilyDispatchCompleted outcome
+            then exitSuccess
+            else do
+              successor <- isKindProbeSuccessorArguments arguments
+              if successor
+                then do
+                  writeError
+                    (fatalError (Text.pack "Kind probe recovery incomplete; inspect the retained operation."))
+                  exitWith (ExitFailure (kindProbeFamilyDispatchFailureCode outcome))
+                else failWith "Kind probe recovery incomplete; inspect the retained operation."
+        else do
+          outcome <- dispatchKindFamilyController arguments
+          if kindFamilyDispatchCompleted outcome
+            then exitSuccess
+            else failWith "Kind family controller incomplete; inspect the retained operation."
     RunNative command@(NativeRpcBirthController _) -> dispatch "." command
     RunNative command -> do
       repoRootResult <- findRepoRoot
@@ -406,45 +482,116 @@ runControlAuthorityDeploy selected = do
             else
               failWith ("The Authority deployment is incomplete; nothing was repaired by hand.\n" ++ rendered)
 
-runOrdinaryDelete :: FilePath -> IO ()
-runOrdinaryDelete selected = do
+withLifecycleScope :: FilePath -> (BootstrapProjection -> IO ()) -> IO ()
+withLifecycleScope selected action = do
   bootstrap <- readBootstrapProjection selected
   case bootstrap of
     Left failure -> failWith ("Cannot read control bootstrap: " ++ show failure)
-    Right projection -> do
-      (verdict, _) <- currentAdmission (scopeRoot (bootstrapScope projection))
-      case verdict of
-        NeverAdmitted ->
-          writeOutput
-            "Nothing to delete: no cloud capability was ever admitted for this deployment. The kind environment, local services, trust and journal are retained.\n"
-        AdmittedSettled ->
-          failWith
-            "Refused: this deployment admitted a capability whose deletion is not delivered by this binary yet; nothing was changed.\n"
-        _ ->
-          failWith
-            ( "Refused: deletion needs a settled, known operation history. "
-                ++ renderVerdict verdict
-                ++ "\nNothing was changed; resolve the journal through recovery first.\n"
-            )
+    Right projection -> action projection
+
+data DeletionAssessment
+  = DeletionSatisfied
+  | DeletionNeedsAdapter
+  | DeletionNeedsSettlement !AdmissionVerdict
+  | DeletionRestorePending !String
+  | DeletionRestoreUnconfirmed
+
+assessDeletion :: AdmissionVerdict -> DeletionAssessment
+assessDeletion verdict = case verdict of
+  NeverAdmitted -> DeletionSatisfied
+  AdmittedSettled -> DeletionNeedsAdapter
+  AdmittedPending _ -> DeletionNeedsSettlement verdict
+  RecoveryRequired _ -> DeletionNeedsSettlement verdict
+
+observeDeletionAssessment :: BootstrapProjection -> AdmissionVerdict -> IO DeletionAssessment
+observeDeletionAssessment projection verdict = do
+  storage <- observeManagementRestoreOperation projection
+  pure $ case storage of
+    NoManagementRestoreOperation -> assessDeletion verdict
+    PendingManagementRestore operation _ -> DeletionRestorePending operation
+    UnconfirmedManagementRestoreOperation -> DeletionRestoreUnconfirmed
+
+renderAdmissionRead :: AdmissionVerdict -> AdmissionSource -> String
+renderAdmissionRead verdict source =
+  renderVerdict verdict
+    ++ ( case source of
+           FromAuthority observedAt
+             | observedAt == Text.pack "not read" -> " [source: the Authority's journal, fresh read unavailable]"
+             | otherwise -> " [source: the Authority's journal, read at " ++ Text.unpack observedAt ++ "]"
+           FromLocalControlJournal -> " [source: local control journal; no Authority is deployed]"
+       )
+    ++ "\n"
+
+renderDeletionPlan :: BootstrapProjection -> DeletionAssessment -> String
+renderDeletionPlan projection assessment =
+  "Deployment: "
+    ++ scopeKindName (bootstrapScope projection)
+    ++ "\n"
+    ++ "Deletion scope: all AWS resources owned by this deployment.\n"
+    ++ case assessment of
+      DeletionSatisfied -> "Deletion decision: satisfied, with no AWS capability ever admitted.\n"
+      DeletionNeedsAdapter -> "Deletion decision: requires the supported AWS deletion capability.\n"
+      DeletionNeedsSettlement (AdmittedPending _) -> "Deletion decision: settle the pending Authority operation first.\n"
+      DeletionNeedsSettlement _ -> "Deletion decision: recover the Authority journal before proceeding.\n"
+      DeletionRestorePending operation -> "Deletion decision: settle management restore " ++ operation ++ " first.\n"
+      DeletionRestoreUnconfirmed -> "Deletion decision: the retained management restore state requires recovery.\n"
+
+runOrdinaryDelete :: FilePath -> IO ()
+runOrdinaryDelete selected = withLifecycleScope selected $ \projection -> do
+  observed <- withKindLease projection $ \stable -> do
+    (verdict, _) <- currentAdmission projection
+    assessment <- observeDeletionAssessment projection verdict
+    held <- stable
+    pure (if held then Just assessment else Nothing)
+  case observed of
+    Right (KindLeaseCompleted (Just DeletionSatisfied)) ->
+      writeOutput
+        "Nothing to delete: no cloud capability was ever admitted for this deployment. The kind environment, local services, trust and journal are retained.\n"
+    Right (KindLeaseCompleted (Just DeletionNeedsAdapter)) ->
+      failWith
+        "Refused: this deployment admitted a capability whose deletion is not delivered by this binary yet; nothing was changed.\n"
+    Right (KindLeaseCompleted (Just (DeletionNeedsSettlement unresolved))) ->
+      failWith
+        ( "Refused: deletion needs a settled, known operation history. "
+            ++ renderVerdict unresolved
+            ++ "\nNothing was changed; resolve the journal through recovery first.\n"
+        )
+    Right (KindLeaseCompleted (Just (DeletionRestorePending operation))) ->
+      failWith ("Refused: settle the retained management restore " ++ operation ++ " before deletion.")
+    Right (KindLeaseCompleted (Just DeletionRestoreUnconfirmed)) ->
+      failWith "Refused: the retained management restore state requires recovery."
+    _ -> failWith "Refused: the selected control lease or operation history could not be confirmed."
+
+runPlanDelete :: FilePath -> IO ()
+runPlanDelete selected = withLifecycleScope selected $ \projection -> do
+  (verdict, source) <- currentAdmission projection
+  assessment <- observeDeletionAssessment projection verdict
+  writeOutput
+    (renderAdmissionRead verdict source ++ renderDeletionPlan projection assessment)
+  failOnUnobservableAdmission verdict
+
+runLifecycleStatus :: FilePath -> IO ()
+runLifecycleStatus selected = withLifecycleScope selected $ \projection -> do
+  (verdict, source) <- currentAdmission projection
+  assessment <- observeDeletionAssessment projection verdict
+  writeOutput
+    (renderAdmissionRead verdict source ++ renderDeletionPlan projection assessment)
+  control <- observeControl projection
+  writeOutput (either ((++ "\n") . renderControlStatusError) renderControlObservation control)
+  readiness <- observeKubernetesReadiness projection
+  writeOutput (renderKubernetesReadiness readiness)
+  failOnUnobservableAdmission verdict
 
 runControlLifecycleStatus :: FilePath -> IO ()
-runControlLifecycleStatus selected = do
-  bootstrap <- readBootstrapProjection selected
-  case bootstrap of
-    Left failure -> failWith ("Cannot read control bootstrap: " ++ show failure)
-    Right projection -> do
-      (verdict, source) <- currentAdmission (scopeRoot (bootstrapScope projection))
-      writeOutput
-        ( renderVerdict verdict
-            ++ ( case source of
-                   FromAuthority observedAt -> " [source: the Authority's journal, read at " ++ Text.unpack observedAt ++ "]"
-                   FromLocalControlJournal -> " [source: local control journal; no Authority is deployed]"
-               )
-            ++ "\n"
-        )
-      case verdict of
-        RecoveryRequired _ -> exitWith (ExitFailure 1)
-        _ -> pure ()
+runControlLifecycleStatus selected = withLifecycleScope selected $ \projection -> do
+  (verdict, source) <- currentAdmission projection
+  writeOutput (renderAdmissionRead verdict source)
+  failOnUnobservableAdmission verdict
+
+failOnUnobservableAdmission :: AdmissionVerdict -> IO ()
+failOnUnobservableAdmission verdict = case verdict of
+  RecoveryRequired _ -> exitWith (ExitFailure 1)
+  _ -> pure ()
 
 runControlStatus :: FilePath -> IO ()
 runControlStatus selected = do
@@ -469,11 +616,35 @@ runControlStatus selected = do
       freshProvider <- observeControllerFreshProvider projection
       freshSender <- observeControllerFreshSender projection
       managerRead <- observeControllerManagerRead projection
-      let managerReadStatus = "Kind controller manager read: " ++ show managerRead ++ "; job processing and worker settlement not established.\n"
-          senderStatus = "Kind controller sender observation: " ++ show freshSender ++ "; job processing and worker settlement not observed.\n"
-          freshProviderStatus = "Kind controller fresh provider observation: " ++ show freshProvider ++ "; worker settlement not observed.\n"
+      let managerReadStatus =
+            "Kind controller manager read: "
+              ++ show managerRead
+              ++ "; job processing and worker settlement not established.\n"
+          senderStatus =
+            "Kind controller sender observation: "
+              ++ show freshSender
+              ++ "; job processing and worker settlement not observed.\n"
+          freshProviderStatus =
+            "Kind controller fresh provider observation: "
+              ++ show freshProvider
+              ++ "; worker settlement not observed.\n"
       either
-        (\failure -> failWith ("Cannot observe local control: " ++ renderControlStatusError failure ++ "\n" ++ submissionStatus ++ familyStatus ++ familySubmissionStatus ++ absenceStatus ++ absenceInventoryStatus ++ freshProviderStatus ++ senderStatus ++ managerReadStatus ++ probeRecords))
+        ( \failure ->
+            failWith
+              ( "Cannot observe local control: "
+                  ++ renderControlStatusError failure
+                  ++ "\n"
+                  ++ submissionStatus
+                  ++ familyStatus
+                  ++ familySubmissionStatus
+                  ++ absenceStatus
+                  ++ absenceInventoryStatus
+                  ++ freshProviderStatus
+                  ++ senderStatus
+                  ++ managerReadStatus
+                  ++ probeRecords
+              )
+        )
         ( \value -> do
             writeOutput
               ( "Docker socket: "
@@ -560,26 +731,61 @@ runControlPlan selected = do
 
 -- Early removal for a new test identity. Exit zero only when every step
 -- completed; the independent inventory is `control status`.
+runTestRunCleanup :: String -> IO ()
+runTestRunCleanup runId = do
+  found <- findRepoRoot
+  case found of
+    Left reason -> failWith reason
+    Right project -> runInProject project
+ where
+  runInProject project = do
+    recovered <- resumeTestRunCleanup project runId
+    case recovered of
+      Left reason -> failWith ("Test cleanup refused: " ++ reason)
+      Right True -> writeOutputLine "The test root is absent and its cleanup receipts are retained."
+      Right False
+        | all (\digit -> digit >= '0' && digit <= '9') runId ->
+            runMutationCampaignCleanup runId >>= exitWith
+        | otherwise ->
+            runSelectedTestRunCleanup
+              (project </> ".test-data" </> runId </> "config" </> "prodbox.dhall")
+              runId
+
+runSelectedTestRunCleanup :: FilePath -> String -> IO ()
+runSelectedTestRunCleanup selected runId = withLifecycleScope selected $ \projection -> do
+  cleanup <- retireSettledTestRun projection runId
+  case cleanup of
+    Right True -> writeOutputLine "The test root is absent and its cleanup receipts are retained."
+    Right False -> failWith "Test cleanup did not find a terminal receipt."
+    Left reason -> failWith ("Test cleanup refused: " ++ reason)
+
 runControlDelete :: FilePath -> IO ()
 runControlDelete selected = do
   bootstrap <- readBootstrapProjection selected
   case bootstrap of
     Left failure -> failWith ("Cannot read control bootstrap: " ++ show failure)
     Right projection -> do
-      (verdict, _) <- currentAdmission (scopeRoot (bootstrapScope projection))
-      if noChangeAllowed verdict
-        then deleteAdmitted projection
-        else
+      admitted <- admitKindTeardown projection
+      case admitted of
+        Right () -> deleteAdmitted projection
+        Left refusal ->
           failWith
             ( "Refused: removal needs a settled, known operation history. "
-                ++ renderVerdict verdict
+                ++ refusal
                 ++ "\nNothing was removed; resolve the journal through recovery first.\n"
             )
  where
   deleteAdmitted projection = do
     initial <- deleteNewTestIdentity projection
-    recovery <- if any (\step -> deleteStepName step `elem` ["probe cleanup", "probe family settlement", "probe family inputs"] && not (deleteStepCompleted step)) initial
-      then recoverProbeForDelete projection else pure Nothing
+    recovery <-
+      if any
+        ( \step ->
+            deleteStepName step `elem` ["probe cleanup", "probe family settlement", "probe family inputs"]
+              && not (deleteStepCompleted step)
+        )
+        initial
+        then recoverProbeForDelete projection
+        else pure Nothing
     steps <- case recovery of
       Nothing -> pure initial
       Just _ -> deleteNewTestIdentity projection
@@ -587,7 +793,7 @@ runControlDelete selected = do
           "  "
             ++ deleteStepName step
             ++ ": "
-            ++ (if deleteStepCompleted step then "removal reply recorded" else "NOT completed")
+            ++ (if deleteStepCompleted step then "completed" else "NOT completed")
             ++ " - "
             ++ take 300 (deleteStepDetail step)
             ++ "\n"
@@ -595,12 +801,19 @@ runControlDelete selected = do
     if all deleteStepCompleted steps
       then
         writeOutput
-          ( "Recorded kind resources were removed; replies are not proof of absence, so read `control status`.\n"
+          ( "Recorded kind resources were removed or verified never created.\n"
               ++ report
               ++ "Host data, records, artifacts, the loaded node image and the retained root remain.\n"
           )
-      else failWith ("Removal is incomplete; records are retained for recovery.\n" ++ report
-        ++ maybe "" (\detail -> "Recovery: " ++ detail ++ "\nInitial disposition:\n" ++ concatMap render initial) recovery)
+      else
+        failWith
+          ( "Removal is incomplete; records are retained for recovery.\n"
+              ++ report
+              ++ maybe
+                ""
+                (\detail -> "Recovery: " ++ detail ++ "\nInitial disposition:\n" ++ concatMap render initial)
+                recovery
+          )
 
 -- | Capacity first, then declared host ports; each refuses before any effect.
 admitReconcile :: BootstrapProjection -> IO (Maybe String)
@@ -631,14 +844,31 @@ runControlBrokerSecret action selected = do
             Nothing ->
               failWith
                 "Needs input: provide the Vault operator password at the prompt or on standard input. Nothing was changed."
-            Just password -> do
-              let kubeconfig = scopeRoot (bootstrapScope projection) </> "control" </> "kubeconfig"
-                  environment = [("KUBECONFIG", kubeconfig), ("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")]
-              code <- case action of
-                BrokerInitAction -> brokerInitializeSelected "." environment password
-                BrokerUnsealAction -> brokerUnsealSelected "." environment password
-                BrokerBaselineAction -> brokerBaselineSelected "." environment password
-              exitWith code
+            Just password ->
+              withSelectedManagementMutation projection (runSelected password)
+ where
+  runSelected password environment = case action of
+    BrokerInitAction -> brokerInitializeSelected "." environment password
+    BrokerUnsealAction -> brokerUnsealSelected "." environment password
+    BrokerBaselineAction -> brokerBaselineSelected "." environment password
+
+withSelectedManagementMutation
+  :: BootstrapProjection -> ([(String, String)] -> IO ExitCode) -> IO ()
+withSelectedManagementMutation projection action = do
+  leased <- withKindLease projection $ \stable -> do
+    teardown <- observeKindTeardownAdmission projection
+    idle <- managementRestoreIdle projection
+    held <- stable
+    if held && teardown == KindIntentMissing && idle
+      then do
+        snapshot <- withKindKubeconfigSnapshot projection $ \credential ->
+          action [("KUBECONFIG", credential), ("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")]
+        pure (either (const (Left "The selected control kubeconfig was refused.")) Right snapshot)
+      else pure (Left "The selected management storage or control removal requires settlement.")
+  case leased of
+    Right (KindLeaseCompleted (Right code)) -> exitWith code
+    Right (KindLeaseCompleted (Left reason)) -> failWith reason
+    _ -> failWith "The selected scope lease could not be held through the management operation."
 
 runControlVaultStatus :: FilePath -> IO ()
 runControlVaultStatus selected = do
@@ -654,6 +884,30 @@ runControlVaultStatus selected = do
             (\detail -> failWith ("The Broker did not answer: " ++ detail))
             (\text -> writeOutput ("Vault status through the Bootstrap Broker: " ++ text ++ "\n"))
             result
+
+runScopedVaultPki :: FilePath -> VaultPkiCommand -> IO ()
+runScopedVaultPki selected action = withLifecycleScope selected runSelected
+ where
+  runSelected projection = case action of
+    IssueVaultTestCertificate
+      | scopeEnvironment (bootstrapScope projection) /= Test ->
+          failWith "The Vault test certificate is available only for a test identity."
+      | otherwise -> withSelectedManagementMutation projection runPki
+    ObserveVaultPki -> withSelectedVaultRead projection runPki
+  runPki environment = runVaultPkiSelected "." environment action
+
+runScopedVaultMaintenance :: FilePath -> VaultMaintenanceCommand -> IO ()
+runScopedVaultMaintenance selected action = withLifecycleScope selected $ \projection -> do
+  let runSelected environment = runVaultMaintenanceSelected "." environment action
+  case action of
+    ObserveScopedVault -> withSelectedVaultRead projection runSelected
+    _ -> withSelectedManagementMutation projection runSelected
+
+withSelectedVaultRead :: BootstrapProjection -> ([(String, String)] -> IO ExitCode) -> IO ()
+withSelectedVaultRead projection action = do
+  outcome <- withKindKubeconfigSnapshot projection $ \snapshot ->
+    action [("KUBECONFIG", snapshot), ("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")]
+  either (const (failWith "The selected control kubeconfig was refused.")) exitWith outcome
 
 runControlBackup :: FilePath -> IO ()
 runControlBackup selected = do
@@ -679,11 +933,15 @@ runControlRestore selected name = do
       | scopeEnvironment (bootstrapScope projection) /= Test ->
           failWith "Control restore currently supports only test identities."
       | otherwise -> do
-          steps <- restoreServices projection name
-          let (ok, rendered) = renderBackupOutcome steps
-          if ok
-            then writeOutput ("Restore complete; run `control unlock` to unseal Vault.\n" ++ rendered)
-            else failWith ("Restore incomplete.\n" ++ rendered)
+          restoreSelectedOperation projection name
+
+restoreSelectedOperation :: BootstrapProjection -> String -> IO ()
+restoreSelectedOperation projection name = do
+  steps <- restoreServices projection name
+  let (ok, rendered) = renderBackupOutcome steps
+  if ok
+    then writeOutput ("Restore complete. Run `control unlock` to unseal Vault.\n" ++ rendered)
+    else failWith ("Restore incomplete.\n" ++ rendered)
 
 runControlProtectedUnlock :: FilePath -> IO ()
 runControlProtectedUnlock selected = do
@@ -727,48 +985,283 @@ runControlServices selected = do
                 ("MinIO and Vault are deployed and read back directly; Vault is uninitialized.\n" ++ rendered)
             else failWith ("Services are incomplete; nothing was repaired by hand.\n" ++ rendered)
 
+data ControlReconcileDecision
+  = ControlReconcileUndelivered
+  | ControlReconcilePrepare
+  | ControlReconcileRestorePending
+  | ControlReconcileAuthorityRemovalUnconfirmed
+  | ControlReconcileResume !String
+  | ControlReconcileRecover !KindIntentObservation
+
+assessControlReconcile :: BootstrapProjection -> IO ControlReconcileDecision
+assessControlReconcile projection
+  | scopeEnvironment (bootstrapScope projection) /= Test = pure ControlReconcileUndelivered
+  | otherwise = do
+      idle <- managementRestoreIdle projection
+      if idle then observeControlOperation else pure ControlReconcileRestorePending
+ where
+  observeControlOperation = do
+    family <- observeKindFamilyIntent projection
+    case family of
+      KindIntentMatches operation -> do
+        teardown <- observeKindTeardownAdmission projection
+        if teardown == KindIntentMatches operation
+          then pure ControlReconcilePrepare
+          else do
+            removal <- observeAuthorityRemoval projection
+            pure $ case removal of
+              NoAuthorityRemoval -> ControlReconcileResume operation
+              BoundAuthorityRemoval original | original == operation -> ControlReconcilePrepare
+              _ -> ControlReconcileAuthorityRemovalUnconfirmed
+      KindIntentMissing -> pure ControlReconcilePrepare
+      unconfirmed -> pure (ControlReconcileRecover unconfirmed)
+
+runPlanReconcile :: FilePath -> IO ()
+runPlanReconcile selected = withLifecycleScope selected $ \projection -> do
+  let scope = bootstrapScope projection
+  (verdict, source) <- currentAdmission projection
+  writeOutput ("Deployment: " ++ scopeKindName scope ++ "\n" ++ renderAdmissionRead verdict source)
+  decision <- assessControlReconcile projection
+  case decision of
+    ControlReconcileUndelivered ->
+      writeOutput "Reconciliation decision: the local reconcile adapter requires a test identity.\n"
+    ControlReconcileRestorePending ->
+      writeOutput
+        "Reconciliation decision: settle the retained management restore before reconciling control.\n"
+    ControlReconcileAuthorityRemovalUnconfirmed ->
+      writeOutput "Reconciliation decision: resolve the selected Authority's retained control removal.\n"
+    ControlReconcileResume operation ->
+      writeOutput
+        ("Reconciliation decision: observe and continue retained control operation " ++ operation ++ ".\n")
+    ControlReconcilePrepare ->
+      writeOutput
+        "Reconciliation decision: verify scope, prior operation settlement, declared artifacts, capacity and ports before preparing a control operation.\n"
+    ControlReconcileRecover unconfirmed ->
+      writeOutput
+        ( "Reconciliation decision: resolve the retained control operation observation ("
+            ++ show unconfirmed
+            ++ ").\n"
+        )
+  failOnUnobservableAdmission verdict
+
 runControlReconcile :: FilePath -> IO ()
-runControlReconcile selected = do
-  bootstrap <- readBootstrapProjection selected
-  case bootstrap of
-    Left failure -> failWith ("Cannot read control bootstrap: " ++ show failure)
-    Right projection
-      | scopeEnvironment (bootstrapScope projection) /= Test ->
-          failWith "Control reconcile currently supports only test identities."
-      | otherwise -> do
-          family <- observeKindFamilyIntent projection
-          case family of
-            KindIntentMatches operation -> finishFamilyReconcile projection operation
-            _ -> runFreshControlReconcile projection
+runControlReconcile selected = withLifecycleScope selected $ \projection -> do
+  decision <- assessControlReconcile projection
+  case decision of
+    ControlReconcileUndelivered -> failWith "Control reconcile currently supports only test identities."
+    ControlReconcileRestorePending -> failWith "Settle the retained management restore before reconciling control."
+    ControlReconcileAuthorityRemovalUnconfirmed -> failWith "The retained Authority removal could not be confirmed."
+    ControlReconcileResume operation -> resumeControlOperation projection operation
+    ControlReconcilePrepare -> runFreshControlReconcile projection
+    ControlReconcileRecover _ -> runFreshControlReconcile projection
+
+runOperations :: FilePath -> OperationCommand -> IO ()
+runOperations selected command = withLifecycleScope selected (runScopedOperation command)
+
+runScopedOperation :: OperationCommand -> BootstrapProjection -> IO ()
+runScopedOperation command projection = case command of
+  ListOperations -> do
+    current <- observeKindOwnerFamilyIntent projection
+    writeOutputLine $ case current of
+      KindIntentMatches operation -> "Current control operation: " ++ operation
+      KindIntentMissing -> "No current control operation is recorded."
+      _ -> "The current control operation could not be confirmed."
+    storage <- observeManagementRestoreOperation projection
+    case storage of
+      NoManagementRestoreOperation -> pure ()
+      PendingManagementRestore operation backup ->
+        writeOutputLine ("Pending management restore: " ++ operation ++ " for " ++ backup)
+      UnconfirmedManagementRestoreOperation ->
+        writeOutputLine "Management restore operation could not be confirmed."
+    (verdict, source) <- currentAdmission projection
+    writeOutput (renderAdmissionRead verdict source)
+    failOnUnobservableAdmission verdict
+  ShowOperation operation ->
+    withOperation
+      operation
+      (showControl operation)
+      ( \backup ->
+          writeOutputLine
+            ("Management restore operation " ++ operation ++ " is pending for backup " ++ backup ++ ".")
+      )
+      (showCompletedRestore operation)
+  ResumeOperation operation ->
+    withOperation
+      operation
+      (resumeControl operation)
+      (restoreSelectedOperation projection)
+      (showCompletedRestore operation)
+  CancelOperation operation ->
+    withOperation
+      operation
+      (cancelControlOperation projection operation)
+      (const (failWith "The admitted management restore must settle with its original backup."))
+      (const (failWith "The management restore already settled."))
+ where
+  showCompletedRestore operation backup =
+    writeOutputLine
+      ("Management restore operation " ++ operation ++ " completed for backup " ++ backup ++ ".")
+  withOperation operation control restore replay
+    | not (validRootGeneration operation) =
+        failWith "An operation ID must be 32 lowercase hexadecimal characters."
+    | scopeEnvironment (bootstrapScope projection) /= Test =
+        failWith "The local control operation adapter requires a test identity."
+    | otherwise = do
+        storage <- observeManagementRestoreOperation projection
+        case storage of
+          PendingManagementRestore active backup | active == operation -> restore backup
+          _ -> do
+            completed <- observeCompletedManagementRestore projection operation
+            case completed of
+              CompletedRestore backup -> replay backup
+              UnconfirmedCompletedRestore -> failWith "The retained management restore completion could not be confirmed."
+              NoCompletedRestore -> do
+                current <- observeKindOwnerFamilyIntent projection
+                if current == KindIntentMatches operation
+                  then control
+                  else runAuthorityInitializationOperation projection operation command
+  showControl operation = do
+    publication <- observeControlPublication projection operation
+    recorded <-
+      withRecoveredKindOperation projection operation (observeFamilyResult projection operation)
+    case (publication, recorded) of
+      (KindOperationCallbackReturned (_, observed), KindOperationCallbackReturned retained) -> do
+        writeOutputLine ("Control operation " ++ operation ++ ": " ++ show observed)
+        writeOutputLine ("Retained local result: " ++ show retained)
+      _ -> failWith "The selected operation publication could not be observed."
+  resumeControl operation = do
+    decision <- assessControlReconcile projection
+    case decision of
+      ControlReconcileResume current | current == operation -> resumeControlOperation projection operation
+      _ -> failWith "The selected operation is unavailable for reconcile recovery."
+
+runAuthorityInitializationOperation :: BootstrapProjection -> String -> OperationCommand -> IO ()
+runAuthorityInitializationOperation projection operation command = do
+  observed <- currentAuthorityInitialization projection
+  case observed of
+    Right (JournalInitializationArmed active) | active == identifier -> pending
+    Right (JournalInitializationComplete settled) | settled == identifier -> completed
+    Right JournalInitializationUnconfirmed -> failWith "The retained Authority operation could not be confirmed."
+    Right _ -> failWith "The selected scope has no operation with that ID."
+    Left reason -> failWith ("The Authority operation could not be observed: " ++ reason)
+ where
+  identifier = Text.pack operation
+  label = "Authority journal initialization " ++ operation
+  pending = case command of
+    ShowOperation _ -> writeOutputLine (label ++ " is pending.")
+    ResumeOperation _ -> do
+      steps <- deployAuthorityWithAdmission projection $ do
+        current <- currentAuthorityInitialization projection
+        pure (current == Right (JournalInitializationArmed identifier))
+      readBack <- currentAuthorityInitialization projection
+      case readBack of
+        Right (JournalInitializationComplete settled)
+          | settled == identifier -> writeOutputLine (label ++ " completed.")
+        _ -> do
+          mapM_ writeOutputLine [serviceStepDetail step | step <- steps, not (serviceStepOk step)]
+          failWith (label ++ " is still unconfirmed. Retry the same operation ID.")
+    CancelOperation _ -> failWith (label ++ " is armed and must settle under its original identity.")
+    ListOperations -> failWith "Select an exact Authority operation ID."
+  completed = case command of
+    CancelOperation _ -> failWith (label ++ " already settled.")
+    _ -> writeOutputLine (label ++ " completed.")
+
+observeControlPublication
+  :: BootstrapProjection
+  -> String
+  -> IO (KindOperationOutcome (FamilyLaunchObservation, KindFamilyPublicationState))
+observeControlPublication projection operation =
+  withRecoveredKindOperation projection operation $ \stable -> do
+    launch <- observeFamilyLaunch projection operation stable
+    attempt <- observeFamilyPublicationAttempt projection operation stable
+    cancellation <- observeFamilyPrePublicationCancellation projection operation stable
+    pure (launch, classifyKindFamilyPublication launch attempt cancellation)
+
+resumeControlOperation :: BootstrapProjection -> String -> IO ()
+resumeControlOperation projection operation = do
+  owner <- observeKindOwnerFamilyIntent projection
+  publication <- observeControlPublication projection operation
+  case (owner == KindIntentMatches operation, publication) of
+    (True, KindOperationCallbackReturned (_, KindFamilyPublicationNotRecorded)) ->
+      launchFreshKindFamily projection operation >>= finishControlLaunch projection operation
+    ( True
+      , KindOperationCallbackReturned (FamilyLaunchObserved request, KindFamilyPublicationBeforeAttempt)
+      ) ->
+        launchKindFamily (hostExecutionOuterEnd (kindRequestWindow request)) projection request
+          >>= finishControlLaunch projection operation
+    (_, KindOperationCallbackReturned (_, KindFamilyPublicationCancelled)) ->
+      failWith ("Control operation " ++ operation ++ " was cancelled before publication.")
+    _ -> finishFamilyReconcile projection operation
+
+cancelControlOperation :: BootstrapProjection -> String -> IO ()
+cancelControlOperation projection operation = do
+  publication <- observeControlPublication projection operation
+  let mark = withCancelledPrePublicationKindFamily projection operation (const (pure ()))
+  cancelled <- case publication of
+    KindOperationCallbackReturned (_, KindFamilyPublicationNotRecorded) -> do
+      prepared <- prepareFreshKindFamilyRequest projection operation
+      case prepared of
+        Right (request, _) -> withCancelledUnlaunchedOwnerFamily projection request (const (pure ()))
+        Left _ -> pure KindFamilyPrePublicationRefused
+    KindOperationCallbackReturned (_, KindFamilyPublicationBeforeAttempt) -> mark
+    KindOperationCallbackReturned (_, KindFamilyPublicationCancelled) -> mark
+    _ -> pure KindFamilyPrePublicationRefused
+  case cancelled of
+    KindFamilyPrePublicationReturned () True ->
+      writeOutputLine ("Control operation " ++ operation ++ " was cancelled before publication.")
+    _ ->
+      failWith
+        "Cancellation could not be confirmed before publication. The original operation remains available for settlement."
 
 finishFamilyReconcile :: BootstrapProjection -> String -> IO ()
 finishFamilyReconcile projection operation = do
   now <- getMonotonicTimeNSec
   let budget = 600000000000 :: Word64
-  if now > maxBound - budget then failWith "Incomplete: completion deadline unavailable." else do
-    outcome <- awaitKindFamilyCompletionWith getMonotonicTimeNSec threadDelay (now + budget)
-      (observeKindFamilyCompletion (now + budget) projection operation)
-    case outcome of
-      KindFamilyCompletionObserved (KindFamilyRetirementReturned
-        (KindOperationCallbackReturned (KindFamilyCompletionReturned observed)) (Right ()) True)
-          | kindFamilyReadinessComplete observed ->
-              writeOutputLine ("Control reconcile completed for operation " ++ operation
-                ++ ".\nNetwork policy enforcement: PROVEN")
-      _ -> do
-        familyResult <- observeFamilyResultStatus projection
-        familyInputs <- recoverNeverSentKindFamilyInputs (now + budget) projection operation
-        neverSent <- recoverNeverSentKindProbeInputs (now + budget) projection operation
-        journal <- withRecoveredKindOperation projection operation $ \stable ->
-          observeProbeJournal projection operation ("prodbox-netcheck-" ++ take 12 operation) stable
-        verifier <- case journal of
-          KindOperationCallbackReturned ProbeJournalVerifierPending {} ->
-            Just <$> recoverNeverSentKindProbeVerifierInputs (now + budget) projection operation
-          _ -> pure Nothing
-        failWith ("Incomplete: operation " ++ operation ++ "; family completion or probe cleanup unconfirmed: " ++ show outcome
-          ++ "; " ++ familyResult
-          ++ "; never-sent family input recovery: " ++ show familyInputs
-          ++ "; never-sent cleanup publication recovery: " ++ show neverSent
-          ++ maybe "" (\result -> "; never-sent verifier publication recovery: " ++ show result) verifier)
+  if now > maxBound - budget
+    then failWith "Incomplete: completion deadline unavailable."
+    else do
+      outcome <-
+        awaitKindFamilyCompletionWith
+          getMonotonicTimeNSec
+          threadDelay
+          (now + budget)
+          (observeKindFamilyCompletion (now + budget) projection operation)
+      case outcome of
+        KindFamilyCompletionObserved
+          ( KindFamilyRetirementReturned
+              (KindOperationCallbackReturned (KindFamilyCompletionReturned observed))
+              (Right ())
+              True
+            )
+            | kindFamilyReadinessComplete observed ->
+                writeOutputLine
+                  ( "Control reconcile completed for operation "
+                      ++ operation
+                      ++ ".\nNetwork policy enforcement: PROVEN"
+                  )
+        _ -> do
+          familyResult <- observeFamilyResultStatus projection
+          familyInputs <- recoverNeverSentKindFamilyInputs (now + budget) projection operation
+          neverSent <- recoverNeverSentKindProbeInputs (now + budget) projection operation
+          journal <- withRecoveredKindOperation projection operation $ \stable ->
+            observeProbeJournal projection operation ("prodbox-netcheck-" ++ take 12 operation) stable
+          verifier <- case journal of
+            KindOperationCallbackReturned ProbeJournalVerifierPending {} ->
+              Just <$> recoverNeverSentKindProbeVerifierInputs (now + budget) projection operation
+            _ -> pure Nothing
+          failWith
+            ( "Incomplete: operation "
+                ++ operation
+                ++ "; family completion or probe cleanup unconfirmed: "
+                ++ show outcome
+                ++ "; "
+                ++ familyResult
+                ++ "; never-sent family input recovery: "
+                ++ show familyInputs
+                ++ "; never-sent cleanup publication recovery: "
+                ++ show neverSent
+                ++ maybe "" (\result -> "; never-sent verifier publication recovery: " ++ show result) verifier
+            )
 
 runFreshControlReconcile :: BootstrapProjection -> IO ()
 runFreshControlReconcile projection = do
@@ -776,13 +1269,23 @@ runFreshControlReconcile projection = do
   case outcome of
     ReconcileFamilyOperationReady operation -> do
       launched <- launchFreshKindFamily projection operation
-      case launched of
-        KindFamilyLaunchLease (KindOperationCallbackReturned (Right (Right (), KindFamilyLaunchPossiblySent))) ->
-          finishFamilyReconcile projection operation
-        _ -> failWith ("Incomplete: operation " ++ operation ++ "; managed family launch: " ++ show launched
-          ++ ". Records and any published input disposition are retained for recovery.")
+      finishControlLaunch projection operation launched
     ReconcileCapacityRefused reason -> failWith ("Refused before any work: " ++ reason)
     other -> failWith ("Incomplete before family launch; records are retained: " ++ show other)
+
+finishControlLaunch :: BootstrapProjection -> String -> KindFamilyLaunchOutcome -> IO ()
+finishControlLaunch projection operation outcome = case outcome of
+  KindFamilyLaunchLease
+    (KindOperationCallbackReturned (Right (Right (), KindFamilyLaunchPossiblySent))) ->
+      finishFamilyReconcile projection operation
+  _ ->
+    failWith
+      ( "Incomplete: operation "
+          ++ operation
+          ++ "; managed family launch: "
+          ++ show outcome
+          ++ ". Records and any published input disposition are retained for recovery."
+      )
 
 runControlArtifactImport :: FilePath -> String -> FilePath -> IO ()
 runControlArtifactImport selected role source = case role of

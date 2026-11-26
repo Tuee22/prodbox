@@ -13,6 +13,8 @@ The target is retained local kind management with the same service set locally a
 
 Before you stop or ask a question, follow [AGENTS.md → Blockers](AGENTS.md#blockers-resolve-from-the-documents-before-stopping): search the documents first, and ask only what that section reserves to the user.
 
+Complete phase-owned disposable test cleanup without asking for routine approval. Use the supported recovery path first. The standing fallback authorization covers exact local test leftovers with proved ownership and settlement, including earlier failed runs. Preserve the failed evidence, record the hand action and independently verify its postcondition. AWS mutations stay on the prodbox surface. Follow the scope and safeguards in [AGENTS.md → Autonomous test cleanup](AGENTS.md#autonomous-test-cleanup).
+
 | Need | Canonical owner |
 |---|---|
 | Agent rules, live validation, security and Git restrictions | [AGENTS.md](AGENTS.md) |
@@ -29,8 +31,9 @@ Before you stop or ask a question, follow [AGENTS.md → Blockers](AGENTS.md#blo
 | The declarative specification and who records its digest | [Configuration](documents/engineering/configuration.md) |
 | Unlock policies and who may unseal what | [Security and credentials](documents/engineering/security_and_credentials.md), [AGENTS.md](AGENTS.md) (test self-unseal only) |
 | Whether live AWS, Vault or cluster work is authorized | [AGENTS.md → Live Infrastructure Deployment Is Authorized](AGENTS.md#live-infrastructure-deployment-is-authorized) |
+| Whether exact test leftovers can be retired without operator input | [AGENTS.md → Autonomous test cleanup](AGENTS.md#autonomous-test-cleanup) |
 | Which command exists today versus the target | [CLI surface](documents/engineering/cli_command_surface.md) and the installed binary's help |
 
 Preserve the difference between source behavior, accepted target behavior and actually observed execution. A failure is attributed only to a boundary the command reached. Do not infer AWS absence from a missing checkpoint or blank Vault, or treat a fabricated witness, timeout, test count or old receipt as current external evidence.
 
-A Markdown-only instruction forbids code and infrastructure edits for that task. Phase 0 stays open for executable checker adoption; do not bypass it by restoring the old queue. Later implementation requests proceed under the accepted numerical plan and activate each completed public slice rather than waiting for a final private-to-public cutover.
+A Markdown-only instruction authorizes Markdown edits for that task. Implementation requests proceed under the accepted numerical plan and activate each completed public slice in its owning phase.

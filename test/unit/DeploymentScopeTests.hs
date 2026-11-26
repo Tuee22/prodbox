@@ -22,7 +22,7 @@ import Prodbox.Config.DeploymentScope
 import Prodbox.Config.KindPlan
 import Prodbox.Config.KindVolume
 import Prodbox.Config.SelectedDhall
-import Prodbox.Control.DockerConnectedInfo (parseDockerKindContainers)
+import Prodbox.Control.DockerConnectedInfo (parseDockerKindContainers, parseDockerNetworkDetails)
 import Prodbox.Control.DockerIdentity
 import Prodbox.Control.KindDockerReadGate
 import Prodbox.Control.KindIntent
@@ -141,7 +141,10 @@ deploymentScopeSuite = describe "deployment scope coordinates" $ do
                 observe
                 `shouldReturn` KindDockerReadCompleted ()
               runKindDockerRead gate readImage observe `shouldReturn` KindDockerReadCompleted ()
-              runKindDockerRead gate request observe `shouldReturn` KindDockerReadRefused
+              rejected <- runKindDockerRead gate request observe
+              if request == ["pull", imageId]
+                then assertMutationInvariant "context.rejects_unowned_pull" (rejected == KindDockerReadRefused)
+                else rejected `shouldBe` KindDockerReadRefused
               runKindDockerRead gate readImage observe `shouldReturn` KindDockerReadRefused
               readIORef calls
                 `shouldReturn` [KindDockerInfo, KindDockerClusterContainers "prodbox-t-run", KindDockerImage imageId]
@@ -203,8 +206,29 @@ deploymentScopeSuite = describe "deployment scope coordinates" $ do
         parseDockerKindContainers scope (Aeson.toJSON ([] :: [Aeson.Value])) `shouldBe` Right []
         parseDockerKindContainers scope (Aeson.toJSON [correct])
           `shouldBe` Right ["prodbox-t-run-control-plane"]
-        forM_ [[foreignLabel], [foreignName], [invalidId], [correct, correct]] $ \entries ->
+        assertMutationInvariant
+          "context.rejects_foreign_scope"
+          (isLeft (parseDockerKindContainers scope (Aeson.toJSON [foreignLabel])))
+        forM_ [[foreignName], [invalidId], [correct, correct]] $ \entries ->
           parseDockerKindContainers scope (Aeson.toJSON entries) `shouldSatisfy` isLeft
+
+  it "refuses a same-ID Docker network reported under a foreign name" $
+    case deploymentScope "/project" Test "run" 26443 of
+      Left failure -> expectationFailure (show failure)
+      Right scope -> do
+        let identifier = replicate 64 'a'
+            network name =
+              Aeson.object
+                [ "Name" Aeson..= (name :: String)
+                , "Id" Aeson..= identifier
+                , "Driver" Aeson..= ("bridge" :: String)
+                , "EnableIPv6" Aeson..= True
+                , "IPAM" Aeson..= Aeson.object []
+                ]
+        parseDockerNetworkDetails scope identifier (network "prodbox-t-run") `shouldSatisfy` isRight
+        assertMutationInvariant
+          "context.rejects_foreign_network"
+          (isLeft (parseDockerNetworkDetails scope identifier (network "foreign")))
 
   it "serializes kind reads and closes the gate on cancellation" $ do
     outcome <- timeout 5000000 $ case deploymentScope "/project" Test "run" 26443 of
@@ -1601,6 +1625,7 @@ deploymentScopeSuite = describe "deployment scope coordinates" $ do
                     Just (Aeson.Object hostConfig) -> do
                       KeyMap.lookup "NetworkMode" hostConfig `shouldBe` Just (Aeson.toJSON (replicate 64 'b'))
                       KeyMap.lookup "Privileged" hostConfig `shouldBe` Just (Aeson.Bool True)
+                      KeyMap.lookup "Devices" hostConfig `shouldBe` Nothing
                       KeyMap.lookup "Binds" hostConfig
                         `shouldBe` Just
                           ( Aeson.toJSON
@@ -1613,6 +1638,33 @@ deploymentScopeSuite = describe "deployment scope coordinates" $ do
               kindNodeCreateBody plan (createInput {nodeCreateNetworkId = "foreign"}) `shouldBe` Nothing
               kindNodeCreateBody plan (createInput {nodeCreateOperation = "invalid"}) `shouldBe` Nothing
               kindNodeCreateBody plan (createInput {nodeCreateArguments = request ++ ["--privileged"]})
+                `shouldBe` Nothing
+              let (common, mounts) = break (== "--volume=/project/.test-data/run:/var/lib/prodbox") request
+                  rootless = kindNodeRunArgumentsFor KindNodeRootless plan image
+                  rootlessInput = createInput {nodeCreateArguments = rootless}
+              rootless `shouldBe` (common ++ ["--device", "/dev/fuse"] ++ mounts)
+              kindNodeCreateMode plan rootlessInput `shouldBe` Just KindNodeRootless
+              case kindNodeCreateBody plan rootlessInput of
+                Just (Aeson.Object body) -> case KeyMap.lookup "HostConfig" body of
+                  Just (Aeson.Object hostConfig) ->
+                    KeyMap.lookup "Devices" hostConfig
+                      `shouldBe` Just
+                        ( Aeson.toJSON
+                            [ Aeson.object
+                                [ "PathOnHost" Aeson..= ("/dev/fuse" :: String)
+                                , "PathInContainer" Aeson..= ("/dev/fuse" :: String)
+                                , "CgroupPermissions" Aeson..= ("rwm" :: String)
+                                ]
+                            ]
+                        )
+                  other -> expectationFailure (show other)
+                other -> expectationFailure (show other)
+              kindNodeCreateBody
+                plan
+                ( rootlessInput
+                    { nodeCreateArguments = map (\arg -> if arg == "/dev/fuse" then "/dev/kvm" else arg) rootless
+                    }
+                )
                 `shouldBe` Nothing
         other -> expectationFailure (show other)
     it "refuses mutable or malformed images and colliding publication ports" $

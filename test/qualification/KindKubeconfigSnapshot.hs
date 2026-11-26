@@ -1,3 +1,4 @@
+{-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- Real kubectl composition against a disposable, non-secret configuration.
@@ -9,8 +10,8 @@ import Control.Monad (unless)
 import Data.ByteString qualified as ByteString
 import Prodbox.Config.BootstrapProjection
 import Prodbox.Config.DeploymentScope
-import Prodbox.Control.KindKubeconfigFile
 import Prodbox.Control.KindKubeconfig (kindKubeconfigServer, withKindKubeconfigMaterial)
+import Prodbox.Control.KindKubeconfigFile
 import Prodbox.Subprocess
 import System.Directory
 import System.Exit
@@ -23,19 +24,33 @@ main = withSystemTempDirectory "prodbox-kubectl-snapshot" $ \anchor -> do
   let selected = anchor </> "selected.dhall"
       generation = replicate 32 'a'
       config =
-        "{ bootstrap = { schema_version = 1, project_anchor = \"" ++ anchor
+        "{ bootstrap = { schema_version = 1, project_anchor = \""
+          ++ anchor
           ++ "\", runtime_socket = \"/var/run/docker.sock\", environment = \"test\", deployment_id = \"run\", root_generation = \""
-          ++ generation ++ "\", api_port = 26443, node_image = \"kindest/node@sha256:"
-          ++ replicate 64 'a' ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" } }"
+          ++ generation
+          ++ "\", api_port = 26443, node_image = \"kindest/node@sha256:"
+          ++ replicate 64 'a'
+          ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" } }"
       document =
         unlines
-          [ "apiVersion: v1", "kind: Config", "current-context: kind-prodbox-t-run"
-          , "clusters:", "- name: kind-prodbox-t-run", "  cluster:"
-          , "    server: https://127.0.0.1:26443", "    certificate-authority-data: Y2E="
-          , "contexts:", "- name: kind-prodbox-t-run", "  context:"
-          , "    cluster: kind-prodbox-t-run", "    user: kind-prodbox-t-run"
-          , "users:", "- name: kind-prodbox-t-run", "  user:"
-          , "    client-certificate-data: Y2VydA==", "    client-key-data: a2V5"
+          [ "apiVersion: v1"
+          , "kind: Config"
+          , "current-context: kind-prodbox-t-run"
+          , "clusters:"
+          , "- name: kind-prodbox-t-run"
+          , "  cluster:"
+          , "    server: https://127.0.0.1:26443"
+          , "    certificate-authority-data: Y2E="
+          , "contexts:"
+          , "- name: kind-prodbox-t-run"
+          , "  context:"
+          , "    cluster: kind-prodbox-t-run"
+          , "    user: kind-prodbox-t-run"
+          , "users:"
+          , "- name: kind-prodbox-t-run"
+          , "  user:"
+          , "    client-certificate-data: Y2VydA=="
+          , "    client-key-data: a2V5"
           ]
   writeFile selected config
   projection <- readBootstrapProjection selected >>= either (fail . show) pure
@@ -56,7 +71,8 @@ main = withSystemTempDirectory "prodbox-kubectl-snapshot" $ \anchor -> do
           captureSubprocessWithInputBounded
             (BoundedSubprocessLimits 1 8192 8192 30000000)
             ByteString.empty
-            ( Subprocess "/usr/bin/kubectl"
+            ( Subprocess
+                "/usr/bin/kubectl"
                 ["--kubeconfig", snapshot, "config", "current-context"]
                 (Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")])
                 Nothing

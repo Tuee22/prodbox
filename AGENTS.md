@@ -74,7 +74,13 @@ Authorization is not an instruction to rerun until green. Follow the live-campai
 
 Normal AWS mutation remains prodbox-surface-owned. Do not use ad-hoc `aws`, `pulumi up/destroy`, `eksctl`, Terraform or other provider mutations to work around a missing/failed implementation. Add the required resource adapter and recovery behavior in its owning phase. Read-only provider diagnostics are permitted and must report their actual scope.
 
-A user may explicitly request an exceptional manual cleanup. Record it as a hand action and preserve exact scope/read-back; it does not qualify the supported lifecycle. Such a request is not standing authorization for later manual provisioning or cleanup.
+### Autonomous test cleanup
+
+An implementation or validation request authorizes agents to finish cleanup of disposable test resources and fixture inputs owned by its phases, including leftovers from their earlier failed runs. Use the implemented prodbox cleanup and recovery path first. When that path is unavailable or refuses an old operation, agents have standing authorization to retire the exact local test leftovers without a separate confirmation if they can establish ownership and settlement from retained records and current observations. This includes the exact detached Docker network and nine never-sent publication input pairs recorded in Phase 1.
+
+Before a fallback action, bind each resource or file to the test deployment, run or fixture and the original runtime or filesystem identity. Verify that its owners or consumers are settled and that the action cannot affect a sibling, retained data or recovery custody. Use the existing journaled retirement routine where applicable. For a direct local runtime action, target the exact recorded resource ID. Preserve the primary failure, operation and publication records, and any inputs still needed for recovery. Record the fallback and the independent postcondition under the same identity. An expected name, a broad label search or a failed lookup alone cannot authorize a removal.
+
+Record exceptional cleanup as a hand action. Acceptance and mutation evidence must come from the supported path, and a hand action may settle the residue of a failed run without changing that run's verdict. AWS mutations stay on the prodbox surface. Production, user-owned files, shared resources without proved exclusive test ownership, operator data purge, and changes that would destroy evidence or recovery custody require their own authorization and proofs. A separately requested hand action authorizes its stated scope only.
 
 Never automate the legacy operator-only/TTY-only `nuke` ceremony. New target delete, control removal and data purge do not become available by documentation alone. Ordinary deletion must not delete its own evidence or credentials before their dependants finish.
 

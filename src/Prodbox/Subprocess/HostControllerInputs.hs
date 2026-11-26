@@ -926,22 +926,26 @@ verifyHostControllerInputs inputs@(HostControllerInputs _ _ _ _ _ active) = with
 -- bytes are returned, and all three input versions are checked on both sides.
 hashHostControllerExecutable :: HostControllerInputs -> IO (Either HostControllerInputError String)
 hashHostControllerExecutable inputs@(HostControllerInputs ending _ executable _ _ active) = withMVar active $ \live ->
-  if not live then pure (Left ControllerInputsClosed) else runExceptT $ do
-    ExceptT (validateInputs inputs)
-    let HeldInput _ _ _ descriptor _ (FileVersion _ _ size _ _ _ _ _ _) = executable
-        ceilingBytes = 256 * 1024 * 1024
-    when (size < 0 || size > ceilingBytes) (throwE (ControllerInputTooLarge ControllerExecutable))
-    _ <- ExceptT (ownIO ControllerExecutable (Posix.fdSeek descriptor AbsoluteSeek 0))
-    digest <- loop descriptor size SHA256.init
-    ExceptT (validateInputs inputs)
-    pure ("sha256:" ++ concatMap hexadecimal (BS.unpack digest))
+  if not live
+    then pure (Left ControllerInputsClosed)
+    else runExceptT $ do
+      ExceptT (validateInputs inputs)
+      let HeldInput _ _ _ descriptor _ (FileVersion _ _ size _ _ _ _ _ _) = executable
+          ceilingBytes = 256 * 1024 * 1024
+      when (size < 0 || size > ceilingBytes) (throwE (ControllerInputTooLarge ControllerExecutable))
+      _ <- ExceptT (ownIO ControllerExecutable (Posix.fdSeek descriptor AbsoluteSeek 0))
+      digest <- loop descriptor size SHA256.init
+      ExceptT (validateInputs inputs)
+      pure ("sha256:" ++ concatMap hexadecimal (BS.unpack digest))
  where
   loop descriptor remaining state = do
     ExceptT (checkTime ending)
     if remaining == 0
       then pure (SHA256.finalize state)
       else do
-        chunk <- ExceptT (ownIO ControllerExecutable (NativeIO.fdRead descriptor (fromIntegral (min 65536 remaining))))
+        chunk <-
+          ExceptT
+            (ownIO ControllerExecutable (NativeIO.fdRead descriptor (fromIntegral (min 65536 remaining))))
         when (BS.null chunk) (throwE (ControllerInputChanged ControllerExecutable))
         let next = SHA256.update state chunk
         next `seq` loop descriptor (remaining - toInteger (BS.length chunk)) next

@@ -1233,7 +1233,7 @@ captureSecretWorkerReceipt (ExecutedSecretWorker permit) observed durableResult 
     SecretWorkerReceiptSessionIdMismatch
     (secretWorkerRequestSessionId request)
     (rawWorkerReceiptSessionId observed)
-  if workerReceiptAccessorValid request operation (rawWorkerReceiptSessionAccessor observed)
+  if workerReceiptAccessorValid request durableResult (rawWorkerReceiptSessionAccessor observed)
     then Right ()
     else
       Left
@@ -1796,21 +1796,19 @@ receiptMatchesRequest request receipt =
 
 workerReceiptAccessorValid
   :: SecretFreeWorkerRequest
-  -> SecretWorkerOperation
+  -> SecretWorkerDurableResult
   -> WorkerSessionAccessor
   -> Bool
-workerReceiptAccessorValid request operation observed =
+workerReceiptAccessorValid request result observed =
   case workerSessionAccessorIssued (secretWorkerRequestSessionAccessor request) of
     -- Compatibility for already-persisted checkpoints from the former
     -- correlation-accessor schema. New production intents never take this
     -- branch.
     Just expected -> workerSessionAccessorIssued observed == Just expected
-    Nothing -> case operation of
-      SecretWorkerRotateTransitKey ->
-        case workerSessionAccessorIssued observed of
-          Just _ -> True
-          Nothing -> False
-      _ -> observed == workerSessionNotIssued
+    -- The production Transit worker authenticates with a bounded batch token.
+    -- Its durable result carries no revocable accessor. An earlier service
+    -- token result still carries its exact accessor for the cleanup step.
+    Nothing -> observed == durableWorkerSessionAccessor result
 
 capturedBinding :: ReceiptCapturedSecretWorker -> SecretWorkerCleanupBinding
 capturedBinding = secretWorkerCleanupBinding . capturedSecretWorkerReceipt

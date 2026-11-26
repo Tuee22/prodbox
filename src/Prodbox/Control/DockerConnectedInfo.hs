@@ -14,6 +14,8 @@ module Prodbox.Control.DockerConnectedInfo
   , pingDockerSession
   , DockerKindInfo (..)
   , readDockerSessionKindInfo
+  , dockerKindNodeRuntime
+  , observeDockerKindNodeRuntime
   , DockerKindStorage (..)
   , readDockerSessionKindStorage
   , parseDockerKindStorage
@@ -24,6 +26,8 @@ module Prodbox.Control.DockerConnectedInfo
   , createDockerSessionAbsenceControl
   , DockerNodeContainerObservation (..)
   , inspectDockerSessionKindNode
+  , readDockerSessionContainerNotFound
+  , readDockerSessionKindNodeNameNotFound
   , readDockerSessionKindNodeAddresses
   , parseDockerKindNodeAddresses
   , readDockerSessionKindNodeBootLine
@@ -52,8 +56,15 @@ module Prodbox.Control.DockerConnectedInfo
   , removeDockerSessionAbsenceVolume
   , inspectDockerSessionNodeVarVolume
   , parseDockerNodeVarVolume
+  , DockerMutationVolume (..)
+  , DockerMutationVolumeObservation (..)
+  , inspectDockerSessionMutationVolume
+  , createDockerSessionMutationVolume
+  , removeDockerSessionMutationVolume
+  , readDockerSessionMutationHolder
   , readDockerSessionKindContainers
   , readDockerSessionKindNetworks
+  , readDockerSessionKindNetworksControlled
   , readDockerSessionKindNetworkId
   , readDockerSessionKindNetworkIdControlled
   , parseDockerBridgeId
@@ -114,16 +125,26 @@ import Prodbox.Config.BootstrapProjection
   , bootstrapScope
   )
 import Prodbox.Config.DeploymentScope
-  ( DeploymentEnvironment (Test), DeploymentScope, scopeEnvironment, scopeKindName, scopeRoot, validRootGeneration )
+  ( DeploymentEnvironment (Test)
+  , DeploymentScope
+  , scopeEnvironment
+  , scopeKindName
+  , scopeRoot
+  , validRootGeneration
+  )
 import Prodbox.Config.KindPlan
   ( KindNodeCreateInput (..)
+  , KindNodeRuntimeMode (..)
   , kindNodeCreateBody
   , kindNodeVarVolumeCreateBody
   , kindNodeVarVolumeLabels
   , kindNodeVarVolumeName
   )
-import Prodbox.Control.DockerIdentity (parseDockerDaemonId)
-import Prodbox.Control.DockerPeer (DockerPeer, DockerPeerResult, withConnectedDockerPeer)
+import Prodbox.Control.DockerIdentity
+  ( DockerDaemonObservation (DockerDaemonObserved)
+  , parseDockerDaemonId
+  )
+import Prodbox.Control.DockerPeer (DockerPeer (..), DockerPeerResult (..), withConnectedDockerPeer)
 import Prodbox.Control.ImageIdObservation
   ( ImageIdObservation
   , parseImageIdObservation
@@ -138,8 +159,8 @@ import Prodbox.Control.KindNetworkIntent
   )
 import Prodbox.Control.NodeArchiveExport (maximumDockerArchiveBytes)
 import Prodbox.Settings.Coordinate (ipLiteralText, mkIpLiteral)
-import System.IO (SeekMode (AbsoluteSeek))
 import System.FilePath.Posix (isAbsolute, normalise, splitDirectories)
+import System.IO (SeekMode (AbsoluteSeek))
 import System.Posix.Files qualified as Files
 import System.Posix.IO qualified as Posix
 import System.Posix.IO.ByteString qualified as PosixBytes
@@ -164,6 +185,34 @@ data DockerKindInfo = DockerKindInfo
   , dockerKindSecurityOptions :: ![String]
   }
   deriving (Eq, Show)
+
+-- Kind requires cgroup v2 and all three delegated controllers with rootless
+-- Docker. The retained request records the corresponding provider argv.
+dockerKindNodeRuntime :: DockerKindInfo -> Maybe KindNodeRuntimeMode
+dockerKindNodeRuntime info
+  | not (any rootless (dockerKindSecurityOptions info)) = Just KindNodeRootful
+  | dockerKindCgroupVersion info == "2"
+      && dockerKindMemoryLimit info
+      && dockerKindPidsLimit info
+      && dockerKindCpuShares info
+      && dockerKindCgroupDriver info /= "none" =
+      Just KindNodeRootless
+  | otherwise = Nothing
+ where
+  rootless = elem "name=rootless" . Text.splitOn "," . Text.pack
+
+observeDockerKindNodeRuntime
+  :: FilePath -> IO (Maybe (DockerDaemonObservation, KindNodeRuntimeMode))
+observeDockerKindNodeRuntime socket = do
+  observed <- withConnectedDockerInfo 15000000 socket $ \session (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) stable -> do
+    info <- readDockerSessionKindInfo session identifier
+    held <- stable
+    pure $ case info of
+      Right fields | held -> (DockerDaemonObserved identifier identity,) <$> dockerKindNodeRuntime fields
+      _ -> Nothing
+  pure $ case observed of
+    DockerPeerCompleted (DockerConnectedInfoCompleted result) -> result
+    _ -> Nothing
 
 data DockerKindStorage = DockerKindStorage
   { dockerKindStorageDriver :: !String
@@ -316,9 +365,15 @@ inspectDockerSessionImageVolumes
 inspectDockerSessionImageVolumes (DockerSession manager) identifier
   | not (validImageId identifier) = pure (Left DockerConnectedInfoInvalid)
   | otherwise = do
-      result <- try (HTTP.withResponse (dockerGet (BS8.pack ("/images/" ++ identifier ++ "/json"))) manager readVolumes)
-      pure (either (const (Left DockerConnectedInfoTransport)) id
-        (result :: Either HTTP.HttpException (Either DockerConnectedInfoFailure DockerImageVolumes)))
+      result <-
+        try
+          (HTTP.withResponse (dockerGet (BS8.pack ("/images/" ++ identifier ++ "/json"))) manager readVolumes)
+      pure
+        ( either
+            (const (Left DockerConnectedInfoTransport))
+            id
+            (result :: Either HTTP.HttpException (Either DockerConnectedInfoFailure DockerImageVolumes))
+        )
  where
   readVolumes response
     | statusCode (HTTP.responseStatus response) /= 200 = pure (Left DockerConnectedInfoStatus)
@@ -331,8 +386,9 @@ inspectDockerSessionImageVolumes (DockerSession manager) identifier
           Just bytes -> do
             checked <- decodeBoundedYamlValue bytes
             pure $ case (Aeson.eitherDecodeStrict' bytes, checked) of
-              (Right value, Right validated) | value == validated ->
-                either (const (Left DockerConnectedInfoInvalid)) Right (parseDockerImageVolumes identifier value)
+              (Right value, Right validated)
+                | value == validated ->
+                    either (const (Left DockerConnectedInfoInvalid)) Right (parseDockerImageVolumes identifier value)
               _ -> Left DockerConnectedInfoInvalid
 
 parseDockerImageVolumes :: String -> Aeson.Value -> Either String DockerImageVolumes
@@ -356,11 +412,20 @@ parseDockerImageVolumes identifier = parseEither $ Aeson.withObject "Docker imag
     else pure (DockerImageVolumes (sort paths))
 
 validImageVolumePaths :: [FilePath] -> Bool
-validImageVolumePaths paths = length paths <= 64 && paths == sort paths && length paths == length (nub paths) && all validPath paths
+validImageVolumePaths paths =
+  length paths <= 64
+    && paths == sort paths
+    && length paths == length (nub paths)
+    && all validPath paths
  where
-  validPath path = isAbsolute path && normalise path == path && path /= "/" && last path /= '/'
-    && length path <= 4096 && all (`notElem` ['\0', '\n', '\r']) path
-    && all (`notElem` [".", ".."]) (splitDirectories path)
+  validPath path =
+    isAbsolute path
+      && normalise path == path
+      && path /= "/"
+      && last path /= '/'
+      && length path <= 4096
+      && all (`notElem` ['\0', '\n', '\r']) path
+      && all (`notElem` [".", ".."]) (splitDirectories path)
 
 -- Configuration and mount observation only. Neither matching labels nor a
 -- deterministic name establish ownership of a container or its volumes.
@@ -370,16 +435,30 @@ data DockerAbsenceControlObservation
   deriving (Eq, Show)
 
 inspectDockerSessionAbsenceControl
-  :: DockerSession -> BootstrapProjection -> String -> String -> String
-  -> DockerImageVolumes -> Maybe String
+  :: DockerSession
+  -> BootstrapProjection
+  -> String
+  -> String
+  -> String
+  -> DockerImageVolumes
+  -> Maybe String
   -> IO (Either DockerConnectedInfoFailure DockerAbsenceControlObservation)
 inspectDockerSessionAbsenceControl (DockerSession manager) bootstrap operation target image volumes expected
-  | not (validAbsenceControlExpected bootstrap operation target image volumes expected) = pure (Left DockerConnectedInfoInvalid)
+  | not (validAbsenceControlExpected bootstrap operation target image volumes expected) =
+      pure (Left DockerConnectedInfoInvalid)
   | otherwise = do
       let name = scopeKindName (bootstrapScope bootstrap) ++ "-absence-control"
-      result <- try (HTTP.withResponse (dockerGet (BS8.pack ("/containers/" ++ name ++ "/json"))) manager readControl)
-      pure (either (const (Left DockerConnectedInfoTransport)) id
-        (result :: Either HTTP.HttpException (Either DockerConnectedInfoFailure DockerAbsenceControlObservation)))
+      result <-
+        try
+          (HTTP.withResponse (dockerGet (BS8.pack ("/containers/" ++ name ++ "/json"))) manager readControl)
+      pure
+        ( either
+            (const (Left DockerConnectedInfoTransport))
+            id
+            ( result
+                :: Either HTTP.HttpException (Either DockerConnectedInfoFailure DockerAbsenceControlObservation)
+            )
+        )
  where
   readControl response
     | statusCode (HTTP.responseStatus response) /= 200 = pure (Left DockerConnectedInfoStatus)
@@ -392,9 +471,12 @@ inspectDockerSessionAbsenceControl (DockerSession manager) bootstrap operation t
           Just bytes -> do
             checked <- decodeBoundedYamlValue bytes
             pure $ case (Aeson.eitherDecodeStrict' bytes, checked) of
-              (Right value, Right validated) | value == validated ->
-                either (const (Left DockerConnectedInfoInvalid)) Right
-                  (parseDockerAbsenceControl bootstrap operation target image volumes expected value)
+              (Right value, Right validated)
+                | value == validated ->
+                    either
+                      (const (Left DockerConnectedInfoInvalid))
+                      Right
+                      (parseDockerAbsenceControl bootstrap operation target image volumes expected value)
               _ -> Left DockerConnectedInfoInvalid
 
 validAbsenceControlExpected
@@ -411,8 +493,14 @@ validAbsenceControlExpected bootstrap operation target image (DockerImageVolumes
 -- matching result supplies candidate IDs for later journaled ownership and
 -- independent cleanup, not permission to remove them.
 parseDockerAbsenceControl
-  :: BootstrapProjection -> String -> String -> String -> DockerImageVolumes -> Maybe String
-  -> Aeson.Value -> Either String DockerAbsenceControlObservation
+  :: BootstrapProjection
+  -> String
+  -> String
+  -> String
+  -> DockerImageVolumes
+  -> Maybe String
+  -> Aeson.Value
+  -> Either String DockerAbsenceControlObservation
 parseDockerAbsenceControl bootstrap operation target image volumes@(DockerImageVolumes declared) expected =
   parseEither $ Aeson.withObject "Docker absence control" $ \container -> do
     identifier <- container .: "Id"
@@ -444,26 +532,42 @@ parseDockerAbsenceControl bootstrap operation target image volumes@(DockerImageV
     networkEndpoints <- traverse parseControlNetwork networks
     let noBinds = case binds of Aeson.Null -> True; Aeson.Array items -> null items; _ -> False
         footprint = sort [(destination, volume) | (destination, volume, _) <- mounts]
-        matching = validAbsenceControlExpected bootstrap operation target image volumes expected
-          && validImageId ("sha256:" ++ identifier) && identifier /= target
-          && maybe True (== identifier) expected
-          && name == '/' : scopeKindName (bootstrapScope bootstrap) ++ "-absence-control"
-          && imageId == image && configuredImage == image
-          && entrypoint == ["/nonexistent"] && command == ["/nonexistent"] && networkDisabled
-          && Map.lookup "io.prodbox.absence-control" labels == Just operation
-          && Map.lookup "io.prodbox.generation" labels == Just (Text.unpack (bootstrapRootGeneration bootstrap))
-          && Map.size labels <= 64
-          && Map.notMember "io.x-k8s.kind.cluster" labels && Map.notMember "io.x-k8s.kind.role" labels
-          && not running && not paused && not restarting && not dead && status == ("created" :: String)
-          && networkMode == ("none" :: String) && not privileged && readOnlyRoot && not autoRemove && noBinds
-          && droppedCaps == ["ALL"]
-          && restart == Aeson.object ["Name" Aeson..= ("no" :: String), "MaximumRetryCount" Aeson..= (0 :: Int)]
-          && all (`elem` ["none"]) (Map.keys networks)
-          && and (Map.elems networkEndpoints)
-          && length mounts <= 64 && all (\(_, _, writable) -> writable) mounts
-          && map fst footprint == declared
-          && length (map snd footprint) == length (nub (map snd footprint))
-    pure (if matching then DockerAbsenceControlMatching identifier footprint else DockerAbsenceControlConflict)
+        matching =
+          validAbsenceControlExpected bootstrap operation target image volumes expected
+            && validImageId ("sha256:" ++ identifier)
+            && identifier /= target
+            && maybe True (== identifier) expected
+            && name == '/' : scopeKindName (bootstrapScope bootstrap) ++ "-absence-control"
+            && imageId == image
+            && configuredImage == image
+            && entrypoint == ["/nonexistent"]
+            && command == ["/nonexistent"]
+            && networkDisabled
+            && Map.lookup "io.prodbox.absence-control" labels == Just operation
+            && Map.lookup "io.prodbox.generation" labels == Just (Text.unpack (bootstrapRootGeneration bootstrap))
+            && Map.size labels <= 64
+            && Map.notMember "io.x-k8s.kind.cluster" labels
+            && Map.notMember "io.x-k8s.kind.role" labels
+            && not running
+            && not paused
+            && not restarting
+            && not dead
+            && status == ("created" :: String)
+            && networkMode == ("none" :: String)
+            && not privileged
+            && readOnlyRoot
+            && not autoRemove
+            && noBinds
+            && droppedCaps == ["ALL"]
+            && restart == Aeson.object ["Name" Aeson..= ("no" :: String), "MaximumRetryCount" Aeson..= (0 :: Int)]
+            && all (`elem` ["none"]) (Map.keys networks)
+            && and (Map.elems networkEndpoints)
+            && length mounts <= 64
+            && all (\(_, _, writable) -> writable) mounts
+            && map fst footprint == declared
+            && length (map snd footprint) == length (nub (map snd footprint))
+    pure
+      (if matching then DockerAbsenceControlMatching identifier footprint else DockerAbsenceControlConflict)
  where
   parseControlNetwork = Aeson.withObject "absence control network" $ \network -> do
     endpoint <- network .: "EndpointID"
@@ -476,7 +580,8 @@ parseDockerAbsenceControl bootstrap operation target image volumes@(DockerImageV
     destination <- mount .: "Destination"
     driver <- mount .: "Driver"
     writable <- mount .: "RW"
-    if kind /= ("volume" :: String) || driver /= ("local" :: String)
+    if kind /= ("volume" :: String)
+      || driver /= ("local" :: String)
       || not (validImageId ("sha256:" ++ volume))
       then fail "invalid anonymous volume mount"
       else pure (destination, volume, writable)
@@ -586,6 +691,7 @@ createDockerSessionKindNode (DockerSession manager) bootstrap input stable
                 pure $ case (reply, after :: Either IOException Bool) of
                   (Just result, Right True) -> result
                   _ -> DockerNodeContainerCreateUnconfirmed
+
 readContainerCreate :: HTTP.Response HTTP.BodyReader -> IO (Maybe DockerNodeContainerCreateResult)
 readContainerCreate response
   | not (framed response) = pure Nothing
@@ -622,33 +728,44 @@ absenceControlCreateBody
   :: BootstrapProjection -> String -> String -> String -> DockerImageVolumes -> Maybe Aeson.Value
 absenceControlCreateBody bootstrap operation target image volumes
   | not (validAbsenceControlExpected bootstrap operation target image volumes Nothing) = Nothing
-  | otherwise = Just $ Aeson.object
-      [ "Image" Aeson..= image
-      , "Entrypoint" Aeson..= (["/nonexistent"] :: [String])
-      , "Cmd" Aeson..= (["/nonexistent"] :: [String])
-      , "NetworkDisabled" Aeson..= True
-      , "Labels" Aeson..= Aeson.object
-          [ "io.prodbox.absence-control" Aeson..= operation
-          , "io.prodbox.generation" Aeson..= bootstrapRootGeneration bootstrap
+  | otherwise =
+      Just $
+        Aeson.object
+          [ "Image" Aeson..= image
+          , "Entrypoint" Aeson..= (["/nonexistent"] :: [String])
+          , "Cmd" Aeson..= (["/nonexistent"] :: [String])
+          , "NetworkDisabled" Aeson..= True
+          , "Labels"
+              Aeson..= Aeson.object
+                [ "io.prodbox.absence-control" Aeson..= operation
+                , "io.prodbox.generation" Aeson..= bootstrapRootGeneration bootstrap
+                ]
+          , "HostConfig"
+              Aeson..= Aeson.object
+                [ "NetworkMode" Aeson..= ("none" :: String)
+                , "Privileged" Aeson..= False
+                , "ReadonlyRootfs" Aeson..= True
+                , "AutoRemove" Aeson..= False
+                , "Binds" Aeson..= ([] :: [String])
+                , "CapDrop" Aeson..= (["ALL"] :: [String])
+                , "RestartPolicy"
+                    Aeson..= Aeson.object ["Name" Aeson..= ("no" :: String), "MaximumRetryCount" Aeson..= (0 :: Int)]
+                ]
           ]
-      , "HostConfig" Aeson..= Aeson.object
-          [ "NetworkMode" Aeson..= ("none" :: String)
-          , "Privileged" Aeson..= False
-          , "ReadonlyRootfs" Aeson..= True
-          , "AutoRemove" Aeson..= False
-          , "Binds" Aeson..= ([] :: [String])
-          , "CapDrop" Aeson..= (["ALL"] :: [String])
-          , "RestartPolicy" Aeson..= Aeson.object ["Name" Aeson..= ("no" :: String), "MaximumRetryCount" Aeson..= (0 :: Int)]
-          ]
-      ]
 
 -- The caller must hold the operation and settled-worker owners, establish an
 -- exact fresh-control precondition and durable create attempt, fund image
 -- volume creation, and own recovery and cleanup before using this transport.
 -- A lost reply remains unconfirmed; the name/labels do not prove ownership.
 createDockerSessionAbsenceControl
-  :: DockerSession -> BootstrapProjection -> String -> String -> String -> DockerImageVolumes
-  -> IO Bool -> IO DockerAbsenceControlCreate
+  :: DockerSession
+  -> BootstrapProjection
+  -> String
+  -> String
+  -> String
+  -> DockerImageVolumes
+  -> IO Bool
+  -> IO DockerAbsenceControlCreate
 createDockerSessionAbsenceControl session@(DockerSession manager) bootstrap operation target image volumes stable =
   case absenceControlCreateBody bootstrap operation target image volumes of
     Nothing -> pure DockerAbsenceCreateInvalid
@@ -667,13 +784,14 @@ createDockerSessionAbsenceControl session@(DockerSession manager) bootstrap oper
             (Right actual, Right True) | actual /= volumes -> pure (DockerAbsenceCreateImageChanged actual)
             (Right _, Right True) -> do
               let name = scopeKindName (bootstrapScope bootstrap) ++ "-absence-control"
-                  request = (dockerGet "/containers/create")
-                    { HTTP.method = "POST"
-                    , HTTP.queryString = renderQuery True [("name", Just (BS8.pack name))]
-                    , HTTP.requestHeaders = [("Content-Type", "application/json")]
-                    , HTTP.requestBody = HTTP.RequestBodyLBS (Aeson.encode payload)
-                    , HTTP.responseTimeout = HTTP.responseTimeoutMicro 30000000
-                    }
+                  request =
+                    (dockerGet "/containers/create")
+                      { HTTP.method = "POST"
+                      , HTTP.queryString = renderQuery True [("name", Just (BS8.pack name))]
+                      , HTTP.requestHeaders = [("Content-Type", "application/json")]
+                      , HTTP.requestBody = HTTP.RequestBodyLBS (Aeson.encode payload)
+                      , HTTP.responseTimeout = HTTP.responseTimeoutMicro 30000000
+                      }
               received <- try (try (HTTP.withResponse request manager readContainerCreate))
               case received of
                 Left (_ :: IOException) -> pure (DockerAbsenceCreateAttempted DockerNodeContainerCreateUnconfirmed)
@@ -693,6 +811,41 @@ data DockerNodeContainerObservation
   = DockerNodeContainerMatching !Bool
   | DockerNodeContainerConflict
   deriving (Eq, Show)
+
+-- A bounded exact-ID read. The caller must authenticate the held daemon and
+-- independently verify the inventory and removal history before using it.
+readDockerSessionContainerNotFound :: DockerSession -> String -> IO Bool
+readDockerSessionContainerNotFound session identifier
+  | not (validImageId ("sha256:" ++ identifier)) = pure False
+  | otherwise = readDockerSessionContainerMissing session identifier
+
+-- The deterministic name supplies a point observation for a proposal that
+-- has never acquired an exact container ID.
+readDockerSessionKindNodeNameNotFound :: DockerSession -> DeploymentScope -> IO Bool
+readDockerSessionKindNodeNameNotFound session scope =
+  readDockerSessionContainerMissing session (scopeKindName scope ++ "-control-plane")
+
+readDockerSessionContainerMissing :: DockerSession -> String -> IO Bool
+readDockerSessionContainerMissing (DockerSession manager) identifier = do
+  let request = dockerGet (BS8.pack ("/containers/" ++ identifier ++ "/json"))
+  result <- try (HTTP.withResponse request manager observe)
+  pure (either (const False) id (result :: Either HTTP.HttpException Bool))
+ where
+  observe response
+    | statusCode (HTTP.responseStatus response) /= 404 = pure False
+    | not (persistent response && framed response) = pure False
+    | otherwise = do
+        body <- collectBody 4096 (HTTP.responseBody response)
+        case body of
+          Nothing -> pure False
+          Just bytes -> do
+            checked <- decodeBoundedYamlValue bytes
+            pure $ case (Aeson.eitherDecodeStrict' bytes, checked) of
+              (Right value, Right validated)
+                | value == validated ->
+                    parseEither (Aeson.withObject "Docker container not found" (.: "message")) value
+                      == Right ("No such container: " ++ identifier)
+              _ -> False
 
 inspectDockerSessionKindNode
   :: DockerSession
@@ -1006,17 +1159,25 @@ parseDockerKindNodeConfigArchive = parseDockerNodeFileArchive "kubeadm.conf"
 -- A matching archive alone does not authenticate an API server or permit an
 -- effect. Certificate bytes stay in memory and never appear in the result.
 readDockerSessionKindNodeCa
-  :: DockerSession -> String -> BS.ByteString
+  :: DockerSession
+  -> String
+  -> BS.ByteString
   -> IO (Either DockerConnectedInfoFailure DockerNodeConfigReadback)
 readDockerSessionKindNodeCa (DockerSession manager) identifier expected
   | not (validImageId ("sha256:" ++ identifier)) || BS.null expected || BS.length expected > 65536 =
       pure (Left DockerConnectedInfoInvalid)
   | otherwise = do
-      let request = (dockerGet (BS8.pack ("/containers/" ++ identifier ++ "/archive")))
-            { HTTP.queryString = renderQuery True [("path", Just "/etc/kubernetes/pki/ca.crt")] }
+      let request =
+            (dockerGet (BS8.pack ("/containers/" ++ identifier ++ "/archive")))
+              { HTTP.queryString = renderQuery True [("path", Just "/etc/kubernetes/pki/ca.crt")]
+              }
       result <- try (HTTP.withResponse request manager readArchive)
-      pure (either (const (Left DockerConnectedInfoTransport)) id
-        (result :: Either HTTP.HttpException (Either DockerConnectedInfoFailure DockerNodeConfigReadback)))
+      pure
+        ( either
+            (const (Left DockerConnectedInfoTransport))
+            id
+            (result :: Either HTTP.HttpException (Either DockerConnectedInfoFailure DockerNodeConfigReadback))
+        )
  where
   readArchive response
     | statusCode (HTTP.responseStatus response) /= 200 = pure (Left DockerConnectedInfoStatus)
@@ -1031,7 +1192,8 @@ readDockerSessionKindNodeCa (DockerSession manager) identifier expected
 parseDockerKindNodeCaArchive :: BS.ByteString -> BS.ByteString -> Maybe DockerNodeConfigReadback
 parseDockerKindNodeCaArchive = parseDockerNodeFileArchive "ca.crt"
 
-parseDockerNodeFileArchive :: FilePath -> BS.ByteString -> BS.ByteString -> Maybe DockerNodeConfigReadback
+parseDockerNodeFileArchive
+  :: FilePath -> BS.ByteString -> BS.ByteString -> Maybe DockerNodeConfigReadback
 parseDockerNodeFileArchive name expected bytes = case Tar.read (BL.fromStrict bytes) of
   Tar.Next entry Tar.Done
     | TarEntry.entryPath entry == name
@@ -1153,6 +1315,7 @@ parseDockerNodeContainer bootstrap input identifier = parseEither $ Aeson.withOb
   security <- hostConfig .: "SecurityOpt" :: Parser [String]
   networkMode <- hostConfig .: "NetworkMode" :: Parser String
   tmpfs <- hostConfig .: "Tmpfs"
+  devices <- (maybe [] id <$> hostConfig .:? "Devices") :: Parser [Aeson.Value]
   initProcess <- hostConfig .: "Init"
   ports <- hostConfig .: "PortBindings" >>= parsePorts
   expectedBody <-
@@ -1170,6 +1333,7 @@ parseDockerNodeContainer bootstrap input identifier = parseEither $ Aeson.withOb
   expectedRestart <- expectedHost .: "RestartPolicy"
   expectedSecurity <- expectedHost .: "SecurityOpt" :: Parser [String]
   expectedTmpfs <- expectedHost .: "Tmpfs"
+  expectedDevices <- maybe [] id <$> expectedHost .:? "Devices"
   networkSettings <- node .: "NetworkSettings"
   networks <- networkSettings .: "Networks" :: Parser (Map.Map String Aeson.Value)
   networkIds <- traverse (Aeson.withObject "network" (.: "NetworkID")) networks
@@ -1202,6 +1366,7 @@ parseDockerNodeContainer bootstrap input identifier = parseEither $ Aeson.withOb
           -- Docker appends label=disable to a privileged container's options.
           && (security == expectedSecurity || security == expectedSecurity ++ ["label=disable"])
           && tmpfs == (expectedTmpfs :: Aeson.Value)
+          && devices == expectedDevices
           && initProcess == (False :: Bool)
           && exposed == expectedExposed
           && actualId == identifier
@@ -1436,32 +1601,34 @@ removeDockerSessionNodeVarVolume session bootstrap operation stable =
 
 -- | The caller must bind this full anonymous-volume ID to a durable control
 -- footprint and settle all users before the non-forced removal attempt.
-removeDockerSessionAbsenceVolume :: DockerSession -> String -> IO Bool -> IO Bool -> IO DockerNodeVarRemoveResult
+removeDockerSessionAbsenceVolume
+  :: DockerSession -> String -> IO Bool -> IO Bool -> IO DockerNodeVarRemoveResult
 removeDockerSessionAbsenceVolume session identifier beforeEffect afterEffect
   | not (validImageId ("sha256:" ++ identifier)) = pure DockerNodeVarRemoveNotStarted
   | otherwise = removeDockerSessionVolume session identifier beforeEffect afterEffect
 
-removeDockerSessionVolume :: DockerSession -> String -> IO Bool -> IO Bool -> IO DockerNodeVarRemoveResult
+removeDockerSessionVolume
+  :: DockerSession -> String -> IO Bool -> IO Bool -> IO DockerNodeVarRemoveResult
 removeDockerSessionVolume (DockerSession manager) volumeName beforeEffect afterEffect = do
-      ready <- try beforeEffect
-      case ready of
-        Left (_ :: IOException) -> pure DockerNodeVarRemoveNotStarted
-        Right False -> pure DockerNodeVarRemoveNotStarted
-        Right True -> do
-          let request =
-                (dockerGet (BS8.pack ("/volumes/" ++ volumeName)))
-                  { HTTP.method = "DELETE"
-                  , HTTP.responseTimeout = HTTP.responseTimeoutMicro 30000000
-                  }
-          received <- try (try (HTTP.withResponse request manager readRemoval))
-          case received of
-            Left (_ :: IOException) -> pure DockerNodeVarRemoveUnconfirmed
-            Right (Left (_ :: HTTP.HttpException)) -> pure DockerNodeVarRemoveUnconfirmed
-            Right (Right reply) -> do
-              after <- try afterEffect
-              pure $ case (reply, after :: Either IOException Bool) of
-                (Just result, Right True) -> DockerNodeVarRemoveReply result
-                _ -> DockerNodeVarRemoveUnconfirmed
+  ready <- try beforeEffect
+  case ready of
+    Left (_ :: IOException) -> pure DockerNodeVarRemoveNotStarted
+    Right False -> pure DockerNodeVarRemoveNotStarted
+    Right True -> do
+      let request =
+            (dockerGet (BS8.pack ("/volumes/" ++ volumeName)))
+              { HTTP.method = "DELETE"
+              , HTTP.responseTimeout = HTTP.responseTimeoutMicro 30000000
+              }
+      received <- try (try (HTTP.withResponse request manager readRemoval))
+      case received of
+        Left (_ :: IOException) -> pure DockerNodeVarRemoveUnconfirmed
+        Right (Left (_ :: HTTP.HttpException)) -> pure DockerNodeVarRemoveUnconfirmed
+        Right (Right reply) -> do
+          after <- try afterEffect
+          pure $ case (reply, after :: Either IOException Bool) of
+            (Just result, Right True) -> DockerNodeVarRemoveReply result
+            _ -> DockerNodeVarRemoveUnconfirmed
  where
   readRemoval response
     | statusCode (HTTP.responseStatus response) == 204 =
@@ -1472,6 +1639,206 @@ removeDockerSessionVolume (DockerSession manager) volumeName beforeEffect afterE
     | otherwise = do
         body <- collectBody 65536 (HTTP.responseBody response)
         pure (statusCode (HTTP.responseStatus response) <$ body)
+
+-- The opaque input value binds a new disposable volume to its dominating
+-- campaign. A Docker create response can also report a pre-existing object.
+data DockerMutationVolume = DockerMutationVolume
+  { dockerMutationVolumeName :: !String
+  , dockerMutationVolumeOwner :: !String
+  , dockerMutationVolumeOptions :: !(Map.Map String String)
+  }
+  deriving (Eq, Show)
+
+data DockerMutationVolumeObservation
+  = DockerMutationVolumeMissing
+  | DockerMutationVolumeObserved !String
+  deriving (Eq, Show)
+
+validMutationVolume :: DockerMutationVolume -> Bool
+validMutationVolume volume =
+  let name = dockerMutationVolumeName volume
+      owner = dockerMutationVolumeOwner volume
+      safe value =
+        not (null value)
+          && length value <= 120
+          && all (\c -> c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') value
+   in safe name && safe owner && take 16 name == "prodbox-mutdisk-"
+
+inspectDockerSessionMutationVolume
+  :: DockerSession
+  -> DockerMutationVolume
+  -> IO (Either DockerConnectedInfoFailure DockerMutationVolumeObservation)
+inspectDockerSessionMutationVolume session volume
+  | not (validMutationVolume volume) = pure (Left DockerConnectedInfoInvalid)
+  | otherwise = do
+      inspected <-
+        readMutationDockerJson
+          session
+          (dockerGet path)
+          200
+          ("get " ++ name ++ ": no such volume")
+      pure $ case inspected of
+        Left failure -> Left failure
+        Right Nothing -> Right DockerMutationVolumeMissing
+        Right (Just exists) ->
+          maybe
+            (Left DockerConnectedInfoInvalid)
+            (Right . DockerMutationVolumeObserved)
+            (matchMutationVolume volume exists)
+ where
+  name = dockerMutationVolumeName volume
+  path = BS8.pack ("/volumes/" ++ name)
+
+createDockerSessionMutationVolume
+  :: DockerSession
+  -> DockerMutationVolume
+  -> IO Bool
+  -> IO (Either DockerConnectedInfoFailure DockerMutationVolumeObservation)
+createDockerSessionMutationVolume session volume stable = do
+  before <- stable
+  if before && validMutationVolume volume
+    then do
+      created <- readMutationDockerJson session request 201 ""
+      after <- stable
+      pure $ case (created, after) of
+        (Right (Just value), True) ->
+          maybe
+            (Left DockerConnectedInfoInvalid)
+            (Right . DockerMutationVolumeObserved)
+            (matchMutationVolume volume value)
+        (Left failure, True) -> Left failure
+        _ -> Left DockerConnectedInfoInvalid
+    else pure (Left DockerConnectedInfoInvalid)
+ where
+  request =
+    (dockerGet "/volumes/create")
+      { HTTP.method = "POST"
+      , HTTP.requestHeaders = [("Content-Type", "application/json")]
+      , HTTP.requestBody =
+          HTTP.RequestBodyLBS $
+            Aeson.encode $
+              Aeson.object
+                [ "Name" Aeson..= dockerMutationVolumeName volume
+                , "Driver" Aeson..= ("local" :: String)
+                , "DriverOpts" Aeson..= dockerMutationVolumeOptions volume
+                , "Labels" Aeson..= mutationVolumeLabels volume
+                ]
+      }
+
+removeDockerSessionMutationVolume
+  :: DockerSession -> DockerMutationVolume -> IO Bool -> IO DockerNodeVarRemoveResult
+removeDockerSessionMutationVolume session volume stable
+  | validMutationVolume volume =
+      removeDockerSessionVolume session (dockerMutationVolumeName volume) stable stable
+  | otherwise = pure DockerNodeVarRemoveNotStarted
+
+mutationVolumeLabels :: DockerMutationVolume -> Map.Map String String
+mutationVolumeLabels volume = Map.singleton "io.prodbox.mutation-volume-owner" (dockerMutationVolumeOwner volume)
+
+matchMutationVolume :: DockerMutationVolume -> Aeson.Value -> Maybe String
+matchMutationVolume volume =
+  either (const Nothing) Just
+    . parseEither
+      ( Aeson.withObject "bound mutation output volume" $ \object -> do
+          name <- object .: "Name"
+          driver <- object .: "Driver"
+          scope <- object .: "Scope"
+          options <- object .: "Options"
+          labels <- object .: "Labels"
+          created <- object .: "CreatedAt"
+          if name == dockerMutationVolumeName volume
+            && (driver :: String) == "local"
+            && (scope :: String) == "local"
+            && options == dockerMutationVolumeOptions volume
+            && labels == mutationVolumeLabels volume
+            && not (null created)
+            && length created <= 64
+            then pure created
+            else fail "different mutation volume"
+      )
+
+-- | Bind a running keeper's host PID to one verified storage mount. The
+-- caller still holds and verifies the corresponding process and filesystem descriptors.
+readDockerSessionMutationHolder
+  :: DockerSession
+  -> String
+  -> String
+  -> String
+  -> DockerMutationVolume
+  -> IO (Either DockerConnectedInfoFailure Int)
+readDockerSessionMutationHolder session identifier image user volume
+  | not (validImageId ("sha256:" ++ identifier) && validImageId image && validMutationVolume volume) =
+      pure (Left DockerConnectedInfoInvalid)
+  | otherwise = do
+      observed <- readMutationDockerJson session (dockerGet path) 200 ""
+      pure $ case observed of
+        Right (Just found) -> either (const (Left DockerConnectedInfoInvalid)) Right (parseEither parseHolder found)
+        Right Nothing -> Left DockerConnectedInfoStatus
+        Left failure -> Left failure
+ where
+  path = BS8.pack ("/containers/" ++ identifier ++ "/json")
+  parseHolder = Aeson.withObject "mutation output holder" $ \container -> do
+    actual <- container .: "Id"
+    actualImage <- container .: "Image"
+    config <- container .: "Config"
+    actualUser <- config .: "User"
+    host <- container .: "HostConfig"
+    net <- host .: "NetworkMode"
+    readOnly <- host .: "ReadonlyRootfs"
+    state <- container .: "State"
+    running <- state .: "Running"
+    pid <- state .: "Pid"
+    mounts <- container .: "Mounts"
+    case mounts of
+      [mounted] -> do
+        kind <- mounted .: "Type"
+        name <- mounted .: "Name"
+        pathInside <- mounted .: "Destination"
+        writable <- mounted .: "RW"
+        if actual == identifier
+          && actualImage == image
+          && actualUser == user
+          && (net :: String) == "none"
+          && readOnly
+          && running
+          && pid > 0
+          && (kind :: String) == "volume"
+          && name == dockerMutationVolumeName volume
+          && (pathInside :: String) == "/quota"
+          && not writable
+          then pure pid
+          else fail "different mutation holder"
+      _ -> fail "different mutation mounts"
+
+readMutationDockerJson
+  :: DockerSession
+  -> HTTP.Request
+  -> Int
+  -> String
+  -> IO (Either DockerConnectedInfoFailure (Maybe Aeson.Value))
+readMutationDockerJson (DockerSession manager) request expected notFound = do
+  result <- try (HTTP.withResponse request manager decode)
+  pure (either (\(_ :: HTTP.HttpException) -> Left DockerConnectedInfoTransport) id result)
+ where
+  decode response
+    | not (persistent response) = pure (Left DockerConnectedInfoConnectionClosing)
+    | not (framed response) = pure (Left DockerConnectedInfoFramingInvalid)
+    | otherwise = do
+        let status = statusCode (HTTP.responseStatus response)
+        body <- collectBody 65536 (HTTP.responseBody response)
+        case body of
+          Nothing -> pure (Left DockerConnectedInfoTooLarge)
+          Just bytes -> do
+            checked <- decodeBoundedYamlValue bytes
+            pure $ case (Aeson.eitherDecodeStrict' bytes, checked) of
+              (Right value, Right validated) | value == validated && status == expected -> Right (Just value)
+              (Right value, Right validated)
+                | value == validated && status == 404 && not (null notFound) ->
+                    if parseEither (Aeson.withObject "Docker volume not found" (\fields -> fields .: "message")) value
+                      == Right notFound
+                      then Right Nothing
+                      else Left DockerConnectedInfoInvalid
+              _ -> Left DockerConnectedInfoInvalid
 
 -- | Read the deterministic candidate volume over an already held connection.
 -- The operation owner must independently establish daemon and scope identity,
@@ -1621,10 +1988,26 @@ readDockerSessionKindContainers (DockerSession manager) scope = do
 -- The full response is validated rather than silently filtering foreign rows.
 readDockerSessionKindNetworks
   :: DockerSession -> DeploymentScope -> IO (Either DockerConnectedInfoFailure [String])
-readDockerSessionKindNetworks session scope = do
-  let name = scopeKindName scope
-      filters = BL.toStrict (Aeson.encode (Aeson.object ["name" Aeson..= ["^" ++ name ++ "$"]]))
-  readDockerSessionNetworkInventory session (scopeKindName scope) filters
+readDockerSessionKindNetworks session scope =
+  readDockerSessionNetworkNamed session (scopeKindName scope)
+
+-- Exercise the same name inventory against Docker's built-in bridge before
+-- reading the selected scope. An invisible control leaves the read unknown.
+readDockerSessionKindNetworksControlled
+  :: DockerSession -> DeploymentScope -> IO (Either DockerConnectedInfoFailure (Maybe [String]))
+readDockerSessionKindNetworksControlled session scope = do
+  positive <- readDockerSessionNetworkNamed session "bridge"
+  case positive of
+    Right [_] -> fmap Just <$> readDockerSessionKindNetworks session scope
+    Right [] -> pure (Right Nothing)
+    Right _ -> pure (Left DockerConnectedInfoInvalid)
+    Left failure -> pure (Left failure)
+
+readDockerSessionNetworkNamed
+  :: DockerSession -> String -> IO (Either DockerConnectedInfoFailure [String])
+readDockerSessionNetworkNamed session name =
+  let filters = BL.toStrict (Aeson.encode (Aeson.object ["name" Aeson..= ["^" ++ name ++ "$"]]))
+   in readDockerSessionNetworkInventory session name filters
 
 -- | Observe an exact full ID through a separate Docker inventory query.
 -- Empty is a point observation only, not proof of absence or settlement.

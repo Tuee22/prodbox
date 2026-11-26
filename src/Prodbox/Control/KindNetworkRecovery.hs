@@ -10,6 +10,9 @@ module Prodbox.Control.KindNetworkRecovery
   , KindNetworkIndependentIdObservation (..)
   , compareKindNetworkConfiguration
   , observeRecoveredKindNetwork
+  , observeRecordedNetworkAbsent
+  , observeUnattemptedNetworkAbsent
+  , priorNetworkRemovalRecorded
   , KindNetworkAttemptAction (..)
   , withNewConnectedKindNetworkAttempt
   , KindNetworkRemovalAction (..)
@@ -37,11 +40,11 @@ import Prodbox.Config.DeploymentScope (scopeKindName)
 import Prodbox.Control.DockerConnectedInfo
   ( DockerConnectedInfo (..)
   , DockerConnectedInfoFailure (..)
-  , DockerConnectedInfoResult
+  , DockerConnectedInfoResult (..)
   , DockerKindInfo
   , DockerNetworkCreateResult (..)
   , DockerNetworkDetails (..)
-  , DockerNetworkRemoveResult
+  , DockerNetworkRemoveResult (DockerNetworkRemoveReply)
   , DockerSession
   , inspectDockerSessionKindNetwork
   , parseDockerBridgeId
@@ -49,6 +52,7 @@ import Prodbox.Control.DockerConnectedInfo
   , readDockerSessionKindInfo
   , readDockerSessionKindNetworkIdControlled
   , readDockerSessionKindNetworks
+  , readDockerSessionKindNetworksControlled
   , withConnectedDockerInfo
   )
 import Prodbox.Control.DockerIdentity
@@ -56,7 +60,7 @@ import Prodbox.Control.DockerIdentity
   , observeDockerDaemon
   , readDocker
   )
-import Prodbox.Control.DockerPeer (DockerPeer (..), DockerPeerResult)
+import Prodbox.Control.DockerPeer (DockerPeer (..), DockerPeerResult (..))
 import Prodbox.Control.ImageIdObservation (validImageId)
 import Prodbox.Control.KindKubeconfigYaml (decodeBoundedYamlValue)
 import Prodbox.Control.KindLease (KindOperationOutcome, withRecoveredKindOperation)
@@ -91,6 +95,67 @@ import Prodbox.Control.KindNetworkReceipt
   , observeNetworkReceipt
   , recordNetworkReceipt
   )
+
+priorNetworkRemovalRecorded :: NetworkReceiptObservation -> Bool
+priorNetworkRemovalRecorded observed = case observed of
+  NetworkReceiptObserved (NetworkRemovalTransport (DockerNetworkRemoveReply 204)) -> True
+  _ -> False
+
+-- | The caller holds the operation and excludes create and removal results.
+-- The proposal binds the daemon, whose bridge brackets the scoped name read.
+observeUnattemptedNetworkAbsent :: BootstrapProjection -> KindNetworkIntent -> IO Bool -> IO Bool
+observeUnattemptedNetworkAbsent bootstrap intent held = do
+  attempt <- observeKindNetworkAttempt bootstrap intent held
+  if attempt /= NetworkAttemptMissing
+    then pure False
+    else do
+      checked <- withConnectedDockerInfo 15000000 (bootstrapRuntimeSocket bootstrap) inspect
+      pure (checked == DockerPeerCompleted (DockerConnectedInfoCompleted True))
+ where
+  inspect session (DockerConnectedInfo daemon (DockerPeer _ _ _ identity)) peerStable = do
+    before <- held
+    if before && DockerDaemonObserved daemon identity == kindNetworkDaemon intent
+      then do
+        inventory <- readDockerSessionKindNetworksControlled session (bootstrapScope bootstrap)
+        peer <- peerStable
+        closing <- held
+        pure (inventory == Right (Just []) && peer && closing)
+      else pure False
+
+-- | Confirm the bound receipt and require separate exact-ID and name reads.
+-- The caller supplies the held operation and retirement admission check.
+observeRecordedNetworkAbsent :: BootstrapProjection -> String -> IO Bool -> IO Bool
+observeRecordedNetworkAbsent bootstrap operation held = do
+  proposal <- observeRecordedKindNetworkIntent bootstrap operation held
+  case proposal of
+    NetworkRecoveryRecorded intent -> do
+      created <- observeNetworkReceipt bootstrap intent NetworkCreateReceipt held
+      case created of
+        NetworkReceiptObserved (NetworkCreateTransport (DockerNetworkCreateReply 201 (Just networkId))) -> do
+          receipt <- observeNetworkReceipt bootstrap intent (NetworkRemovalReceipt networkId) held
+          if priorNetworkRemovalRecorded receipt
+            then do
+              absent <-
+                withConnectedDockerInfo
+                  30000000
+                  (bootstrapRuntimeSocket bootstrap)
+                  (inspectNetwork intent networkId)
+              pure (absent == DockerPeerCompleted (DockerConnectedInfoCompleted True))
+            else pure False
+        _ -> pure False
+    _ -> pure False
+ where
+  inspectNetwork intent networkId session (DockerConnectedInfo daemon (DockerPeer _ _ _ identity)) peerStable = do
+    before <- held
+    if before && DockerDaemonObserved daemon identity == kindNetworkDaemon intent
+      then do
+        let scope = bootstrapScope bootstrap
+        exact <- readDockerSessionKindNetworkIdControlled session scope networkId
+        named <- readDockerSessionKindNetworks session scope
+        peer <- peerStable
+        closing <- held
+        pure (exact == Right (Just False) && named == Right [] && peer && closing)
+      else pure False
 
 data KindNetworkRecoverySample = KindNetworkRecoverySample
   { networkAttemptBefore :: !KindNetworkAttemptObservation
@@ -208,7 +273,10 @@ withNewConnectedKindNetworkRecordedAttemptGuarded
   -> String
   -> (IO Bool -> IO Bool)
   -> (KindNetworkIntent -> DockerSession -> IO Bool -> IO DockerNetworkCreateResult)
-  -> IO (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult (KindNetworkAttemptAction KindNetworkRecordedTransport))))
+  -> IO
+       ( KindOperationOutcome
+           (DockerPeerResult (DockerConnectedInfoResult (KindNetworkAttemptAction KindNetworkRecordedTransport)))
+       )
 withNewConnectedKindNetworkRecordedAttemptGuarded bootstrap operation admission action =
   withNewConnectedKindNetworkAttemptGuarded bootstrap operation admission $ \intent session stable -> do
     result <- action intent session stable
@@ -254,7 +322,10 @@ withNewConnectedKindNetworkRecordedRemovalGuarded
   -> String
   -> (IO Bool -> IO Bool)
   -> (DockerSession -> IO Bool -> IO DockerNetworkRemoveResult)
-  -> IO (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult (KindNetworkRemovalAction KindNetworkRecordedTransport))))
+  -> IO
+       ( KindOperationOutcome
+           (DockerPeerResult (DockerConnectedInfoResult (KindNetworkRemovalAction KindNetworkRecordedTransport)))
+       )
 withNewConnectedKindNetworkRecordedRemovalGuarded bootstrap operation networkId settlementStable action =
   withNewConnectedKindNetworkRemovalGuarded bootstrap operation networkId settlementStable $ \session stable -> do
     result <- action session stable
@@ -285,7 +356,8 @@ withNewConnectedKindNetworkRemovalGuarded
   -> String
   -> (IO Bool -> IO Bool)
   -> (DockerSession -> IO Bool -> IO value)
-  -> IO (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult (KindNetworkRemovalAction value))))
+  -> IO
+       (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult (KindNetworkRemovalAction value))))
 withNewConnectedKindNetworkRemovalGuarded bootstrap operation networkId settlementStable action =
   withRecoveredKindOperation bootstrap operation $ \operationStable ->
     withConnectedDockerInfo 30000000 (bootstrapRuntimeSocket bootstrap) $ \session (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable -> do
@@ -364,7 +436,8 @@ withNewConnectedKindNetworkAttemptGuarded
   -> String
   -> (IO Bool -> IO Bool)
   -> (KindNetworkIntent -> DockerSession -> IO Bool -> IO value)
-  -> IO (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult (KindNetworkAttemptAction value))))
+  -> IO
+       (KindOperationOutcome (DockerPeerResult (DockerConnectedInfoResult (KindNetworkAttemptAction value))))
 withNewConnectedKindNetworkAttemptGuarded bootstrap operation admission action =
   withRecoveredKindOperation bootstrap operation $ \operationStable ->
     withConnectedDockerInfo 30000000 (bootstrapRuntimeSocket bootstrap) $ \session info peerStable ->

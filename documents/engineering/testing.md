@@ -79,7 +79,15 @@ A phase closes only after its real public cases, expected mutation failures, cle
 
 ## Implemented through Phase 1
 
-`prodbox test run phase-01` drives the public binary through two lifecycles on one retained root and publishes independently validated scenario reports under `<project>/.build/scenario-evidence/<run>/` (a private `.build` is required); claimed observations come from the public commands' own output and independent observations from direct reads, Docker and kubectl. `prodbox test run phase-01-mutation` snapshots the secret-filtered worktree into a no-network container, builds a baseline and a mutant, runs one designated test and classifies it Killed, Survived, Invalid or Inconclusive. Evidence and limits: [Phase 1 validation](../../DEVELOPMENT_PLAN/evidence/phase_01_validation.md).
+`prodbox test run phase-01` drives simultaneous test scopes, interrupted teardown and two lifecycles on one retained root. It publishes independently validated scenario reports under `<project>/.build/scenario-evidence/<run>/` and requires a private `.build`. Public command results provide the claims. The observer reads the retained records, Docker and Kubernetes directly.
+
+Use `prodbox test run phase-01 --runtime-socket PATH` to select a clean Docker runtime for fresh preparation. Supply an absolute Unix socket path. The scenario still allocates fresh test identities and prepares the pinned artifacts through the public workflow.
+
+The bounded mutation workflow is `prodbox test run mutations`. Use `prodbox test run mutations:CASE` to rerun one registered case. The runner captures one source snapshot, prepares private read-only dependency copies, and runs each case with network access disabled and a private 3 GiB output filesystem. Its results are Killed, Survived, Invalid and Inconclusive, based on a baseline and one designated test per mutation. Stage advancement requires an exact container retirement observation. Case qualification requires exact keeper and volume absence, verified workspace retirement and a durable result. `prodbox test cleanup RUN_ID` recovers an unused volume when the terminal case and launch records establish that the keeper never started. [Phase 1 validation evidence](../../DEVELOPMENT_PLAN/phase_01_cli_contexts_kind_and_evidence.md).
+
+Use `prodbox test run mutations:phase-02` to run the three reviewed bootstrap mutations through the same executor. Their retained campaign status and unused-storage recovery use the existing test commands.
+
+Use `prodbox test run mutations:phase-03` to run the reviewed Authority admission and retained-journal variants, or `mutations:CASE` to select one. The same commands observe and recover their retained campaign storage.
 
 ## Implemented through Phase 2
 

@@ -656,33 +656,28 @@ rotateTransitKey settings store kubernetes request payload =
                     )
                 case loggedIn of
                   Left _ -> pure (Left "Bootstrap worker Vault login failed")
-                  Right login -> do
-                    let token = Vault.vaultLoginToken login
-                        evidenceValid = isBoundedBatchAuditorLogin 300 login
-                    rotated <-
-                      if evidenceValid
-                        then rotateFromJournal token keyName
-                        else
-                          pure
-                            ( Left
-                                "Bootstrap worker Vault login did not return a bounded batch token"
-                            )
-                    revoked <-
-                      authorizedTransitCall
-                        (\config -> Vault.vaultRevokeSelfWith config (vaultAddress settings) token)
-                    pure $ case revoked of
-                      Left _ ->
-                        Left "Bootstrap worker Vault session revoke-self failed"
-                      Right () -> case rotated of
-                        Right () ->
-                          Right
-                            ( transitRotationWorkerResult
-                                BootstrapMutationReceipt
-                                  { bootstrapMutationDigest = secretWorkerRequestActionDigest request
-                                  , bootstrapMutationChanged = True
-                                  }
-                            )
-                        Left failure -> Left failure
+                  Right login
+                    | isBoundedBatchAuditorLogin 300 login ->
+                        -- A validated batch token has no accessor and expires on
+                        -- its fixed lease. It has no revoke-self operation.
+                        fmap (fmap (const receipt)) (rotateFromJournal (Vault.vaultLoginToken login) keyName)
+                    | Vault.vaultLoginTokenType login == "service" -> do
+                        revoked <-
+                          authorizedTransitCall
+                            (\config -> Vault.vaultRevokeSelfWith config (vaultAddress settings) (Vault.vaultLoginToken login))
+                        pure $ case revoked of
+                          Left _ -> Left "Unexpected worker Vault service token could not be revoked"
+                          Right () -> Left "Bootstrap worker Vault login did not return a bounded batch token"
+                    | otherwise ->
+                        pure (Left "Bootstrap worker Vault login did not return a bounded batch token")
+
+  receipt =
+    transitRotationWorkerResult
+      BootstrapMutationReceipt
+        { bootstrapMutationDigest = secretWorkerRequestActionDigest request
+        , bootstrapMutationChanged = True
+        }
+
   authorizedTransitCall action = do
     authorized <-
       authorizeWorkerVaultEffect

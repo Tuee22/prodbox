@@ -128,7 +128,11 @@ hostControllerPublishedDirectory kind uid key =
 
 -- Exact descriptor-relative observation only; the caller must hold the
 -- operation fence across this read and its dependent action.
-observeHostPublicationDirectoryAbsent :: Word64 -> Identity.HostControllerKind -> Identity.HostExecutionKey -> IO (Either HostControllerPublicationError Bool)
+observeHostPublicationDirectoryAbsent
+  :: Word64
+  -> Identity.HostControllerKind
+  -> Identity.HostExecutionKey
+  -> IO (Either HostControllerPublicationError Bool)
 observeHostPublicationDirectoryAbsent ending kind key = do
   uid <- getEffectiveUserID
   withRuntimeRoot uid $ \root -> mask $ \restore -> do
@@ -136,7 +140,8 @@ observeHostPublicationDirectoryAbsent ending kind key = do
     case valid of
       Left failure -> pure (Left failure)
       Right () -> do
-        opened <- try (IO.openFdAt (Just root) (publicationDirectoryName kind key) IO.ReadOnly directoryFlags)
+        opened <-
+          try (IO.openFdAt (Just root) (publicationDirectoryName kind key) IO.ReadOnly directoryFlags)
         case opened of
           Left (cause :: IOException) | isDoesNotExistError cause -> (True <$) <$> checkTime ending
           Left cause -> pure (Left (ioRefusal cause))
@@ -162,7 +167,13 @@ hostControllerPublicationPathReserved = any reserved . splitDirectories
   reserved component =
     any
       (\kind -> publicationDirectoryPrefix kind `isPrefixOf` component)
-      [Identity.RpcBirthController, Identity.OrdinaryCascadeController, Identity.MutationController, Identity.KindController, Identity.KindProbeVerifierController, Identity.KindProbeSuccessorController]
+      [ Identity.RpcBirthController
+      , Identity.OrdinaryCascadeController
+      , Identity.MutationController
+      , Identity.KindController
+      , Identity.KindProbeVerifierController
+      , Identity.KindProbeSuccessorController
+      ]
 
 hostControllerConfigurationName, hostControllerRequestName :: String
 hostControllerConfigurationName = "settings.cbor"

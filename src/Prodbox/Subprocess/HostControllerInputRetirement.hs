@@ -98,7 +98,10 @@ newtype HostInputRetirementReceipt = HostInputRetirementReceipt Inputs.HostContr
 newtype HostNeverSentInputRetirementReceipt = HostNeverSentInputRetirementReceipt ByteString
 
 data InputRetirementSource
-  = SubmittedSource !Retirement.HostOperationRetirement !Inputs.HostControllerSubmissionRecord !(IO Bool)
+  = SubmittedSource
+      !Retirement.HostOperationRetirement
+      !Inputs.HostControllerSubmissionRecord
+      !(IO Bool)
   | NeverSentSource !Publication.HostPublicationNeverSent
 
 hostInputRetirementReceiptMatches
@@ -114,7 +117,10 @@ retireHostControllerInputs supplied owner record =
   retireHostControllerInputsWithAdmission supplied owner record (pure True)
 
 retireHostControllerInputsWithAdmission
-  :: Word64 -> Retirement.HostOperationRetirement -> Inputs.HostControllerSubmissionRecord -> IO Bool
+  :: Word64
+  -> Retirement.HostOperationRetirement
+  -> Inputs.HostControllerSubmissionRecord
+  -> IO Bool
   -> IO (Either InputRetirementError HostInputRetirementReceipt)
 retireHostControllerInputsWithAdmission supplied owner record stable = do
   let ending = min supplied (Retirement.hostOperationRetirementDeadline owner)

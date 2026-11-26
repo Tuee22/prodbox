@@ -145,63 +145,94 @@ main = do
                             assert "codec roundtrip changed metadata" (decodeHostControllerSubmission bytes == Right record)
                             pure record
                       case name of
-                        named | named `elem` ["ordinary-roundtrip", "mutation-roundtrip", "kind-roundtrip", "verifier-roundtrip", "successor-roundtrip"] -> do
-                          record <- right =<< open checked
-                          readRecord <- right =<< readBack
-                          assert "ordinary read-back changed kind/provenance" (record == readRecord)
-                          let field = Family.hostControllerSubmissionField readRecord
-                              birth = Family.hostOperationField I.RpcBirthController key
-                              roles = [minBound .. maxBound]
-                          when (kind == I.KindProbeSuccessorController) $ do
-                            otherKey <- maybe (fail "other successor key") pure (I.hostExecutionKeyFromText (replicate 64 'f'))
-                            let other = Family.hostOperationField kind otherKey
-                            assert "successors share a slice" (Family.hostOperationFieldUnitName field Family.OperationSlice /= Family.hostOperationFieldUnitName other Family.OperationSlice)
-                          assert
-                            "recovered ordinary field borrowed a registration unit"
-                            ( null
-                                ( filter
-                                    (`elem` map (Family.hostOperationFieldUnitName birth) roles)
-                                    (map (Family.hostOperationFieldUnitName field) roles)
-                                )
-                            )
-                          forM_ (filter (/= kind) [I.RpcBirthController, I.OrdinaryCascadeController, I.MutationController, I.KindController, I.KindProbeVerifierController, I.KindProbeSuccessorController]) $ \otherKind -> do
-                            let other = Family.hostOperationField otherKind key
-                            assert "controller families share a unit name"
-                              (null (filter (`elem` map (Family.hostOperationFieldUnitName other) roles) (map (Family.hostOperationFieldUnitName field) roles)))
-                            assert "controller families share a runtime directory"
-                              (Family.hostOperationFieldRuntimeDirectory field /= Family.hostOperationFieldRuntimeDirectory other)
-                        named | named `elem` ["ordinary-schema", "mutation-schema", "kind-schema", "verifier-schema", "successor-schema"] -> do
-                          record <- right =<< open checked
-                          let encoded = encodeHostControllerSubmission record
-                              prefix = "prodbox-host-controller-submission/kind/v1\NUL"
-                          payload <- maybe (fail "ordinary kind prefix missing") pure (BS.stripPrefix prefix encoded)
-                          (version, kindTag, original) <- right (deserialiseOrFail (Lazy.fromStrict payload))
-                          let expectedTag
-                                | kind == I.OrdinaryCascadeController = 1
-                                | kind == I.MutationController = 2
-                                | kind == I.KindController = 3
-                                | kind == I.KindProbeVerifierController = 4
-                                | otherwise = 5
-                          assert
-                            "controller kind version/tag changed"
-                            (version == (1 :: Word8) && kindTag == (expectedTag :: Word8))
-                          birth <- right (decodeHostControllerSubmission original)
-                          assert
-                            "ordinary wrapper relabelled historical bytes"
-                            ( hostControllerSubmissionKind birth == I.RpcBirthController
-                                && encodeHostControllerSubmission birth == original
-                            )
-                          forM_
-                            [ prefix <> Lazy.toStrict (serialise (2 :: Word8, kindTag, original))
-                            , prefix <> Lazy.toStrict (serialise (version, 0 :: Word8, original))
-                            , prefix <> Lazy.toStrict (serialise (version, 6 :: Word8, original))
-                            , prefix <> Lazy.toStrict (serialise (version, kindTag, encoded))
-                            , encoded <> "\NUL"
-                            ]
-                            $ \invalid ->
+                        named
+                          | named
+                              `elem` [ "ordinary-roundtrip"
+                                     , "mutation-roundtrip"
+                                     , "kind-roundtrip"
+                                     , "verifier-roundtrip"
+                                     , "successor-roundtrip"
+                                     ] -> do
+                              record <- right =<< open checked
+                              readRecord <- right =<< readBack
+                              assert "ordinary read-back changed kind/provenance" (record == readRecord)
+                              let field = Family.hostControllerSubmissionField readRecord
+                                  birth = Family.hostOperationField I.RpcBirthController key
+                                  roles = [minBound .. maxBound]
+                              when (kind == I.KindProbeSuccessorController) $ do
+                                otherKey <- maybe (fail "other successor key") pure (I.hostExecutionKeyFromText (replicate 64 'f'))
+                                let other = Family.hostOperationField kind otherKey
+                                assert
+                                  "successors share a slice"
+                                  ( Family.hostOperationFieldUnitName field Family.OperationSlice
+                                      /= Family.hostOperationFieldUnitName other Family.OperationSlice
+                                  )
                               assert
-                                "ordinary schema admitted an unknown/nested/trailing identity"
-                                (isLeft (decodeHostControllerSubmission invalid))
+                                "recovered ordinary field borrowed a registration unit"
+                                ( null
+                                    ( filter
+                                        (`elem` map (Family.hostOperationFieldUnitName birth) roles)
+                                        (map (Family.hostOperationFieldUnitName field) roles)
+                                    )
+                                )
+                              forM_
+                                ( filter
+                                    (/= kind)
+                                    [ I.RpcBirthController
+                                    , I.OrdinaryCascadeController
+                                    , I.MutationController
+                                    , I.KindController
+                                    , I.KindProbeVerifierController
+                                    , I.KindProbeSuccessorController
+                                    ]
+                                )
+                                $ \otherKind -> do
+                                  let other = Family.hostOperationField otherKind key
+                                  assert
+                                    "controller families share a unit name"
+                                    ( null
+                                        ( filter
+                                            (`elem` map (Family.hostOperationFieldUnitName other) roles)
+                                            (map (Family.hostOperationFieldUnitName field) roles)
+                                        )
+                                    )
+                                  assert
+                                    "controller families share a runtime directory"
+                                    (Family.hostOperationFieldRuntimeDirectory field /= Family.hostOperationFieldRuntimeDirectory other)
+                        named
+                          | named
+                              `elem` ["ordinary-schema", "mutation-schema", "kind-schema", "verifier-schema", "successor-schema"] -> do
+                              record <- right =<< open checked
+                              let encoded = encodeHostControllerSubmission record
+                                  prefix = "prodbox-host-controller-submission/kind/v1\NUL"
+                              payload <- maybe (fail "ordinary kind prefix missing") pure (BS.stripPrefix prefix encoded)
+                              (version, kindTag, original) <- right (deserialiseOrFail (Lazy.fromStrict payload))
+                              let expectedTag
+                                    | kind == I.OrdinaryCascadeController = 1
+                                    | kind == I.MutationController = 2
+                                    | kind == I.KindController = 3
+                                    | kind == I.KindProbeVerifierController = 4
+                                    | otherwise = 5
+                              assert
+                                "controller kind version/tag changed"
+                                (version == (1 :: Word8) && kindTag == (expectedTag :: Word8))
+                              birth <- right (decodeHostControllerSubmission original)
+                              assert
+                                "ordinary wrapper relabelled historical bytes"
+                                ( hostControllerSubmissionKind birth == I.RpcBirthController
+                                    && encodeHostControllerSubmission birth == original
+                                )
+                              forM_
+                                [ prefix <> Lazy.toStrict (serialise (2 :: Word8, kindTag, original))
+                                , prefix <> Lazy.toStrict (serialise (version, 0 :: Word8, original))
+                                , prefix <> Lazy.toStrict (serialise (version, 6 :: Word8, original))
+                                , prefix <> Lazy.toStrict (serialise (version, kindTag, encoded))
+                                , encoded <> "\NUL"
+                                ]
+                                $ \invalid ->
+                                  assert
+                                    "ordinary schema admitted an unknown/nested/trailing identity"
+                                    (isLeft (decodeHostControllerSubmission invalid))
                         "roundtrip" -> do
                           record <- right =<< open checked
                           readRecord <- right =<< readBack

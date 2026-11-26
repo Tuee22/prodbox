@@ -218,6 +218,7 @@ testExecutionPlan substrate scope =
           , nativeRequiresSupportedRuntimePostflight = False
           , nativeSubstrate = substrate
           }
+    TestRunAtRuntimeSocket suiteName _ -> testExecutionPlan substrate (TestRun suiteName)
     TestRun suiteName ->
       nativeExecutionPlan
         ("run " ++ suiteName)

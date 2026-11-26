@@ -15,6 +15,7 @@ module Prodbox.Bootstrap.Broker.Program
   , BootstrapMutationReceipt (..)
   , RotationKind (..)
   , VaultPkiStatus (..)
+  , VaultPkiIssueReceipt (..)
   , PkiIssueRequest
   , mkPkiIssueRequest
   , pkiIssueCommonName
@@ -110,6 +111,14 @@ data VaultPkiStatus
   = VaultPkiBaselineAbsent
   | VaultPkiBaselineReady
   deriving (Eq, Ord, Show, Enum, Bounded)
+
+-- | Public read-back for one issued and independently matched certificate.
+data VaultPkiIssueReceipt = VaultPkiIssueReceipt
+  { pkiIssueMutation :: !BootstrapMutationReceipt
+  , pkiIssueSerial :: !Text
+  , pkiIssueCertificateDigest :: !ArtifactDigest
+  }
+  deriving (Eq, Show)
 
 -- | The only PKI issuance the bootstrap service admits is a bounded test
 -- certificate.  The role is compiled into the interpreter, so callers cannot
@@ -212,7 +221,7 @@ data BrokerProgram (operation :: CapabilityKind) result where
     :: BrokerProgram 'VaultPkiOperate VaultPkiStatus
   IssueVaultPkiTestCertificate
     :: PkiIssueRequest
-    -> BrokerProgram 'VaultPkiOperate BootstrapMutationReceipt
+    -> BrokerProgram 'VaultPkiOperate VaultPkiIssueReceipt
 
 -- | The four exact operation-indexed references admitted to one Broker
 -- interpreter.  The constructor is private so call sites cannot relabel a

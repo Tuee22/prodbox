@@ -15,6 +15,7 @@
 module Prodbox.Test.Phase01Runner
   ( runPhase01Scenario
   , runFreshPhase01Scenario
+  , runFreshPhase01OnSocket
   , run
   , satisfied
   , hex32
@@ -44,8 +45,8 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async qualified as Async
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 
-import Control.Exception (IOException, bracket, throwIO, try)
-import Control.Monad (unless, when)
+import Control.Exception (IOException, bracket, catch, throwIO, try)
+import Control.Monad (unless)
 import Data.Bifunctor qualified as Bifunctor
 import Data.Bits ((.&.))
 import Data.ByteString qualified as ByteString
@@ -71,6 +72,7 @@ import Prodbox.Config.BootstrapProjection
   , bootstrapScope
   , decodeOptionalBootstrapSource
   , readBootstrapProjection
+  , validSocketPath
   )
 import Prodbox.Config.DeploymentScope
   ( DeploymentEnvironment (Test)
@@ -88,15 +90,42 @@ import Prodbox.Config.DeploymentScope
   , scopeRoot
   , withScopeRootDescriptor
   )
-import Prodbox.Config.KindPlan (kindPlanHostPorts, kindPlanNodeImage, renderKindConfig)
+import Prodbox.Config.KindPlan
+  ( kindNodeVarVolumeName
+  , kindPlanHostPorts
+  , kindPlanNodeImage
+  , renderKindConfig
+  )
 import Prodbox.Config.SelectedDhall (readSelectedDhall)
+import Prodbox.Control.DockerConnectedInfo
+  ( DockerConnectedInfo (..)
+  , DockerConnectedInfoResult (DockerConnectedInfoCompleted)
+  , readDockerSessionContainerNotFound
+  , withConnectedDockerInfo
+  )
+import Prodbox.Control.DockerIdentity (DockerDaemonObservation (DockerDaemonObserved))
+import Prodbox.Control.DockerPeer (DockerPeer (..), DockerPeerResult (DockerPeerCompleted))
+import Prodbox.Control.KindControllerRequest (kindControllerOperationKey)
+import Prodbox.Control.KindIntent
+  ( KindIntentObservation (KindIntentMatches, KindIntentMissing)
+  , observeKindIntent
+  , observeKindOwnerFamilyIntent
+  , observeKindTeardownAdmission
+  )
+import Prodbox.Control.KindNodeCreateIntent
+  ( KindNodeCreateRecoveryObservation (NodeCreateRecoveryRecorded)
+  , kindNodeCreateDaemon
+  , observeKindNodeRemoveResult
+  , observeRecordedKindNodeCreateIntent
+  )
+import Prodbox.Control.KindNodeRemovalReadback (priorNodeRemovalRecorded)
 import Prodbox.Control.NetworkEnforcement
   ( EnforcementCleanup (..)
   , EnforcementOutcome (..)
   , enforcementProven
   , observeNetworkEnforcementScoped
   )
-import Prodbox.Control.KindIntent (KindIntentObservation (KindIntentMatches), observeKindIntent)
+import Prodbox.Control.Recreate (probeArchiveRecord)
 import Prodbox.Error (AppError)
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
@@ -104,6 +133,13 @@ import Prodbox.Subprocess
   , Subprocess (..)
   , captureSubprocessWithInputBounded
   )
+import Prodbox.Subprocess.HostOperationFamily
+  ( HostOperationRole (OperationCommand, OperationController, OperationSlice, OperationTransport)
+  , hostOperationField
+  , hostOperationFieldUnitName
+  )
+import Prodbox.Subprocess.KernelScope (hostManagerControlGroupPath)
+import Prodbox.Subprocess.SystemdIdentity (HostControllerKind (KindController))
 import Prodbox.Test.FixtureTree (captureFixtureTree, cleanupFixtureTree, cleanupFixtureTrees)
 import Prodbox.Test.NodeRegistryPreparation
   ( PreparationResult (..)
@@ -141,7 +177,7 @@ import System.Directory
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..), exitWith)
 import System.FilePath (takeDirectory, takeFileName, (</>))
-import System.IO (IOMode (ReadMode), withBinaryFile)
+import System.IO (IOMode (ReadMode), hFlush, stdout, withBinaryFile)
 import System.Posix.Files
   ( createSymbolicLink
   , deviceID
@@ -151,6 +187,7 @@ import System.Posix.Files
   , getFdStatus
   , getSymbolicLinkStatus
   , isDirectory
+  , isRegularFile
   , modificationTimeHiRes
   , setFileMode
   , statusChangeTimeHiRes
@@ -420,29 +457,34 @@ runFreshImportAdversesWith executable selected projection = do
 -- archive, then uses the public fresh-test setup and import handlers. Failed
 -- enrollment or import retains the exact selected root for observation.
 runFreshPhase01Scenario :: FilePath -> IO ExitCode
-runFreshPhase01Scenario repository = do
-  anchorResult <- try (canonicalizePath repository) :: IO (Either IOException FilePath)
-  entropyResult <-
-    try (withBinaryFile "/dev/urandom" ReadMode (\handle -> ByteString.hGet handle 32))
-      :: IO (Either IOException ByteString.ByteString)
-  case (anchorResult, entropyResult) of
-    (Right anchor, Right entropy) | ByteString.length entropy == 32 -> do
-      executable <- getExecutablePath
-      source <- captureSourceIdentity anchor []
-      binary <- try (ByteString.readFile executable) :: IO (Either IOException ByteString.ByteString)
-      boot <-
-        try (ByteString.readFile "/proc/sys/kernel/random/boot_id")
+runFreshPhase01Scenario repository = runFreshPhase01OnSocket repository "/run/docker.sock"
+
+runFreshPhase01OnSocket :: FilePath -> FilePath -> IO ExitCode
+runFreshPhase01OnSocket repository socket
+  | not (validSocketPath socket) = failFresh "invalid explicit Docker Unix socket path"
+  | otherwise = do
+      anchorResult <- try (canonicalizePath repository) :: IO (Either IOException FilePath)
+      entropyResult <-
+        try (withBinaryFile "/dev/urandom" ReadMode (\handle -> ByteString.hGet handle 32))
           :: IO (Either IOException ByteString.ByteString)
-      case (source, binary, validateBootIdentity (either (const Nothing) Just boot)) of
-        (Right sourceIdentity, Right binaryBytes, Just bootIdentity) ->
-          start
-            anchor
-            entropy
-            sourceIdentity
-            (digest (ByteString8.unpack (hexSha256 binaryBytes)))
-            bootIdentity
-        _ -> failFresh "source, binary or boot identity was unavailable"
-    _ -> failFresh "cannot establish the repository anchor or a fresh random identity"
+      case (anchorResult, entropyResult) of
+        (Right anchor, Right entropy) | ByteString.length entropy == 32 -> do
+          executable <- getExecutablePath
+          source <- captureSourceIdentity anchor []
+          binary <- try (ByteString.readFile executable) :: IO (Either IOException ByteString.ByteString)
+          boot <-
+            try (ByteString.readFile "/proc/sys/kernel/random/boot_id")
+              :: IO (Either IOException ByteString.ByteString)
+          case (source, binary, validateBootIdentity (either (const Nothing) Just boot)) of
+            (Right sourceIdentity, Right binaryBytes, Just bootIdentity) ->
+              start
+                anchor
+                entropy
+                sourceIdentity
+                (digest (ByteString8.unpack (hexSha256 binaryBytes)))
+                bootIdentity
+            _ -> failFresh "source, binary or boot identity was unavailable"
+        _ -> failFresh "cannot establish the repository anchor or a fresh random identity"
  where
   failFresh message = writeOutputLine ("phase-01 fresh preparation refused: " ++ message) >> pure (ExitFailure 2)
   start anchor entropy sourceIdentity binaryIdentity bootIdentity = do
@@ -462,7 +504,7 @@ runFreshPhase01Scenario repository = do
               ByteString8.pack $
                 unlines
                   [ anchor
-                  , "/run/docker.sock"
+                  , socket
                   , "test"
                   , identifier
                   , generation
@@ -495,7 +537,7 @@ runFreshPhase01Scenario repository = do
                     other -> Left ("node import did not complete: " ++ show other)
                 other -> pure (Left ("fresh setup did not complete: " ++ show other))
         rootBefore <- observeScopeRoot scope
-        inventory <- runDocker "/run/docker.sock" ["image", "ls", "-a", "--no-trunc", "--format", "{{.ID}}"]
+        inventory <- runDocker socket ["image", "ls", "-a", "--no-trunc", "--format", "{{.ID}}"]
         case (rootBefore, observeFreshImageInventory inventory) of
           (Right ScopeRootAbsent, FreshImageUnobservable) -> failFresh "the explicit daemon image inventory is unobservable"
           (Right ScopeRootAbsent, observed) -> do
@@ -505,6 +547,7 @@ runFreshPhase01Scenario repository = do
                   "The pinned image was already present; the clean-image acceptance case remains unproven."
               _ -> pure ()
             writeOutputLine ("phase-01 test identity: " ++ identifier ++ "; selected config: " ++ selected)
+            hFlush stdout
             outcome <- prepareFreshNodeArchive scope publish
             case outcome of
               PreparationResult (Right (Right configured)) True _ -> do
@@ -598,7 +641,8 @@ runPhase01ScenarioWithFresh selected fresh = do
               refuse failure
             Right () -> case fresh of
               Nothing -> do
-                result <- either id id <$> (try (scenario selected projection Nothing) :: IO (Either ExitCode ExitCode))
+                result <-
+                  scenario selected projection Nothing `catch` (pure :: ExitCode -> IO ExitCode)
                 case result of
                   ExitSuccess -> do
                     writeOutputLine
@@ -615,7 +659,8 @@ runPhase01ScenarioWithFresh selected fresh = do
                         && and (importAdverseClaims observations)
                         && and (importAdverseObservations observations)
                         && importAdverseCleanup observations ->
-                        either id id <$> (try (scenario selected projection (Just (preparation, observations))) :: IO (Either ExitCode ExitCode))
+                        scenario selected projection (Just (preparation, observations))
+                          `catch` (pure :: ExitCode -> IO ExitCode)
                     | otherwise ->
                         refuse
                           ( "adverse import controls were not confirmed: "
@@ -762,15 +807,15 @@ scenario selected projection fresh = do
             [ ("kind.tool", digest (maybe "" artifactDigest toolArtifact))
             , ("node.archive", digest (maybe "" artifactDigest nodeArchive))
             ]
-          bindingFor :: Word16 -> String -> ScenarioBinding
-          bindingFor caseNumber label =
+          bindingForOperation :: String -> Word16 -> String -> ScenarioBinding
+          bindingForOperation operation caseNumber label =
             ScenarioBinding
               1
               caseNumber
               scope
               generation
               (hex32 (randomBytes <> "run"))
-              (hex32 (randomBytes <> "operation" <> ByteString8.pack label))
+              operation
               (hex32 bootId)
               source
               (digest (ByteString8.unpack (hexSha256 binaryBytes)))
@@ -789,6 +834,7 @@ scenario selected projection fresh = do
       setFileMode fixtureBase 0o700
       fixtureBaseIdentity <- getSymbolicLinkStatus fixtureBase
       writeOutputLine ("Phase 1 fixture and recovery directory: " ++ fixtureBase)
+      hFlush stdout
       fixtureSnapshots <- newIORef []
       fixtureConfigs <- newIORef []
       let remember bucket path = do
@@ -801,20 +847,40 @@ scenario selected projection fresh = do
       (reconcile1, slicePeak) <-
         Async.concurrently
           (public ["control", "reconcile"] <* writeIORef stopMonitor True)
-          (sliceMonitor stopMonitor)
+          (sliceMonitor projection stopMonitor)
       status1 <- public ["control", "status"]
       ready1 <- independentClusterReady socket root cluster
       firstNode <- containerId socket (cluster ++ "-control-plane")
+      firstIntent <- observeKindOwnerFamilyIntent projection
       let firstSucceeded = case reconcile1 of Right (0, _, _) -> True; _ -> False
-      when (not firstSucceeded || not ready1 || firstNode == Nothing) $ do
-        cleanup <- public ["control", "delete", "--yes"]
-        snapshot <- captureFixtureTree fixtureBase
-        cleaned <- maybe (pure False) cleanupFixtureTree snapshot
-        writeOutputLine ("Phase 1 stopped after the initial reconcile; primary: " ++ take 4096 (show reconcile1)
-          ++ "; independent readiness: " ++ show ready1 ++ "; node identity observed: " ++ show (firstNode /= Nothing)
-          ++ "; cleanup: " ++ take 4096 (show cleanup) ++ "; empty fixture directory removed: " ++ show cleaned
-          ++ "; test root retained: " ++ root)
-        throwIO (ExitFailure 1)
+      (firstOperation, firstIdentifier) <- case (firstIntent, firstNode) of
+        (KindIntentMatches operation, Just identifier)
+          | firstSucceeded && ready1 && validNetworkIdentifier identifier -> pure (operation, identifier)
+        _ -> do
+          cleanup <- public ["control", "delete", "--yes"]
+          snapshot <- captureFixtureTree fixtureBase
+          cleaned <- maybe (pure False) cleanupFixtureTree snapshot
+          writeOutputLine
+            ( "Phase 1 stopped after the initial reconcile; primary: "
+                ++ take 4096 (show reconcile1)
+                ++ "; independent readiness: "
+                ++ show ready1
+                ++ "; node identity observed: "
+                ++ show (firstNode /= Nothing)
+                ++ "; owner-family intent: "
+                ++ show firstIntent
+                ++ "; cgroup sample: "
+                ++ show slicePeak
+                ++ "; cleanup: "
+                ++ take 4096 (show cleanup)
+                ++ "; empty fixture directory removed: "
+                ++ show cleaned
+                ++ "; test root retained: "
+                ++ root
+            )
+          throwIO (ExitFailure 1)
+      let bindingFor = bindingForOperation firstOperation
+      siblingCycle <- observeSecondScope executable projection randomBytes firstIdentifier
       -- Case 3 (ambient kubeconfig): a decoy API endpoint whose connections an
       -- outer listener counts; the public status runs with KUBECONFIG naming it.
       let decoyDir = fixtureBase </> "a01-03-decoy"
@@ -892,8 +958,13 @@ scenario selected projection fresh = do
       networkIntent <- observeKindIntent projection
       networkAgain <- case networkIntent of
         KindIntentMatches operation ->
-          observeNetworkEnforcementScoped projection operation ("prodbox-netrun-" ++ take 8 (hex32 randomBytes))
-        _ -> pure (EnforcementOutcome Nothing (Just "kind operation identity unavailable") EnforcementCleanupNotStarted)
+          observeNetworkEnforcementScoped
+            projection
+            operation
+            ("prodbox-netrun-" ++ take 8 (hex32 randomBytes))
+        _ ->
+          pure
+            (EnforcementOutcome Nothing (Just "kind operation identity unavailable") EnforcementCleanupNotStarted)
       networkFinished <- getMonotonicTimeNSec
       -- Case 2: a real Pod writes a random marker into the host root.
       let marker = hex32 ("marker" <> randomBytes)
@@ -1011,12 +1082,29 @@ scenario selected projection fresh = do
           nameUntouched = case (imagesBeforeName, imagesAfterName) of
             (Right (0, before, _), Right (0, after, _)) -> sort (words before) == sort (words after)
             _ -> False
+      originalIntent <- observeKindIntent projection
+      originalIdentity <- case originalIntent of
+        KindIntentMatches _ -> observeOperationIntentIdentity projection Nothing
+        _ -> pure Nothing
+      interrupted <-
+        interruptNodeTeardown
+          projection
+          firstOperation
+          firstIdentifier
+          (public ["control", "delete", "--yes"])
+      writeOutputLine ("Phase 1 teardown interruption after exact node removal: " ++ show interrupted)
       delete1 <- public ["control", "delete", "--yes"]
+      resumeAdmission <- observeKindTeardownAdmission projection
+      repeatedDelete1 <- public ["control", "delete", "--yes"]
       absent1 <- independentAbsence socket cluster
       retained1 <- independentHostData root generation nodeArchive
       cleanup1 <- getMonotonicTimeNSec
       -- Recreation on the same root and generation.
       reconcile2 <- public ["control", "reconcile"]
+      replacementIntent <- observeKindIntent projection
+      archivedIdentity <- case originalIntent of
+        KindIntentMatches original -> observeOperationIntentIdentity projection (Just original)
+        _ -> pure Nothing
       secondNode <- containerId socket (cluster ++ "-control-plane")
       read2 <- podOnHostRoot kubeconfig "marker-reader" "read -r x < /h/a01-02-marker; echo \"MARKER=$x\""
       pvRead <- pvPod kubeconfig "pv-reader" "read -r x < /d/pv-marker; echo MARKER=$x"
@@ -1031,6 +1119,19 @@ scenario selected projection fresh = do
       absent2 <- independentAbsence socket cluster
       retained2 <- independentHostData root generation nodeArchive
       cleanup2 <- getMonotonicTimeNSec
+      let succeeded result = either (const False) (\(code, _, _) -> code == 0) result
+      unless (succeeded delete2 && absent2) $ do
+        writeOutputLine
+          ( "Phase 1 stopped before foreign-network setup; replacement: "
+              ++ take 1200 (show reconcile2)
+              ++ "; cleanup: "
+              ++ take 1200 (show delete2)
+              ++ "; independent scoped absence: "
+              ++ show absent2
+              ++ "; retained root: "
+              ++ root
+          )
+        throwIO (ExitFailure 1)
       -- Case 3: a foreign network already holds the cluster's network name.
       let foreignName = cluster
           inspectForeign identifier =
@@ -1358,15 +1459,40 @@ scenario selected projection fresh = do
               && "Generation record: matches selected generation" `isInfixOf` s1
           claimedReady = "API /readyz ok" `isInfixOf` s1 && "nodes Ready 1 of 1" `isInfixOf` s1
           independentScope = retained1 && root == project </> ".test-data" </> scopeIdentifier scope && scopeApiPort scope > 0
+          matchedAdmission = resumeAdmission == KindIntentMatches firstOperation
           lifecycle =
             scenarioReport
               (bindingFor 1 "lifecycle")
               (ScenarioTiming started networkFinished cleanup1)
-              (if claimedReady && ready1 then PrimarySucceeded else PrimaryFailed)
-              (if absent1 then CleanupConfirmed else CleanupFailed)
-              ["context.scope", "cluster.ready", "cleanup.absence", "host.data-retained"]
-              [claimedScope, claimedReady, deleted delete1, "(present)" `isInfixOf` textOf status1 || retained1]
-              [independentScope, ready1, absent1, retained1]
+              ( if claimedReady && ready1 && interrupted && siblingReadyObserved siblingCycle
+                  then PrimarySucceeded
+                  else PrimaryFailed
+              )
+              ( if absent1 && deleted delete1 && deleted repeatedDelete1 && siblingCleaned siblingCycle
+                  then CleanupConfirmed
+                  else CleanupFailed
+              )
+              [ "context.scope"
+              , "cluster.ready"
+              , "context.simultaneous-scope"
+              , "teardown.interrupted-after-node"
+              , "cleanup.absence"
+              , "host.data-retained"
+              ]
+              [ claimedScope
+              , claimedReady
+              , siblingReconciled siblingCycle
+              , interrupted && deleted delete1
+              , deleted repeatedDelete1
+              , "(present)" `isInfixOf` textOf status1 || retained1
+              ]
+              [ independentScope
+              , ready1
+              , siblingReadyObserved siblingCycle
+              , interrupted && matchedAdmission
+              , absent1
+              , retained1
+              ]
           claimedNetwork = "Network policy enforcement: PROVEN" `isInfixOf` textOf reconcile1
           independentNetwork = maybe False enforcementProven (enforcementObservation networkAgain)
           network =
@@ -1395,18 +1521,31 @@ scenario selected projection fresh = do
                  )
           markerHost = either (const False) (== marker) hostBefore && either (const False) (== marker) hostAfter
           nodeReplaced = firstNode /= Nothing && secondNode /= Nothing && firstNode /= secondNode
-          archived = either (const False) (not . null) histories
-          claimedReplaced = ok reconcile2 || "Incomplete: operation" `isInfixOf` textOf reconcile2
+          archived = case (originalIntent, replacementIntent, originalIdentity) of
+            (KindIntentMatches original, KindIntentMatches replacement, Just identity) ->
+              original /= replacement && archivedIdentity == Just identity
+            _ -> False
+          claimedReplaced = case replacementIntent of
+            KindIntentMatches replacement ->
+              ok reconcile2
+                && ("Control reconcile completed for operation " ++ replacement ++ ".") `isInfixOf` textOf reconcile2
+            _ -> False
+          recreationBinding = case replacementIntent of
+            KindIntentMatches replacement -> bindingForOperation replacement 2 "recreation"
+            _ -> bindingFor 2 "recreation"
           recreation =
             scenarioReport
-              (bindingFor 2 "recreation")
+              recreationBinding
               (ScenarioTiming writeFinished recreated cleanup2)
-              (if markerClaimed && markerHost && ready2 then PrimarySucceeded else PrimaryFailed)
+              ( if claimedReplaced && archived && markerClaimed && markerHost && ready2
+                  then PrimarySucceeded
+                  else PrimaryFailed
+              )
               (if absent2 && retained2 && deleted delete2 then CleanupConfirmed else CleanupFailed)
               ["marker.survived-recreation", "node.recreated", "history.archived", "pv.bound-deterministically"]
               [ markerClaimed
               , claimedReplaced && ok written
-              , "history" `isInfixOf` "history" && archived
+              , archived
               , pvClaimed
               ]
               [markerHost, nodeReplaced, archived, pvIndependent]
@@ -1557,7 +1696,10 @@ scenario selected projection fresh = do
             scenarioReport
               (bindingFor 5 "capacity")
               (ScenarioTiming cleanup2 capacityDone capacityDone)
-              (if refusedForCapacity && capacityUntouched && ready1 then PrimarySucceeded else PrimaryFailed)
+              ( if refusedForCapacity && capacityUntouched && ready1 && usageWithinDeclared
+                  then PrimarySucceeded
+                  else PrimaryFailed
+              )
               CleanupConfirmed
               [ "capacity.admitted-when-sufficient"
               , "capacity.rejected-before-work"
@@ -1566,7 +1708,7 @@ scenario selected projection fresh = do
               , "capacity.limit-enforced"
               , "capacity.quota-enforced"
               ]
-              [claimedReady, refusedForCapacity, claimedReady, claimedReady, claimedReady, claimedReady]
+              [claimedReady, refusedForCapacity, usageWithinDeclared, claimedReady, claimedReady, claimedReady]
               [ ready1
               , capacityUntouched && not (ok capacityRun)
               , usageWithinDeclared
@@ -1593,7 +1735,7 @@ scenario selected projection fresh = do
         Just (preparation, importChecks) -> do
           finalArtifacts <- observeImportSnapshot projection
           let claims =
-                [True, True, True, True]
+                [True, freshImageObservation preparation == FreshImageAbsent, True, True]
                   ++ importAdverseClaims importChecks
                   ++ [True, ok reconcile1, ok reconcile2, deleted delete2 && ok recoverDelete]
               observed =
@@ -1777,33 +1919,68 @@ data SliceSample = SliceSample
   }
   deriving (Eq, Show)
 
-sliceDirectory :: FilePath
-sliceDirectory = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/prodboxkind.slice"
-
-readCounter :: FilePath -> IO (Maybe Integer)
-readCounter name = do
+readCounter :: FilePath -> FilePath -> IO (Maybe Integer)
+readCounter directory name = do
   contents <-
-    try (ByteString8.readFile (sliceDirectory </> name))
+    try (ByteString8.readFile (directory </> name))
       :: IO (Either IOException ByteString8.ByteString)
   pure $ case fmap (ByteString8.words) contents of
     Right [word] | Just (value, rest) <- ByteString8.readInteger word, ByteString8.null rest -> Just value
     _ -> Nothing
 
-sampleSlice :: IO (Maybe SliceSample)
-sampleSlice = do
-  peak <- readCounter "memory.peak"
-  limit <- readCounter "memory.max"
-  tasksPeak <- readCounter "pids.peak"
-  taskLimit <- readCounter "pids.max"
-  pure (SliceSample <$> peak <*> limit <*> tasksPeak <*> taskLimit)
-
--- | Poll until told to stop and keep the largest peaks seen.
-sliceMonitor :: IORef Bool -> IO (Maybe SliceSample)
-sliceMonitor stop = loop Nothing
+sampleSlice :: FilePath -> FilePath -> [FilePath] -> IO (Maybe SliceSample)
+sampleSlice directory controller allowed = do
+  measured <- try $ do
+    let path = directory </> controller
+        counter = readCounter directory
+    before <- getSymbolicLinkStatus path
+    groupsBefore <- onlyExpectedGroups
+    peak <- counter "memory.peak"
+    limit <- counter "memory.max"
+    tasksPeak <- counter "pids.peak"
+    taskLimit <- counter "pids.max"
+    groupsAfter <- onlyExpectedGroups
+    after <- getSymbolicLinkStatus path
+    pure $
+      if groupsBefore
+        && groupsAfter
+        && isDirectory before
+        && isDirectory after
+        && deviceID before == deviceID after
+        && fileID before == fileID after
+        then SliceSample <$> peak <*> limit <*> tasksPeak <*> taskLimit
+        else Nothing
+  pure (either (const Nothing) id (measured :: Either IOException (Maybe SliceSample)))
  where
-  loop best = do
+  onlyExpectedGroups = do
+    entries <- listDirectory directory
+    attributes <- traverse (getSymbolicLinkStatus . (directory </>)) entries
+    pure (all (`elem` allowed) [name | (name, status) <- zip entries attributes, isDirectory status])
+
+-- Sample the current manager's slice only while the exact operation's
+-- controller cgroup is visible. Keep the highest peaks across valid samples.
+sliceMonitor :: BootstrapProjection -> IORef Bool -> IO (Maybe SliceSample)
+sliceMonitor projection stop = do
+  uid <- getEffectiveUserID
+  loop ("/sys/fs/cgroup" ++ hostManagerControlGroupPath uid) Nothing Nothing
+ where
+  loop manager selected best = do
     finished <- readIORef stop
-    sample <- sampleSlice
+    binding <- case selected of
+      Just existing -> pure (Just existing)
+      Nothing -> do
+        intent <- observeKindOwnerFamilyIntent projection
+        pure $ case intent of
+          KindIntentMatches operation -> hostOperationField KindController <$> kindControllerOperationKey operation
+          _ -> Nothing
+    sample <- case binding of
+      Just field ->
+        let name = hostOperationFieldUnitName field
+         in sampleSlice
+              (manager </> name OperationSlice)
+              (name OperationController)
+              (map name [OperationController, OperationCommand, OperationTransport])
+      Nothing -> pure Nothing
     let merged = case (best, sample) of
           (Nothing, other) -> other
           (other, Nothing) -> other
@@ -1813,7 +1990,7 @@ sliceMonitor stop = loop Nothing
                 { samplePeakMemory = max (samplePeakMemory old) (samplePeakMemory new)
                 , samplePeakTasks = max (samplePeakTasks old) (samplePeakTasks new)
                 }
-    if finished then pure merged else threadDelay 100000 >> loop merged
+    if finished then pure merged else threadDelay 100000 >> loop manager binding merged
 
 -- | A real Pod with an explicit memory request and limit. Returns what the
 -- API server reports afterwards: phase, the container's terminated reason and
@@ -2033,6 +2210,147 @@ containerId socket name = do
       _ -> Nothing
     _ -> Nothing
 
+data SiblingLifecycle = SiblingLifecycle
+  { siblingReconciled :: !Bool
+  , siblingReadyObserved :: !Bool
+  , siblingCleaned :: !Bool
+  }
+
+-- Run a second explicitly selected scope while the first is live. The
+-- sibling gets its own retained root, generation, ports, and imported bytes.
+-- Only the sibling's recorded resources are eligible for its public cleanup.
+observeSecondScope
+  :: FilePath -> BootstrapProjection -> ByteString.ByteString -> String -> IO SiblingLifecycle
+observeSecondScope executable first entropy firstIdentifier =
+  case (bootstrapNodeArtifact first, bootstrapKindTool first, kindPlanHostPorts (bootstrapKindPlan first)) of
+    (Just node, Just kind, [firstApi, firstHttp, firstHttps]) -> do
+      let choosePort base width offset original =
+            let preferred = base + seedPort offset `mod` width
+             in if preferred == original then base + (preferred - base + 1) `mod` width else preferred
+          api = choosePort 40000 20000 0 firstApi
+          http = choosePort 20000 10000 4 firstHttp
+          https = choosePort 30000 10000 8 firstHttps
+      case deploymentScope project Test identifier api of
+        Left _ -> refused "invalid sibling scope"
+        Right scope -> do
+          before <- observeScopeRoot scope
+          if before /= Right ScopeRootAbsent
+            then refused "sibling root already present or unobservable"
+            else runSibling scope node kind [api, http, https]
+    _ -> refused "initial test artifacts or ports unavailable"
+ where
+  firstScope = bootstrapScope first
+  firstRoot = scopeRoot firstScope
+  project = takeDirectory (takeDirectory firstRoot)
+  socket = bootstrapRuntimeSocket first
+  identifier = "run-" ++ hex32 (entropy <> "phase-01 sibling")
+  generation = hex32 (entropy <> "phase-01 sibling generation")
+  seedPort offset =
+    ByteString.foldl' (\value byte -> value * 31 + fromIntegral byte) 0 $
+      ByteString.take 4 (ByteString.drop offset entropy)
+  refused reason = do
+    writeOutputLine ("Phase 1 second live scope " ++ identifier ++ " refused: " ++ reason)
+    pure (SiblingLifecycle False False False)
+  runSibling scope node kind ports = case ports of
+    [api, http, https] -> do
+      let root = scopeRoot scope
+          cluster = scopeKindName scope
+          selected = root </> "config" </> "prodbox.dhall"
+          select = (["--config", selected] ++)
+          public arguments = run executable (select arguments)
+          metadata artifact =
+            [artifactPath artifact, artifactDigest artifact, show (artifactMaximumBytes artifact)]
+          input =
+            ByteString8.pack $
+              unlines $
+                [ project
+                , socket
+                , "test"
+                , identifier
+                , generation
+                , show api
+                , kindPlanNodeImage (bootstrapKindPlan first)
+                ]
+                  ++ [show http, "30080", show https, "30443", "127.0.0.1"]
+                  ++ metadata node
+                  ++ metadata kind
+      writeOutputLine ("Phase 1 second live scope: " ++ selected)
+      hFlush stdout
+      setup <- runWithInput executable (select ["config", "setup", "--fresh-test"]) input
+      projection <- readBootstrapProjection selected
+      case projection of
+        Right observed
+          | success setup
+          , bootstrapScope observed == scope
+          , Text.unpack (bootstrapRootGeneration observed) == generation
+          , bootstrapRuntimeSocket observed == socket
+          , kindPlanHostPorts (bootstrapKindPlan observed) == ports -> do
+              nodeImported <-
+                public ["control", "import-artifact", "node-archive", firstRoot </> artifactPath node]
+              kindImported <- public ["control", "import-artifact", "kind-tool", firstRoot </> artifactPath kind]
+              if not (success nodeImported && success kindImported)
+                then refused "sibling artifact import incomplete"
+                else do
+                  reconciled <- public ["control", "reconcile"]
+                  intent <- observeKindOwnerFamilyIntent observed
+                  secondIdentifier <- containerId socket (cluster ++ "-control-plane")
+                  secondReady <- independentClusterReady socket root cluster
+                  firstReady <- independentClusterReady socket firstRoot (scopeKindName firstScope)
+                  firstBinding <- observeBinding firstScope
+                  secondBinding <- observeBinding scope
+                  let distinct = case secondIdentifier of
+                        Just nodeId -> validNetworkIdentifier nodeId && nodeId /= firstIdentifier
+                        Nothing -> False
+                      coexisted = firstReady && secondReady && distinct && firstBinding && secondBinding
+                  cleanup <- public ["control", "delete", "--yes"]
+                  absent <- independentAbsence socket cluster
+                  firstAfter <- containerId socket (scopeKindName firstScope ++ "-control-plane")
+                  firstRetained <- independentClusterReady socket firstRoot (scopeKindName firstScope)
+                  let cleaned = success cleanup && absent && firstRetained && firstAfter == Just firstIdentifier
+                  writeOutputLine
+                    ( "Phase 1 second scope "
+                        ++ show intent
+                        ++ ", Docker node "
+                        ++ show secondIdentifier
+                        ++ ", simultaneous isolation observed "
+                        ++ show coexisted
+                        ++ ", cleanup and initial node retained "
+                        ++ show cleaned
+                    )
+                  unless (success reconciled && cleaned) $
+                    writeOutputLine
+                      ( "Phase 1 second scope reconcile: "
+                          ++ take 1200 (show reconciled)
+                          ++ "; cleanup: "
+                          ++ take 1200 (show cleanup)
+                      )
+                  pure (SiblingLifecycle (success reconciled) coexisted cleaned)
+        _ -> refused "public setup or scope read-back incomplete"
+    _ -> refused "invalid sibling port projection"
+  success (Right (0, _, _)) = True
+  success _ = False
+  observeBinding scope = do
+    let root = scopeRoot scope
+        cluster = scopeKindName scope
+        kubectl arguments =
+          run "/usr/bin/kubectl" (["--kubeconfig", root </> "control" </> "kubeconfig"] ++ arguments)
+        exact expected (Right (0, output, _)) = lines output == [expected]
+        exact _ _ = False
+    context <- kubectl ["config", "current-context"]
+    address <- kubectl ["config", "view", "--minify", "-o", "jsonpath={.clusters[0].cluster.server}"]
+    mount <-
+      runDocker
+        socket
+        [ "inspect"
+        , "--format"
+        , "{{range .Mounts}}{{if eq .Destination \"/var/lib/prodbox\"}}{{.Source}}{{end}}{{end}}"
+        , cluster ++ "-control-plane"
+        ]
+    pure $
+      exact ("kind-" ++ cluster) context
+        && exact ("https://127.0.0.1:" ++ show (scopeApiPort scope)) address
+        && exact root mount
+
 -- A real Pod that mounts the node's host-root path and runs one bash command.
 podOnHostRoot :: FilePath -> String -> String -> IO (Either String (Int, String, String))
 podOnHostRoot kubeconfig name script = do
@@ -2100,6 +2418,72 @@ independentClusterReady socket root cluster = do
       (Right (0, readyLines, _), Right (0, running, _)) -> lines readyLines == ["True"] && lines running == ["true"]
       _ -> False
 
+-- Cancel the bounded public child as soon as its initial node-removal
+-- receipt appears. Verify the boundary independently after it has stopped:
+-- the bound receipt and exact Docker 404 must agree, and the owned volume
+-- must still be present. A completed child or an unobserved boundary fails
+-- the scenario. The caller always attempts the supported public recovery.
+interruptNodeTeardown
+  :: BootstrapProjection -> String -> String -> IO (Either String (Int, String, String)) -> IO Bool
+interruptNodeTeardown projection operation identifier remove = do
+  proposed <- observeRecordedKindNodeCreateIntent projection operation stillOwned
+  admission <- observeKindTeardownAdmission projection
+  case (proposed, admission) of
+    (NodeCreateRecoveryRecorded intent, KindIntentMissing) -> do
+      let receipt = observeKindNodeRemoveResult projection intent identifier stillOwned
+      before <- withScopeRootDescriptor (bootstrapScope projection) $ \root sameRoot -> do
+        present <- probeArchiveRecord root "kind-node-remove-result.json"
+        (&&) (present == Just False) <$> sameRoot
+      if before /= Right True
+        then pure False
+        else Async.withAsync remove $ \child -> do
+          boundary <- timeout 180000000 (waitForReceipt child receipt)
+          case boundary of
+            Just True -> do
+              Async.cancel child
+              verifyBoundary intent receipt
+            _ -> pure False
+    _ -> pure False
+ where
+  socket = bootstrapRuntimeSocket projection
+  stillOwned = (== KindIntentMatches operation) <$> observeKindOwnerFamilyIntent projection
+  waitForReceipt child receipt = do
+    finished <- Async.poll child
+    case finished of
+      Just _ -> pure False
+      Nothing -> do
+        present <- doesFileExist (scopeRoot (bootstrapScope projection) </> "kind-node-remove-result.json")
+        confirmed <- if present then priorNodeRemovalRecorded <$> receipt else pure False
+        if confirmed then pure True else threadDelay 10000 >> waitForReceipt child receipt
+  verifyBoundary intent receipt = do
+    result <- receipt
+    admission <- observeKindTeardownAdmission projection
+    if not (priorNodeRemovalRecorded result) || admission /= KindIntentMatches operation
+      then pure False
+      else do
+        absent <-
+          withConnectedDockerInfo 15000000 socket $ \session (DockerConnectedInfo daemon (DockerPeer _ _ _ peer)) stable -> do
+            missing <- readDockerSessionContainerNotFound session identifier
+            unchanged <- stable
+            pure (DockerDaemonObserved daemon peer == kindNodeCreateDaemon intent && missing && unchanged)
+        volume <- verifyVolume
+        unchanged <- stillOwned
+        pure (absent == DockerPeerCompleted (DockerConnectedInfoCompleted True) && volume && unchanged)
+  verifyVolume = case kindNodeVarVolumeName
+    (bootstrapKindPlan projection)
+    (Text.unpack (bootstrapRootGeneration projection))
+    operation of
+    Nothing -> pure False
+    Just name -> do
+      listed <-
+        timeout 15000000 $
+          runDocker
+            socket
+            ["volume", "inspect", "--format", "{{.Name}} {{index .Labels \"io.prodbox.operation\"}}", name]
+      pure $ case listed of
+        Just (Right (0, output, _)) -> words output == [name, operation]
+        _ -> False
+
 -- No container, volume or network of this identity remains, read from the
 -- Docker CLI.
 independentAbsence :: FilePath -> String -> IO Bool
@@ -2110,10 +2494,41 @@ independentAbsence socket cluster = do
     runDocker socket ["ps", "-a", "-q", "--filter", "name=^/" ++ cluster ++ "-control-plane$"]
   volumes <- runDocker socket ["volume", "ls", "-q", "--filter", "name=" ++ cluster]
   networks <- runDocker socket ["network", "ls", "-q", "--filter", "name=^" ++ cluster ++ "$"]
-  pure $ case (containers, namedContainers, volumes, networks) of
-    (Right (0, c, _), Right (0, named, _), Right (0, v, _), Right (0, n, _)) ->
-      null (words c) && null (words named) && null (words v) && null (words n)
+  bridge <- runDocker socket ["network", "ls", "-q", "--no-trunc", "--filter", "name=^bridge$"]
+  pure $ case (containers, namedContainers, volumes, networks, bridge) of
+    (Right (0, c, _), Right (0, named, _), Right (0, v, _), Right (0, n, _), Right (0, control, _)) ->
+      case words control of
+        [controlId] -> validNetworkIdentifier controlId && all (null . words) [c, named, v, n]
+        _ -> False
     _ -> False
+
+-- Compare the exact inode before teardown and after its move into history.
+-- Both observations use the validated selected root and no-follow reads.
+observeOperationIntentIdentity
+  :: BootstrapProjection -> Maybe String -> IO (Maybe (Integer, Integer))
+observeOperationIntentIdentity projection archivedOperation = do
+  observed <- withScopeRootDescriptor (bootstrapScope projection) $ \root sameRoot -> do
+    inspected <- try $ case archivedOperation of
+      Nothing -> inspect root sameRoot
+      Just operation -> withDirectory root "history" $ \history ->
+        withDirectory history operation $ \archive -> inspect archive sameRoot
+    pure (either (const Nothing) id (inspected :: Either IOException (Maybe (Integer, Integer))))
+  pure (either (const Nothing) id observed)
+ where
+  readFlags = Posix.defaultFileFlags {Posix.nofollow = True, Posix.cloexec = True, Posix.nonBlock = True}
+  withDirectory root name =
+    bracket
+      (Posix.openFdAt (Just root) name Posix.ReadOnly (readFlags {Posix.directory = True}))
+      Posix.closeFd
+  inspect directory sameRoot =
+    bracket (Posix.openFdAt (Just directory) "kind-intent.json" Posix.ReadOnly readFlags) Posix.closeFd $ \record -> do
+      status <- getFdStatus record
+      owner <- getEffectiveUserID
+      unchanged <- sameRoot
+      pure $
+        if unchanged && isRegularFile status && fileOwner status == owner && fileMode status .&. 0o077 == 0
+          then Just (toInteger (deviceID status), toInteger (fileID status))
+          else Nothing
 
 -- Host data is read directly from the retained root.
 independentHostData :: FilePath -> String -> Maybe ArtifactDeclaration -> IO Bool

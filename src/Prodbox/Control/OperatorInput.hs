@@ -22,9 +22,11 @@ readSecretLine prompt = do
   line <-
     if terminal
       then do
-        writeDiagnostic prompt
         prior <- hGetEcho stdin
-        bracket_ (hSetEcho stdin False) (hSetEcho stdin prior >> writeDiagnosticLine "") readOneLine
+        bracket_
+          (hSetEcho stdin False)
+          (hSetEcho stdin prior >> writeDiagnosticLine "")
+          (writeDiagnostic prompt >> readOneLine)
       else readOneLine
   pure $ case fmap (filter (`notElem` ("\r\n " :: String))) line of
     Just text | not (null text) -> Just (ByteString8.pack text)

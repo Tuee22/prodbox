@@ -147,7 +147,10 @@ decodePublicationBirth bytes = do
       (version, kind, original) <-
         either (const Nothing) Just (deserialiseOrFail (Lazy.fromStrict payload))
       unless
-        (version == (1 :: Word8) && kind `elem` ([1, 2, 3, 4, 5] :: [Word8]) && birthPrefix `BS.isPrefixOf` original)
+        ( version == (1 :: Word8)
+            && kind `elem` ([1, 2, 3, 4, 5] :: [Word8])
+            && birthPrefix `BS.isPrefixOf` original
+        )
         Nothing
       PublicationBirth _ key ending observed identity <- decodeRegistrationBirth original
       let selected = case kind of

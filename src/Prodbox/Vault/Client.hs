@@ -52,6 +52,7 @@ module Prodbox.Vault.Client
   , TransitKeyRequest (..)
   , PkiIssueCertificateRequest (..)
   , PkiIssueCertificateResponse (..)
+  , VerifiedPkiCertificate (..)
   , PkiIssuerListing (..)
   , PkiRoleInfo (..)
   , KubernetesAuthConfigRequest (..)
@@ -159,17 +160,22 @@ import Data.Aeson.KeyMap qualified as AesonKeyMap
 import Data.Aeson.Types (Pair, Parser)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as ByteString
 import Data.ByteString.Base64 qualified as B64
+import Data.Char (isHexDigit)
 import Data.List (isInfixOf)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
+import Data.PEM (PEM (..), pemParseBS)
 import Data.String (fromString)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word64)
+import Data.X509 qualified as X509
 import Network.HTTP.Types.Header (Header)
+import Numeric (readHex)
 import Numeric.Natural (Natural)
 import Prodbox.Bootstrap.Broker.PgpBoundary
   ( PreparedInitRecipients
@@ -1563,18 +1569,63 @@ instance ToJSON PkiIssueCertificateRequest where
       , "ttl" .= pkiIssueCertificateTtl req
       ]
 
--- | Decoded Vault PKI issue response. The certificate is PEM text at
--- @.data.certificate@; private key material is intentionally ignored here.
-newtype PkiIssueCertificateResponse = PkiIssueCertificateResponse
-  { pkiIssueCertificatePem :: Text
+-- | Private key material from the issuance envelope is never retained.
+data PkiIssueCertificateResponse = PkiIssueCertificateResponse
+  { pkiIssueCertificatePem :: !Text
+  , pkiIssueCertificateSerial :: !Text
   }
   deriving (Eq, Show)
 
 instance FromJSON PkiIssueCertificateResponse where
   parseJSON =
     withObject "PkiIssueCertificateResponse" $ \o -> do
-      d <- o .: "data"
-      PkiIssueCertificateResponse <$> d .: "certificate"
+      body <- o .: "data"
+      certificate <- body .: "certificate"
+      serial <- body .: "serial_number"
+      case parsePkiSerial serial of
+        Just _ -> pure (PkiIssueCertificateResponse certificate (Text.toLower serial))
+        Nothing -> fail "The Vault certificate serial is malformed"
+
+data VerifiedPkiCertificate = VerifiedPkiCertificate
+  { verifiedPkiCertificateSerial :: !Text
+  , verifiedPkiCertificateDer :: !ByteString
+  }
+
+newtype PkiCertificateReadBack = PkiCertificateReadBack Text
+
+instance FromJSON PkiCertificateReadBack where
+  parseJSON =
+    withObject "PkiCertificateReadBack" $ \o -> do
+      body <- o .: "data"
+      PkiCertificateReadBack <$> body .: "certificate"
+
+parsePkiSerial :: Text -> Maybe Integer
+parsePkiSerial serial =
+  let octets = Text.splitOn ":" serial
+   in case readHex (Text.unpack (Text.concat octets)) of
+        [(number, "")]
+          | number > 0
+          , length octets <= 20
+          , all (\octet -> Text.length octet == 2 && Text.all isHexDigit octet) octets ->
+              Just number
+        _ -> Nothing
+
+verifyPkiCertificate
+  :: PkiIssueCertificateResponse -> PkiCertificateReadBack -> Either HttpError VerifiedPkiCertificate
+verifyPkiCertificate issued (PkiCertificateReadBack stored) = do
+  submitted <- parse (pkiIssueCertificatePem issued)
+  observed <- parse stored
+  certificate <- either (const invalid) Right (X509.decodeSignedCertificate observed)
+  let serial = pkiIssueCertificateSerial issued
+  if observed == submitted
+    && parsePkiSerial serial == Just (X509.certSerial (X509.getCertificate certificate))
+    then Right (VerifiedPkiCertificate serial observed)
+    else invalid
+ where
+  parse pem = case pemParseBS (TextEncoding.encodeUtf8 pem) of
+    Right [PEM "CERTIFICATE" [] contents] | not (ByteString.null contents) -> Right contents
+    _ -> invalid
+  invalid = Left (HttpDecode "The issued and stored Vault certificates could not be matched")
 
 -- | @POST \/v1\/auth\/kubernetes\/config@ request.
 newtype KubernetesAuthConfigRequest = KubernetesAuthConfigRequest
@@ -1873,6 +1924,7 @@ vaultControlPlaneResponseMaximumBytes = 128 * 1024
 
 data VaultControlPlaneResponsePurpose
   = VaultRpcKeyResponse
+  | VaultPkiCertificateResponse
   | VaultKvMetadataResponse
   | VaultCallerLoginResponse
   | VaultServiceTokenSelfResponse
@@ -1880,6 +1932,7 @@ data VaultControlPlaneResponsePurpose
 vaultControlPlaneResponseLabel :: VaultControlPlaneResponsePurpose -> String
 vaultControlPlaneResponseLabel purpose = case purpose of
   VaultRpcKeyResponse -> "Vault RPC key"
+  VaultPkiCertificateResponse -> "Vault PKI certificate"
   VaultKvMetadataResponse -> "Vault control-plane KV metadata"
   VaultCallerLoginResponse -> "Vault Kubernetes login"
   VaultServiceTokenSelfResponse -> "Vault service-token lookup"
@@ -1945,23 +1998,37 @@ decodeTransitSignature encoded =
               }
     _ -> Left (HttpDecode "Transit signature envelope is malformed")
 
--- | @POST \/v1\/pki\/issue\/\<role\>@ — issue a short-lived test certificate
--- from an already-configured PKI role.
+-- | Issue from the selected role, then independently read the stored
+-- public certificate from Vault by its validated serial.
 vaultPkiIssueTestCertificate
   :: VaultAddress
   -> VaultToken
   -> Text
   -> Text
   -> Text
-  -> IO (Either HttpError Text)
+  -> IO (Either HttpError VerifiedPkiCertificate)
 vaultPkiIssueTestCertificate address token role commonName ttl = do
   result <-
-    httpPostJsonWithHeaders
+    httpRequestRawBounded
       defaultHttpConfig
-      [vaultTokenHeader token]
+      vaultControlPlaneResponseMaximumBytes
+      "POST"
+      [vaultTokenHeader token, ("Content-Type", "application/json")]
       (vaultUrl address ("/v1/pki/issue/" ++ Text.unpack role))
-      (PkiIssueCertificateRequest commonName ttl)
-  pure (fmap pkiIssueCertificatePem result)
+      (Just (encode (PkiIssueCertificateRequest commonName ttl)))
+  case decodeControlPlaneVaultResponse VaultPkiCertificateResponse result of
+    Left failure -> pure (Left failure)
+    Right issued -> do
+      fetched <-
+        httpRequestRawBounded
+          defaultHttpConfig
+          vaultControlPlaneResponseMaximumBytes
+          "GET"
+          []
+          (vaultUrl address ("/v1/pki/cert/" ++ Text.unpack (pkiIssueCertificateSerial issued)))
+          Nothing
+      pure
+        (decodeControlPlaneVaultResponse VaultPkiCertificateResponse fetched >>= verifyPkiCertificate issued)
 
 -- | List configured PKI issuers through Vault's bounded list-query form.
 vaultListPkiIssuers

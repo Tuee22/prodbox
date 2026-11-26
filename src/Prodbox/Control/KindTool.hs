@@ -94,6 +94,7 @@ import Prodbox.Control.DockerConnectedInfo
 import Prodbox.Control.DockerIdentity (DockerDaemonObservation (..))
 import Prodbox.Control.DockerPeer (DockerPeer (..), DockerPeerResult (..))
 import Prodbox.Control.ImageIdObservation (ImageIdObservation (..), validImageId)
+import Prodbox.Control.KindControllerRequest (kindControllerOperationKey)
 import Prodbox.Control.KindDockerEndpoint
   ( KindDockerBrokerExit (..)
   , KindDockerEndpointResult (..)
@@ -118,7 +119,7 @@ import Prodbox.Control.KindDockerWorkerRoots
   , workerRequest
   , workerScratch
   )
-import Prodbox.Control.KindLease (KindOperationOutcome (..))
+import Prodbox.Control.KindLease (KindOperationOutcome (..), retryBusyKindOperationUntil)
 import Prodbox.Control.KindNetworkIntent
   ( KindNetworkAttemptObservation (..)
   , KindNetworkRecoveryObservation (..)
@@ -180,29 +181,32 @@ import Prodbox.Control.SealedTool
   , sealedToolRuntimePlan
   , withSealedTool
   )
-import Prodbox.Control.KindControllerRequest (kindControllerOperationKey)
 import Prodbox.Subprocess
   ( HostSubprocessError
-  , OperationSubprocesses
-  , OperationSubprocessError
-  , OperationProcessOutput
-  , operationProcessExitCode
-  , operationSubprocessWindow
-  , operationSubprocessExecutionKey
-  , operationSubprocessKind
-  , captureConfinedKindOperationCommandBefore
   , KindHostSubprocessPlacement
+  , OperationProcessOutput
+  , OperationSubprocessError
+  , OperationSubprocesses
   , OwnedSubprocessError
   , OwnedSubprocessLimits
   , ProcessOutput (..)
   , Subprocess (..)
+  , captureConfinedKindOperationCommandBefore
   , captureOwnedSubprocess
   , kindWorkerSandboxReady
   , mkKindWorkerSandbox
+  , operationProcessExitCode
+  , operationSubprocessExecutionKey
+  , operationSubprocessKind
+  , operationSubprocessWindow
   , withPreparedConfinedKindHostSubprocess
   , withPreparedKindHostSubprocess
   )
-import Prodbox.Subprocess.SystemdIdentity (HostControllerKind (KindController), HostExecutionKey, hostExecutionWorkEnd)
+import Prodbox.Subprocess.SystemdIdentity
+  ( HostControllerKind (KindController)
+  , HostExecutionKey
+  , hostExecutionWorkEnd
+  )
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.IO.Error (IOErrorType, ioeGetErrorType)
@@ -370,7 +374,8 @@ confirmedKindWorkerNode observation = case observation of
       KindDockerMarkerClear
         | operationProcessExitCode output == ExitSuccess
             && validImageId ("sha256:" ++ identifier)
-            && brokerSettled broker -> Just identifier
+            && brokerSettled broker ->
+            Just identifier
     _ -> Nothing
   brokerSettled broker = case broker of
     KindDockerBrokerCancelled -> True
@@ -863,17 +868,27 @@ runConfinedKindNodeOnHost placement budgets limits =
   runConfinedKindNode (LegacyKindRunner placement limits) budgets
 
 data KindNodeRunner
-  = LegacyKindRunner !KindHostSubprocessPlacement !OwnedSubprocessLimits
+  = -- The legacy preflight can refuse before it needs either launch capability.
+    LegacyKindRunner KindHostSubprocessPlacement OwnedSubprocessLimits
   | FamilyKindRunner !OperationSubprocesses
 
 runConfinedKindNode
-  :: KindNodeRunner -> KindWorkerSnapshots -> BootstrapProjection -> String
-  -> [Fd] -> Fd -> Fd -> Fd -> DockerSession -> DockerConnectedInfo -> IO Bool
+  :: KindNodeRunner
+  -> KindWorkerSnapshots
+  -> BootstrapProjection
+  -> String
+  -> [Fd]
+  -> Fd
+  -> Fd
+  -> Fd
+  -> DockerSession
+  -> DockerConnectedInfo
+  -> IO Bool
   -> (KindNodeCreateIntent -> DockerSession -> IO Bool -> IO Bool)
   -> (KindNodeCreateIntent -> String -> DockerSession -> IO Bool -> IO Bool)
   -> IO (KindOperationOutcome (KindDockerEndpointResult ConfinedKindNodeAttempt))
 runConfinedKindNode runner budgets bootstrap operation readRoots nullDevice kind client session info peerStable admitCreate admitStart =
-  withRecoveredKindDockerWorkerRoots bootstrap operation $ \roots rootsStable -> do
+  acquire $ withRecoveredKindDockerWorkerRoots bootstrap operation $ \roots rootsStable -> do
     stable <- recentStable 400000000 ((&&) <$> rootsStable <*> peerStable)
     let worker = scopeRoot (bootstrapScope bootstrap) </> ("kind-worker-" ++ operation)
         scratch = worker </> "scratch"
@@ -939,9 +954,20 @@ runConfinedKindNode runner budgets bootstrap operation readRoots nullDevice kind
                                 observeResult ConfinedNodeFamilyObserved $
                                   captureConfinedKindOperationCommandBefore
                                     (hostExecutionWorkEnd (operationSubprocessWindow processes))
-                                    processes budgets sandbox kind client suppliedInput command
+                                    processes
+                                    budgets
+                                    sandbox
+                                    kind
+                                    client
+                                    suppliedInput
+                                    command
         _ -> pure ConfinedNodeToolMismatch
       other -> pure (ConfinedNodeProposalRefused other)
+ where
+  acquire action = case runner of
+    LegacyKindRunner {} -> action
+    FamilyKindRunner processes ->
+      retryBusyKindOperationUntil (hostExecutionWorkEnd (operationSubprocessWindow processes)) action
 
 -- | Reuse a passing stability observation for a short window. A failing
 -- observation is never retained, so a detected change always propagates. The
@@ -1008,11 +1034,23 @@ runVerifiedConfinedKindNodeOnHost placement budgets limits =
   runVerifiedConfinedKindNode (LegacyKindRunner placement limits) budgets
 
 runVerifiedConfinedKindNode
-  :: KindNodeRunner -> KindWorkerSnapshots -> BootstrapProjection -> String -> String -> Integer
-  -> [Fd] -> Fd -> DockerSession -> DockerConnectedInfo -> IO Bool
+  :: KindNodeRunner
+  -> KindWorkerSnapshots
+  -> BootstrapProjection
+  -> String
+  -> String
+  -> Integer
+  -> [Fd]
+  -> Fd
+  -> DockerSession
+  -> DockerConnectedInfo
+  -> IO Bool
   -> (KindNodeCreateIntent -> DockerSession -> IO Bool -> IO Bool)
   -> (KindNodeCreateIntent -> String -> DockerSession -> IO Bool -> IO Bool)
-  -> IO (ConfinedKindSnapshotsObservation (KindOperationOutcome (KindDockerEndpointResult ConfinedKindNodeAttempt)))
+  -> IO
+       ( ConfinedKindSnapshotsObservation
+           (KindOperationOutcome (KindDockerEndpointResult ConfinedKindNodeAttempt))
+       )
 runVerifiedConfinedKindNode runner budgets bootstrap operation clientDigest clientMaximum readRoots nullDevice session info peerStable admitCreate admitStart =
   withConfinedKindSnapshots budgets bootstrap clientDigest clientMaximum $ \kind client artifactStable ->
     runConfinedKindNode
@@ -1148,23 +1186,54 @@ runArchiveBoundConfinedKindNodeOnHost limit placement budgets limits =
 -- | Family-owned counterpart; all artifact, daemon, broker and admission
 -- observations are the same as the legacy path, with a distinct result type.
 runArchiveBoundConfinedKindNodeOnOperation
-  :: Int -> OperationSubprocesses -> KindWorkerSnapshots -> BootstrapProjection
-  -> String -> String -> Integer -> [Fd] -> Fd
+  :: Int
+  -> OperationSubprocesses
+  -> KindWorkerSnapshots
+  -> BootstrapProjection
+  -> String
+  -> String
+  -> Integer
+  -> [Fd]
+  -> Fd
   -> (KindNodeCreateIntent -> DockerSession -> IO Bool -> IO Bool)
   -> (KindNodeCreateIntent -> String -> DockerSession -> IO Bool -> IO Bool)
   -> IO (InspectedArchiveResult ArchiveBoundConfinedKindNode)
 runArchiveBoundConfinedKindNodeOnOperation limit processes budgets bootstrap operation clientDigest clientMaximum readRoots nullDevice admitCreate admitStart
-  | not (kindFamilyBindingMatches (operationSubprocessKind processes) (operationSubprocessExecutionKey processes) operation) =
+  | not
+      ( kindFamilyBindingMatches
+          (operationSubprocessKind processes)
+          (operationSubprocessExecutionKey processes)
+          operation
+      ) =
       withInspectedNodeArchive bootstrap $ \_ _ _ -> pure ConfinedNodeFamilyBindingMismatch
-  | otherwise = runArchiveBoundConfinedKindNode limit (FamilyKindRunner processes) budgets bootstrap operation clientDigest clientMaximum readRoots nullDevice admitCreate admitStart
+  | otherwise =
+      runArchiveBoundConfinedKindNode
+        limit
+        (FamilyKindRunner processes)
+        budgets
+        bootstrap
+        operation
+        clientDigest
+        clientMaximum
+        readRoots
+        nullDevice
+        admitCreate
+        admitStart
 
 kindFamilyBindingMatches :: HostControllerKind -> HostExecutionKey -> String -> Bool
 kindFamilyBindingMatches family key operation =
   family == KindController && kindControllerOperationKey operation == Just key
 
 runArchiveBoundConfinedKindNode
-  :: Int -> KindNodeRunner -> KindWorkerSnapshots -> BootstrapProjection
-  -> String -> String -> Integer -> [Fd] -> Fd
+  :: Int
+  -> KindNodeRunner
+  -> KindWorkerSnapshots
+  -> BootstrapProjection
+  -> String
+  -> String
+  -> Integer
+  -> [Fd]
+  -> Fd
   -> (KindNodeCreateIntent -> DockerSession -> IO Bool -> IO Bool)
   -> (KindNodeCreateIntent -> String -> DockerSession -> IO Bool -> IO Bool)
   -> IO (InspectedArchiveResult ArchiveBoundConfinedKindNode)

@@ -12,7 +12,11 @@ module Prodbox.Test.Phase03Runner
   ) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (IOException, try)
+import Control.Concurrent.Async qualified as Async
+import Control.Exception (IOException, onException, try)
+import Control.Monad (void, when)
+import Data.Aeson ((.=))
+import Data.Aeson qualified as Aeson
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.List (isInfixOf, isPrefixOf, sort)
@@ -44,14 +48,26 @@ import Prodbox.Control.JournalStore
   , appendSettlement
   , historyMarkerPath
   , journalDirectory
+  , observeJournal
   )
+import Prodbox.Control.KindIntent
+  ( KindIntentObservation (KindIntentMatches)
+  , observeKindOwnerFamilyIntent
+  )
+import Prodbox.Control.TestRunCleanup (registerSettledTestRun)
 import Prodbox.ControlPlane.ListenPort (authorityJournalReadPort, controlPlaneListenPort)
+import Prodbox.Lifecycle.AdmissionHistory
+  ( AdmissionVerdict (..)
+  , RecoveryReason (RecoveryHistoryMissing)
+  , classifyAdmission
+  )
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
   , ProcessOutput (..)
   , Subprocess (..)
   , captureSubprocessWithInputBounded
   )
+import Prodbox.Test.FixtureTree (captureFixtureTree, cleanupFixtureTree)
 import Prodbox.Test.Phase01Runner
   ( digest
   , hex32
@@ -81,7 +97,10 @@ import System.Directory
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
-import System.Posix.Files (setFileMode)
+import System.IO.Error (isDoesNotExistError)
+import System.Posix.Directory qualified as PosixDirectory
+import System.Posix.Files (getSymbolicLinkStatus, setFileMode)
+import Text.Read (readMaybe)
 
 runPhase03Scenario :: FilePath -> IO ExitCode
 runPhase03Scenario selected = do
@@ -91,9 +110,28 @@ runPhase03Scenario selected = do
     Right projection
       | scopeEnvironment (bootstrapScope projection) /= Test ->
           refuse "the scenario runner accepts only a test identity"
-      | otherwise -> scenario selected projection
+      | otherwise -> do
+          let root = scopeRoot (bootstrapScope projection)
+          vacant <-
+            and
+              <$> traverse
+                (pathAbsent . (root </>))
+                [ "authority"
+                , "authority-journal"
+                , "authority-journal-custody"
+                , "authority-journal-intent.json"
+                , "authority-journal-binding.json"
+                ]
+          if vacant
+            then scenario selected projection
+            else refuse "the selected fixture already has Authority history or its paths are unobservable"
  where
   refuse message = writeOutputLine ("phase-03 scenario refused: " ++ message) >> pure (ExitFailure 2)
+
+pathAbsent :: FilePath -> IO Bool
+pathAbsent path = do
+  observed <- try (getSymbolicLinkStatus path)
+  pure (either isDoesNotExistError (const False) observed)
 
 scenario :: FilePath -> BootstrapProjection -> IO ExitCode
 scenario selected projection = do
@@ -183,39 +221,98 @@ scenario selected projection = do
       absent <- independentAbsence (bootstrapRuntimeSocket projection) cluster
       retained <- independentHostData root generation (bootstrapNodeArtifact projection)
       case1Done <- getMonotonicTimeNSec
-      -- Case 2: a durable journal, read directly, drives the verdict.
+      -- Case 2: the private synthetic journal exercises the classification.
+      -- The public CLI still has a kubeconfig for the now absent API and must
+      -- refuse mutation when it cannot independently observe the Authority.
+      let fixtureVerdict = classifyAdmission <$> observeJournal root
       intent <- appendIntent root "op-a"
-      statusPending <- public ["control", "lifecycle-status"]
+      let fixtureRoot = root </> "authority"
+          fixtureOwned = absent && retained && authorityAbsentAfterOrdinary && intent == Right ()
+      when fixtureOwned $ do
+        setFileMode fixtureRoot 0o700
+        setFileMode journal 0o700
+        setFileMode (historyMarkerPath root) 0o600
+      statusPending <- fixtureVerdict
+      offlineAuthority <- public ["control", "lifecycle-status"]
       afterIntent <- listJournal
       deletePending <- public ["control", "delete", "--yes"]
       retainedPending <- independentHostData root generation (bootstrapNodeArtifact projection)
       ordinaryPending <- public ["delete", "--yes"]
       afterOrdinaryPending <- listJournal
       settled <- appendSettlement root "op-a"
-      statusSettled <- public ["control", "lifecycle-status"]
+      statusSettled <- fixtureVerdict
       afterSettle <- listJournal
       markerPresent <- doesFileExist (historyMarkerPath root)
       renameDirectory journal (journal ++ ".away")
-      statusMissing <- public ["control", "lifecycle-status"]
+      statusMissing <- fixtureVerdict
       markerStill <- doesFileExist (historyMarkerPath root)
       deleteUnknown <- public ["control", "delete", "--yes"]
       retainedUnknown <- independentHostData root generation (bootstrapNodeArtifact projection)
       renameDirectory (journal ++ ".away") journal
       ByteString8.writeFile (journal </> "00000050-bad.json") "not a record"
-      statusCorrupt <- public ["control", "lifecycle-status"]
+      when fixtureOwned (setFileMode (journal </> "00000050-bad.json") 0o600)
+      statusCorrupt <- fixtureVerdict
       ByteString8.writeFile
         (journal </> "00000050-bad.json")
         "{\"schema_version\":1,\"operation\":\"op-b\",\"state\":\"unresolved\"}"
-      statusLate <- public ["control", "lifecycle-status"]
+      statusLate <- fixtureVerdict
       setFileMode journal 0o000
-      statusUnreadable <- public ["control", "lifecycle-status"]
+      statusUnreadable <- fixtureVerdict
       setFileMode journal 0o700
-      statusRestored <- public ["control", "lifecycle-status"]
+      statusRestored <- fixtureVerdict
+      -- These entries were written by the adverse fixture before any real
+      -- Authority existed. Retire only its unchanged private tree.
+      fixtureRetired <-
+        if fixtureOwned && retainedPending && retainedUnknown
+          then captureFixtureTree fixtureRoot >>= maybe (pure False) cleanupFixtureTree
+          else pure False
       case2Done <- getMonotonicTimeNSec
       -- Case 3: the Authority runtime on kind. The adverse control comes first:
       -- before Vault is initialized the deployment must not report success.
-      _ <- public ["control", "reconcile"]
-      _ <- public ["control", "services"]
+      reconcile2 <-
+        if fixtureRetired
+          then public ["control", "reconcile"]
+          else pure (Left "the pre-Authority test journal fixture did not settle")
+      operationBefore <- observeKindOwnerFamilyIntent projection
+      operationEvidence <- case operationBefore of
+        KindIntentMatches operation -> do
+          listed <- public ["operations", "list"]
+          shown <- public ["operations", "show", operation]
+          let resultPath = root </> "kind-family-dispatch-result.json"
+              observeResult = try (ByteString.readFile resultPath) :: IO (Either IOException ByteString.ByteString)
+              observeNodes = kubectl ["get", "nodes", "-o", "jsonpath={range .items[*]}{.metadata.uid}{\"\\n\"}{end}"]
+              resume = public ["operations", "resume", operation]
+          resultBefore <- observeResult
+          nodesBefore <- observeNodes
+          (resumed, duplicate) <- Async.concurrently resume resume
+          resultAfter <- observeResult
+          nodesAfter <- observeNodes
+          let foreignId = if operation == replicate 32 '0' then replicate 32 '1' else replicate 32 '0'
+              exactResult = case (resultBefore, resultAfter) of
+                (Right before, Right after) -> not (ByteString.null before) && before == after
+                _ -> False
+              exactNode = case (nodesBefore, nodesAfter) of
+                (Right (0, before, _), Right (0, after, _)) -> length (lines before) == 1 && before == after
+                _ -> False
+          foreignResume <- public ["operations", "resume", foreignId]
+          lateCancel <- public ["operations", "cancel", operation]
+          current <- observeKindOwnerFamilyIntent projection
+          ready <- independentClusterReady (bootstrapRuntimeSocket projection) root cluster
+          pure
+            ( ok listed
+                && ok shown
+                && ok resumed
+                && ok duplicate
+                && failed foreignResume
+                && failed lateCancel
+            , all (isInfixOf operation . textOf) [listed, shown, resumed, duplicate]
+                && current == operationBefore
+                && exactResult
+                && exactNode
+                && ready
+            )
+        _ -> pure (False, False)
+      services2 <- public ["control", "services"]
       earlyDeploy <- public ["control", "authority-deploy"]
       let password = ByteString8.pack (take 24 (hex32 (randomBytes <> "operator-password")) ++ "\n")
       initRun <- publicWithInput ["control", "broker-init"] password
@@ -256,16 +353,46 @@ scenario selected projection = do
           , "mc alias set local http://minio:9000 \"$MINIO_USER\" \"$MINIO_PASSWORD\" >/dev/null 2>&1 && mc ls local/prodbox-state >/dev/null && mc admin user list local | wc -l"
           ]
       statusViaAuthority <- public ["control", "lifecycle-status"]
-      -- A journal the Authority cannot positively identify (its genesis record is
-      -- missing) is recovery-required through the Authority, and blocks deletion.
-      renameFile
-        (root </> "authority-journal" </> "genesis.json")
-        (root </> "authority-journal" </> "genesis.json.away")
-      statusNoGenesis <- public ["control", "lifecycle-status"]
-      deleteNoGenesis <- public ["delete", "--yes"]
-      renameFile
-        (root </> "authority-journal" </> "genesis.json.away")
-        (root </> "authority-journal" </> "genesis.json")
+      aggregateStatus <- public ["status"]
+      deletionPlan <- public ["plan", "delete"]
+      -- A readable stale host projection remains deliberately empty while
+      -- the actual Authority's proof of journal identity is withdrawn.
+      projectionVacant <- pathAbsent fixtureRoot
+      stalePrepared <-
+        if fixtureRetired && projectionVacant && ok statusViaAuthority
+          then do
+            created <-
+              try
+                (PosixDirectory.createDirectory fixtureRoot 0o700 >> PosixDirectory.createDirectory journal 0o700)
+                :: IO (Either IOException ())
+            case created of
+              Right () -> captureFixtureTree fixtureRoot
+              Left _ -> pure Nothing
+          else pure Nothing
+      staleProjection <- fixtureVerdict
+      -- A missing genesis from the actual Authority requires recovery and
+      -- must block deletion despite the stale host projection.
+      let genesis = root </> "authority-journal" </> "genesis.json"
+          withdrawn = genesis ++ ".away"
+          restoreGenesis = try (renameFile withdrawn genesis) :: IO (Either IOException ())
+      withdrawnGenesis <- try (renameFile genesis withdrawn) :: IO (Either IOException ())
+      genesisGap <- case withdrawnGenesis of
+        Left _ -> pure Nothing
+        Right () -> do
+          (status, deletion, removal, live) <-
+            ( (,,,)
+                <$> public ["control", "lifecycle-status"]
+                <*> public ["delete", "--yes"]
+                <*> public ["control", "delete", "--yes"]
+                <*> independentClusterReady (bootstrapRuntimeSocket projection) root cluster
+            )
+              `onException` void restoreGenesis
+          restoredGenesis <- restoreGenesis
+          pure $ case restoredGenesis of
+            Left _ -> Nothing
+            Right () -> Just (status, deletion, removal, live)
+      staleAfter <- fixtureVerdict
+      staleRetired <- maybe (pure False) cleanupFixtureTree stalePrepared
       statusGenesisBack <- public ["control", "lifecycle-status"]
       genesisSeen <- doesFileExist (root </> "authority-journal" </> "genesis.json")
       mirrorText <-
@@ -340,11 +467,12 @@ scenario selected projection = do
           answered needle result = case result of
             Right (0, out, _) -> needle `isInfixOf` out
             _ -> False
-      _ <- kubectl ["-n", "prodbox-management", "delete", "pod", "vault", "--wait=true"]
-      _ <- public ["control", "services"]
+      sealCycle <- public ["control", "backup"]
       sealedHealth <- vaultHealth
       readySealed <- readyzProbe
       statusSealed <- public ["control", "lifecycle-status"]
+      deletionPlanSealed <- public ["plan", "delete"]
+      reconcilePlanSealed <- public ["plan", "reconcile"]
       deleteSealed <- public ["delete", "--yes"]
       _ <- kubectl ["-n", "bootstrap-broker", "scale", "deploy/bootstrap-broker", "--replicas=0"]
       _ <-
@@ -368,7 +496,7 @@ scenario selected projection = do
       readerSealed <- journalRead readerToken
       foreignSealed <- journalRead foreignToken
       anonymousSealed <- journalRead ""
-      _ <-
+      restarted <-
         kubectl
           [ "-n"
           , "lifecycle-authority"
@@ -378,7 +506,7 @@ scenario selected projection = do
           , "app.kubernetes.io/name=prodbox-lifecycle-authority"
           , "--wait=true"
           ]
-      threadDelay 25000000
+      when (ok restarted) (threadDelay 25000000)
       restartedReady <- readyzProbe
       readerRestarted <- journalRead readerToken
       restartedLogs <-
@@ -393,15 +521,40 @@ scenario selected projection = do
           , "jsonpath={range .items[*]}{.status.containerStatuses[0].ready}{\";\"}{end}"
           ]
       unsealAgain <- publicWithInput ["control", "broker-unseal"] password
-      recoveredReady <- waitFor 40 readyzProbe
+      recoveredReady <-
+        if ok deployRun && ok unsealAgain
+          then waitFor 40 readyzProbe
+          else readyzProbe
       healthAfter <- vaultHealth
       case4Done0 <- getMonotonicTimeNSec
-      -- Exact cleanup of this scenario's own state: settle the journal record the
-      -- harness left unresolved, delete through the public command and observe.
-      _ <- appendSettlement root "op-b"
+      -- Exact cleanup of the real Authority scope through its public command.
+      removalOperation <- observeKindOwnerFamilyIntent projection
       cleanup3 <- public ["control", "delete", "--yes"]
+      cleanupReplay <-
+        if ok cleanup3
+          then public ["control", "delete", "--yes"]
+          else pure (Left "initial Authority-backed removal did not complete")
       absent3 <- independentAbsence (bootstrapRuntimeSocket projection) cluster
       retained3 <- independentHostData root generation (bootstrapNodeArtifact projection)
+      fenceBytes <-
+        try (ByteString.readFile (root </> "authority-journal-custody" </> "control-removal.json"))
+          :: IO (Either IOException ByteString.ByteString)
+      let fenceMatches = case (removalOperation, fenceBytes) of
+            (KindIntentMatches operation, Right bytes) ->
+              Aeson.decodeStrict bytes
+                == Just
+                  ( Aeson.object
+                      [ "schema_version" .= (1 :: Int)
+                      , "kind_name" .= cluster
+                      , "root_generation" .= generation
+                      , "kind_operation" .= operation
+                      ]
+                  )
+            _ -> False
+          settledCleanup =
+            if ok cleanup3 && ok cleanupReplay && absent3 && retained3 && fenceMatches
+              then CleanupConfirmed
+              else CleanupFailed
       case3Done <- getMonotonicTimeNSec
       let case1 =
             scenarioReport
@@ -435,7 +588,7 @@ scenario selected projection = do
               (bindingFor 2 "journal")
               (ScenarioTiming case1Done case2Done case2Done)
               (if intent == Right () && settled == Right () then PrimarySucceeded else PrimaryFailed)
-              CleanupConfirmed
+              (if fixtureRetired then CleanupConfirmed else CleanupFailed)
               [ "journal.unresolved-intent-is-pending"
               , "journal.settlement-allows-no-change"
               , "journal.missing-history-requires-recovery"
@@ -446,23 +599,26 @@ scenario selected projection = do
               , "journal.unknown-blocks-delete"
               , "ordinary-delete.refused-while-pending"
               ]
-              [ "admitted-pending" `isInfixOf` textOf statusPending
-              , "admitted-settled" `isInfixOf` textOf statusSettled
-              , "journal is missing although history existed" `isInfixOf` textOf statusMissing
-              , "recovery-required" `isInfixOf` textOf statusCorrupt
-              , "admitted-pending" `isInfixOf` textOf statusLate
-              , "recovery-required" `isInfixOf` textOf statusUnreadable
+              [ statusPending == AdmittedPending ["op-a"]
+              , statusSettled == AdmittedSettled
+              , statusMissing == RecoveryRequired RecoveryHistoryMissing
+              , requiresRecovery statusCorrupt
+              , statusLate == AdmittedPending ["op-b"]
+              , requiresRecovery statusUnreadable
               , "Refused" `isInfixOf` textOf deletePending
               , "Refused" `isInfixOf` textOf deleteUnknown
               , "Refused" `isInfixOf` textOf ordinaryPending
               ]
-              [ afterIntent == ["00000001-op-a.json"] && ok statusPending
-              , length afterSettle == 2 && markerPresent && ok statusSettled
-              , markerStill && failed statusMissing
-              , failed statusCorrupt
-              , ok statusLate
-              , failed statusUnreadable && ok statusRestored
-              , failed deletePending && retainedPending && afterIntent == ["00000001-op-a.json"]
+              [ afterIntent == ["00000001-op-a.json"] && statusPending == AdmittedPending ["op-a"]
+              , length afterSettle == 2 && markerPresent && statusSettled == AdmittedSettled
+              , markerStill && statusMissing == RecoveryRequired RecoveryHistoryMissing
+              , requiresRecovery statusCorrupt
+              , statusLate == AdmittedPending ["op-b"]
+              , requiresRecovery statusUnreadable && statusRestored == statusLate
+              , failed offlineAuthority
+                  && failed deletePending
+                  && retainedPending
+                  && afterIntent == ["00000001-op-a.json"]
               , failed deleteUnknown && retainedUnknown && markerStill
               , failed ordinaryPending && afterOrdinaryPending == afterIntent
               ]
@@ -471,14 +627,18 @@ scenario selected projection = do
               (bindingFor 3 "authority")
               (ScenarioTiming case2Done case3Done case3Done)
               (if ok deployRun then PrimarySucceeded else PrimaryFailed)
-              (if ok cleanup3 && absent3 && retained3 then CleanupConfirmed else CleanupFailed)
+              settledCleanup
               [ "authority.refuses-before-vault-init"
               , "authority.runs-with-one-ready-pod"
               , "authority.answers-own-readiness"
               , "authority.store-bucket-and-user-exist"
               , "authority.journal-mirror-initialized-on-retained-root"
               , "authority.public-status-asks-the-authority"
+              , "authority.aggregate-status-and-delete-plan-use-the-fresh-journal"
               , "authority.missing-genesis-is-recovery-required-and-blocks-delete"
+              , "authority.stale-host-projection-cannot-license-delete-or-control-removal"
+              , "authority.control-removal-resumes-the-recorded-scope-without-the-api"
+              , "control.concurrent-resume-preserves-the-original-control-identity"
               ]
               [ "NOT completed" `isInfixOf` textOf earlyDeploy
               , "authority-ready: ok" `isInfixOf` textOf deployRun
@@ -486,7 +646,11 @@ scenario selected projection = do
               , ok deployRun
               , ok deployRun
               , ok deployRun
+              , ok aggregateStatus && ok deletionPlan
               , ok deployRun
+              , ok deployRun
+              , ok cleanup3 && ok cleanupReplay
+              , fst operationEvidence
               ]
               [ failed earlyDeploy && ok initRun && ok unsealRun && ok baselineRun
               , case podReady of
@@ -496,7 +660,7 @@ scenario selected projection = do
                   Right (0, out, _) -> "200 OK" `isInfixOf` out && "ready" `isInfixOf` out
                   _ -> False
               , case storeObjects of
-                  Right (0, out, _) -> (read (filter (`elem` ("0123456789" :: String)) out) :: Int) >= 2
+                  Right (0, out, _) -> maybe False (>= 2) (readMaybe out :: Maybe Int)
                   _ -> False
               , genesisSeen
                   && either (const False) (\bytes -> "\"operations\":[]" `isInfixOf` ByteString8.unpack bytes) mirrorText
@@ -504,21 +668,39 @@ scenario selected projection = do
                   && "never-admitted" `isInfixOf` textOf statusViaAuthority
                   && "source: the Authority" `isInfixOf` textOf statusViaAuthority
                   && "read at 20" `isInfixOf` textOf statusViaAuthority
-              , failed statusNoGenesis
-                  && "recovery-required" `isInfixOf` textOf statusNoGenesis
-                  && failed deleteNoGenesis
-                  && ok statusGenesisBack
-                  && "never-admitted" `isInfixOf` textOf statusGenesisBack
+              , all (isInfixOf "Deletion decision: satisfied" . textOf) [aggregateStatus, deletionPlan]
+                  && all (isInfixOf "source: the Authority" . textOf) [aggregateStatus, deletionPlan]
+              , case genesisGap of
+                  Just (statusNoGenesis, deleteNoGenesis, _, _) ->
+                    failed statusNoGenesis
+                      && "recovery-required" `isInfixOf` textOf statusNoGenesis
+                      && failed deleteNoGenesis
+                      && ok statusGenesisBack
+                      && "never-admitted" `isInfixOf` textOf statusGenesisBack
+                  Nothing -> False
+              , staleRetired
+                  && staleProjection == NeverAdmitted
+                  && staleAfter == NeverAdmitted
+                  && case genesisGap of
+                    Just (statusNoGenesis, deleteNoGenesis, removeNoGenesis, live) ->
+                      failed deleteNoGenesis
+                        && failed removeNoGenesis
+                        && live
+                        && "source: the Authority" `isInfixOf` textOf statusNoGenesis
+                        && "recovery-required" `isInfixOf` textOf statusNoGenesis
+                    Nothing -> False
+              , absent3 && retained3 && fenceMatches
+              , snd operationEvidence
               ]
       let case4 =
             scenarioReport
               (bindingFor 4 "sealed-vault")
-              (ScenarioTiming case2Done case4Done0 case4Done0)
+              (ScenarioTiming case2Done case4Done0 case3Done)
               ( if either (const False) (\(code, _, _) -> code == 0) healthAfter
                   then PrimarySucceeded
                   else PrimaryFailed
               )
-              CleanupConfirmed
+              settledCleanup
               [ "sealed.vault-is-sealed"
               , "sealed.full-service-not-ready-while-sealed"
               , "sealed.restart-refused-while-sealed"
@@ -529,8 +711,9 @@ scenario selected projection = do
               , "sealed.public-status-asks-the-authority"
               , "sealed.ordinary-delete-nothing-to-delete-vault-stays-sealed"
               , "sealed.status-answers-with-the-broker-down"
+              , "sealed.fresh-plan-answers-without-initializing-vault"
               ]
-              [ ok unsealAgain
+              [ ok sealCycle
               , True
               , True
               , ok unsealAgain
@@ -540,6 +723,11 @@ scenario selected projection = do
               , "source: the Authority" `isInfixOf` textOf statusSealed
               , "Nothing to delete" `isInfixOf` textOf deleteSealed
               , "source: the Authority" `isInfixOf` textOf statusBrokerDown
+              , ok deletionPlanSealed
+                  && "Deletion decision: satisfied" `isInfixOf` textOf deletionPlanSealed
+                  && ok reconcilePlanSealed
+                  && "Reconciliation decision: observe and continue retained control operation"
+                    `isInfixOf` textOf reconcilePlanSealed
               ]
               [ either (const False) (\(_, out, _) -> sealedIn out) sealedHealth
               , not (readyzOk readySealed)
@@ -555,8 +743,42 @@ scenario selected projection = do
                   && either (const False) (\(_, out, _) -> sealedIn out) sealedHealth
               , ok deleteSealed && either (const False) (\(_, out, _) -> sealedIn out) healthAfterDelete
               , ok statusBrokerDown && "never-admitted" `isInfixOf` textOf statusBrokerDown
+              , "source: the Authority" `isInfixOf` textOf deletionPlanSealed
+                  && "source: the Authority" `isInfixOf` textOf reconcilePlanSealed
+                  && either (const False) (\(_, out, _) -> sealedIn out) healthAfterDelete
               ]
       writeOutputLine ("authority pod state: " ++ show (fmap (\(_, out, _) -> out) podReady))
+      writeOutputLine
+        ( "authority bootstrap: replacement reconcile="
+            ++ take 1200 (either id (\(_, out, err) -> out ++ err) reconcile2)
+            ++ " | service failures="
+            ++ failedSteps services2
+            ++ " | Authority deployment failures="
+            ++ failedSteps deployRun
+            ++ " | missing-genesis fixture restored="
+            ++ show (maybe False (const True) genesisGap)
+            ++ " | sealed backup-cycle failures="
+            ++ failedSteps sealCycle
+        )
       reports <- mapM (publishScenario project) [case1, case2, case3, case4]
       writeOutputLine (unlines (map fst reports))
-      pure (if all snd reports then ExitSuccess else ExitFailure 1)
+      registered <- case removalOperation of
+        KindIntentMatches operation
+          | all snd reports ->
+              registerSettledTestRun projection operation (scenarioRunId (bindingFor 3 "authority"))
+        _ -> pure False
+      when (all snd reports && not registered) $
+        writeOutputLine "The successful scenario did not register its exact test root for cleanup."
+      pure (if registered then ExitSuccess else ExitFailure 1)
+ where
+  failedSteps =
+    take 250
+      . unwords
+      . map (takeWhile (/= ':'))
+      . filter (isInfixOf "NOT completed")
+      . lines
+      . either (const "") (\(_, out, err) -> out ++ err)
+
+requiresRecovery :: AdmissionVerdict -> Bool
+requiresRecovery (RecoveryRequired _) = True
+requiresRecovery _ = False

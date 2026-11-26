@@ -18,6 +18,7 @@ module Prodbox.Test.Phase02Runner
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async qualified as Async
 import Control.Exception (IOException, try)
+import Data.Aeson ((.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -31,6 +32,8 @@ import Data.Word (Word16)
 import GHC.Clock (getMonotonicTimeNSec)
 import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.CLI.Output (writeOutputLine)
+import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Capacity.Render qualified as CapacityRender
 import Prodbox.Config.BootstrapProjection
   ( ArtifactDeclaration (artifactDigest)
   , BootstrapProjection
@@ -49,7 +52,14 @@ import Prodbox.Config.DeploymentScope
   , scopeRoot
   )
 import Prodbox.Config.KindPlan (renderKindConfig)
+import Prodbox.Control.KindIntent (KindIntentObservation (KindIntentMatches), observeKindIntent)
+import Prodbox.Control.KindNodeBootstrap
+  ( JournalRecordObservation (JournalRecordObserved)
+  , observeJournalRecord
+  , writeJournalRecord
+  )
 import Prodbox.Control.ManagementPolicy (managementNamespace)
+import Prodbox.Control.NetworkEnforcement (createdNamespaceUid)
 import Prodbox.ControlPlane.ListenPort (controlPlaneListenPort)
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
@@ -57,6 +67,7 @@ import Prodbox.Subprocess
   , Subprocess (..)
   , captureSubprocessWithInputBounded
   )
+import Prodbox.Test.FixtureTree (captureFixtureTree, cleanupFixtureTree)
 import Prodbox.Test.Phase01Runner
   ( digest
   , hex32
@@ -77,15 +88,16 @@ import Prodbox.Test.ScenarioEvidence
   , ScenarioTiming (..)
   )
 import System.Directory
-  ( createDirectoryIfMissing
+  ( createDirectory
+  , createDirectoryIfMissing
   , doesDirectoryExist
   , doesFileExist
-  , removePathForcibly
   )
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, (</>))
 import System.IO (IOMode (ReadWriteMode), SeekMode (AbsoluteSeek), hSeek, withBinaryFile)
+import System.IO.Temp (createTempDirectory)
 import System.Posix.Files (setFileMode)
 
 runPhase02Scenario :: FilePath -> IO ExitCode
@@ -163,38 +175,49 @@ scenario selected projection = do
                   , processStderr output
                   )
               Left failure -> Left (show failure)
-          -- The prompt exercised on a real pseudo-terminal: a synthetic wrong key is
-          -- typed at the prompt; the terminal transcript must show the prompt, must
-          -- not echo the typed text, and Vault must refuse the key.
+          -- Feed the protected key through stdin into a real terminal. Only
+          -- classifications leave the helper, never its terminal transcript.
           ptyProbeScript =
             unlines
-              [ "import os, pty, sys, time, select"
-              , "secret = b'SYNTHETICPROBEKEY0123456789abcdefghijklmnopqrst'"
+              [ "import os, pty, select, signal, sys, time"
+              , "secret = sys.stdin.buffer.readline(129).rstrip(bytes([10]))"
+              , "if not secret or len(secret) > 128: sys.exit(2)"
               , "pid, fd = pty.fork()"
               , "if pid == 0:"
               , "    os.execv(sys.argv[1], sys.argv[1:])"
-              , "out = b''; sent = False; t0 = time.time()"
-              , "while time.time() - t0 < 90:"
-              , "    r, _, _ = select.select([fd], [], [], 1)"
-              , "    if r:"
-              , "        try: d = os.read(fd, 4096)"
-              , "        except OSError: break"
-              , "        if not d: break"
-              , "        out += d"
-              , "        if not sent and b'unseal key' in out.lower():"
-              , "            os.write(fd, secret + b'\\n'); sent = True"
-              , "sys.stdout.write(('PROMPTED' if sent else 'NOPROMPT') + chr(10))"
-              , "sys.stdout.write(('ECHOED' if secret in out else 'NOECHO') + chr(10))"
-              , "sys.stdout.write(('REFUSED' if b'Refused' in out else 'NOREFUSAL') + chr(10))"
+              , "out = b''; sent = False; deadline = time.monotonic() + 90"
+              , "while time.monotonic() < deadline and len(out) < 65536:"
+              , "    readable, _, _ = select.select([fd], [], [], 1)"
+              , "    if not readable: continue"
+              , "    try: data = os.read(fd, 4096)"
+              , "    except OSError: break"
+              , "    if not data: break"
+              , "    out += data"
+              , "    if not sent and b'unseal key' in out.lower():"
+              , "        os.write(fd, secret + bytes([10])); sent = True"
+              , "os.close(fd)"
+              , "finished, status = os.waitpid(pid, os.WNOHANG)"
+              , "while not finished and time.monotonic() < deadline:"
+              , "    time.sleep(0.05)"
+              , "    finished, status = os.waitpid(pid, os.WNOHANG)"
+              , "if not finished:"
+              , "    try: os.killpg(pid, signal.SIGKILL)"
+              , "    except ProcessLookupError: pass"
+              , "    os.waitpid(pid, os.WNOHANG)"
+              , "    sys.exit(3)"
+              , "if sent: sys.stdout.write('PROMPTED' + chr(10))"
+              , "if secret not in out: sys.stdout.write('NOECHO' + chr(10))"
+              , "if b'were not consulted' in out: sys.stdout.write('NO_MINIO_CONTACT' + chr(10))"
+              , "sys.exit(0 if os.waitstatus_to_exitcode(status) == 0 else 1)"
               ]
-          ptyProtected =
+          ptyProtected key =
             captureSubprocessWithInputBounded
               (BoundedSubprocessLimits 1024 (64 * 1024) (64 * 1024) 120000000)
-              ByteString.empty
+              (key <> "\n")
               ( Subprocess
                   "/usr/bin/python3"
                   ["-I", "-c", ptyProbeScript, executable, "--config", selected, "control", "protected-unlock"]
-                  (Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent"), ("XDG_RUNTIME_DIR", "/run/user/1000")])
+                  (Just [("PATH", "/usr/bin:/bin"), ("HOME", "/nonexistent")])
                   Nothing
               )
           kubectl seconds arguments input = do
@@ -272,6 +295,10 @@ scenario selected projection = do
               )
               bytes
           removeObject = mcExec ("mc rm --force " ++ object) ByteString.empty
+          readerPolicy action =
+            mcExec
+              ("mc admin policy " ++ action ++ " local unlock-object-read --user \"$MINIO_READER_USER\" >/dev/null")
+              ByteString.empty
           readerScript script =
             kubectl
               90
@@ -380,6 +407,19 @@ scenario selected projection = do
       services1 <- public ["control", "services"]
       ready1 <- independentClusterReady (bootstrapRuntimeSocket projection) root cluster
       healthBeforeInit <- health
+      let sentinel = "phase-02-read-refusal-control"
+          commandSucceeded result = case result of Right (0, _) -> True; _ -> False
+      emptyBucket <- mcExec "mc mb --ignore-existing local/prodbox-bootstrap >/dev/null" ByteString.empty
+      sentinelStored <- putObject sentinel
+      accessRemoved <- readerPolicy "detach"
+      readerDenied <- readerScript "mc cat reader/prodbox-bootstrap/vault-unlock-test.json >/dev/null"
+      deniedInit <- public ["control", "unlock"]
+      healthAfterDenied <- health
+      retainedSentinel <- fetchObject
+      accessRestored <- readerPolicy "attach"
+      sentinelRemoved <- removeObject
+      sentinelAbsent <- not <$> objectPresent
+      deniedInitIntent <- doesFileExist (root </> "vault-test-init-intent.json")
       -- Case 1: initialize once, keep the unlock object, round trip.
       unlock1 <- public ["control", "unlock"]
       healthAfterInit <- health
@@ -422,39 +462,27 @@ scenario selected projection = do
               (take 44 (hex32 (randomBytes <> "protected-wrong") ++ hex32 (randomBytes <> "pw2")) ++ "\n")
           )
       afterWrongProtected <- health
-      ptyResult <- ptyProtected
-      let ptyText = either show processStdout ptyResult
-      afterPty <- health
-      operatorKey <- pure (savedBundle >>= unsealKeyOf)
+      let operatorKey = savedBundle >>= unsealKeyOf
       _ <-
         kubectl 90 ["-n", managementNamespace, "delete", "pod", "minio", "--wait=true"] ByteString.empty
       minioDown <- minioPodGone
-      protectedRun <-
-        publicWithInput ["control", "protected-unlock"] (maybe ByteString.empty (<> "\n") operatorKey)
+      protectedRun <- traverse ptyProtected operatorKey
+      let (protectedCompleted, ptyFlags) = case protectedRun of
+            Just (Right output) -> (processExitCode output == ExitSuccess, lines (processStdout output))
+            _ -> (False, [])
+          protectedPrompt = protectedCompleted && all (`elem` ptyFlags) ["PROMPTED", "NOECHO"]
       afterProtected <- health
       services7 <- public ["control", "services"]
       settle
       case3Done <- getMonotonicTimeNSec
-      -- Case 6: concurrent secret workers against the real services, within the
-      -- Pods' declared limits; nothing may fail, restart or be OOM-killed.
-      let workerValue index = take 24 (hex32 (randomBytes <> ByteString8.pack ("worker-" ++ show index)))
-          workers = [1 .. 8] :: [Int]
-      concurrentWrites <-
-        Async.mapConcurrently
-          ( \index ->
-              withToken
-                ( "vault kv put -mount=secret phase2/worker-"
-                    ++ show index
-                    ++ " marker="
-                    ++ workerValue index
-                    ++ " >/dev/null && echo done"
-                )
-          )
-          workers
-      concurrentReads <-
-        Async.mapConcurrently
-          (\index -> withToken ("vault kv get -mount=secret -field=marker phase2/worker-" ++ show index))
-          workers
+      -- Start both bounded workers before releasing their client input.
+      bundleForWorkers <- fetchObject
+      let workerToken = do
+            Aeson.Object fields <- bundleForWorkers >>= Aeson.decodeStrict
+            Aeson.String token <- KeyMap.lookup "client_token" fields
+            pure (ByteString8.pack (Text.unpack token ++ "\n"))
+      (workersConcurrent, workersCompleted, workersClean) <-
+        runBoundedVaultWorkers projection kubectl randomBytes workerToken
       podState <-
         kubectl
           60
@@ -682,14 +710,13 @@ scenario selected projection = do
       afterWrongKey <- health
       _ <- maybe (pure (Left "no saved bundle")) putObject savedBundle
       -- production policy is refused before any unlock material is read
-      let productionDirectory = project </> ".build" </> "a02-production"
-          productionAnchor = project </> ".build" </> "a02-productionproject"
-      createDirectoryIfMissing False (project </> ".build")
-      setFileMode (project </> ".build") 0o700
-      createDirectoryIfMissing False productionAnchor
+      let fixtureBase = project </> ".build"
+      createDirectoryIfMissing False fixtureBase
+      productionDirectory <- createTempDirectory fixtureBase "a02-protected-"
+      let productionAnchor = productionDirectory </> "project"
+          productionConfig = productionDirectory </> "selected.dhall"
+      createDirectory productionAnchor
       setFileMode productionAnchor 0o700
-      createDirectoryIfMissing False productionDirectory
-      setFileMode productionDirectory 0o700
       selectedText <- ByteString.readFile selected
       let productionText =
             replaceBytes
@@ -700,12 +727,11 @@ scenario selected projection = do
                   ("project_anchor = \"" <> ByteString8.pack productionAnchor <> "\"")
                   selectedText
               )
-      ByteString.writeFile (productionDirectory </> "selected.dhall") productionText
-      setFileMode (productionDirectory </> "selected.dhall") 0o600
-      productionRun <-
-        run executable ["--config", productionDirectory </> "selected.dhall", "control", "unlock"]
-      removePathForcibly productionDirectory
-      removePathForcibly productionAnchor
+      ByteString.writeFile productionConfig productionText
+      setFileMode productionConfig 0o600
+      fixture <- captureFixtureTree productionDirectory
+      productionRun <- run executable ["--config", productionConfig, "control", "unlock"]
+      productionRetired <- maybe (pure False) cleanupFixtureTree fixture
       -- recover: unlock succeeds again from the restored object
       -- an upload interrupted after initialization: the unlock object is gone but
       -- the private pending record holds the bundle; the next unlock continues it
@@ -736,6 +762,7 @@ scenario selected projection = do
       retained2 <- independentHostData root generation (bootstrapNodeArtifact projection)
       done <- getMonotonicTimeNSec
       let sameCluster a b = fmap healthCluster a == fmap healthCluster b && fmap healthCluster a /= Just ""
+          uninitializedWith h = fmap (not . healthInitialized) h == Just True
           unsealedWith h = fmap (\x -> healthInitialized x && not (healthSealed x)) h == Just True
           sealedWith h = fmap (\x -> healthInitialized x && healthSealed x) h == Just True
           cluster1 = healthAfterInit
@@ -754,6 +781,7 @@ scenario selected projection = do
               , "broker.ready"
               , "broker.authenticated-vault-status"
               , "custody.no-root-token-in-minio"
+              , "bootstrap.unobservable-unlock-object-refuses-init"
               ]
               [ "MinIO, Vault and the MinIO client pods report Ready" `isInfixOf` textOf services1 || ok services1
               , ok unlock1
@@ -764,6 +792,7 @@ scenario selected projection = do
               , "broker-ready: ok" `isInfixOf` textOf services1
               , "\"initialized\":true" `isInfixOf` textOf vaultStatusRun
               , "client-token: ok" `isInfixOf` textOf unlock1
+              , refusedWith "exact MinIO unlock object could not be observed" deniedInit
               ]
               [ ready1 && fmap (\h -> not (healthInitialized h)) healthBeforeInit == Just True
               , unsealedWith healthAfterInit
@@ -780,6 +809,13 @@ scenario selected projection = do
                           && not ("root_token" `isInfixOf` text)
                           && not ("pending_root" `isInfixOf` text)
                   Nothing -> False
+              , all commandSucceeded [emptyBucket, sentinelStored, accessRemoved, accessRestored, sentinelRemoved]
+                  && not (commandSucceeded readerDenied)
+                  && uninitializedWith healthBeforeInit
+                  && uninitializedWith healthAfterDenied
+                  && retainedSentinel == Just sentinel
+                  && sentinelAbsent
+                  && not deniedInitIntent
               ]
           case2 =
             scenarioReport
@@ -807,7 +843,7 @@ scenario selected projection = do
             scenarioReport
               (bindingFor 3 "protected")
               (ScenarioTiming case2Done case3Done case3Done)
-              (if ok protectedRun && ok services6 then PrimarySucceeded else PrimaryFailed)
+              (if protectedCompleted && ok services6 then PrimarySucceeded else PrimaryFailed)
               CleanupConfirmed
               [ "protected.no-input-needs-input"
               , "protected.wrong-key-refused"
@@ -817,30 +853,32 @@ scenario selected projection = do
               ]
               [ "Needs input" `isInfixOf` textOf noInputRun
               , "Refused" `isInfixOf` textOf wrongRun
-              , "PROMPTED" `isInfixOf` ptyText && "NOECHO" `isInfixOf` ptyText && "REFUSED" `isInfixOf` ptyText
-              , "were not consulted" `isInfixOf` textOf protectedRun
-              , ok protectedRun
+              , protectedPrompt
+              , "NO_MINIO_CONTACT" `elem` ptyFlags
+              , protectedCompleted
               ]
               [ sealedWith sealedProtected && sealedWith afterNoInput && not (ok noInputRun)
               , sealedWith afterWrongProtected && not (ok wrongRun)
-              , sealedWith afterPty && "PROMPTED" `isInfixOf` ptyText && "NOECHO" `isInfixOf` ptyText
-              , minioDown && unsealedWith afterProtected && ok protectedRun && ok services7
+              , protectedPrompt && unsealedWith afterProtected
+              , minioDown && unsealedWith afterProtected && protectedCompleted && ok services7
               , sameCluster cluster1 afterProtected
               ]
           case6 =
             scenarioReport
               (bindingFor 6 "concurrent")
               (ScenarioTiming case3Done case6Done case6Done)
-              (if Nothing `notElem` concurrentWrites then PrimarySucceeded else PrimaryFailed)
-              CleanupConfirmed
-              [ "concurrent.all-writes-readback"
+              (if workersConcurrent && workersCompleted then PrimarySucceeded else PrimaryFailed)
+              (if workersClean then CleanupConfirmed else CleanupFailed)
+              [ "concurrent.both-workers-ready"
+              , "concurrent.all-writes-readback"
               , "concurrent.no-restart-or-oom"
               , "concurrent.limits-declared"
               , "policy.labelled-client-reaches-vault"
               , "policy.unlabelled-client-refused"
               , "bootstrap.no-registry-dependency"
               ]
-              [ all (== Just "done\n") concurrentWrites
+              [ workersConcurrent
+              , workersCompleted
               , True
               , True
               , either
@@ -853,7 +891,8 @@ scenario selected projection = do
                   policyDenied
               , either (const False) ((== 0) . fst) pullPolicies
               ]
-              [ concurrentReads == map (Just . workerValue) workers && unsealedWith healthAfterWorkers
+              [ workersConcurrent
+              , workersCompleted && unsealedWith healthAfterWorkers
               , case podState of
                   Right (0, out) -> all noRestart (filter (not . null) (splitOnBar (ByteString8.unpack out)))
                   _ -> False
@@ -949,7 +988,7 @@ scenario selected projection = do
               (bindingFor 4 "adverse")
               (ScenarioTiming case2Done case4Done case4Done)
               (if sealedWith sealedBefore && ok unlock3 then PrimarySucceeded else PrimaryFailed)
-              CleanupConfirmed
+              (if productionRetired then CleanupConfirmed else CleanupFailed)
               [ "adverse.missing-object-refused"
               , "adverse.generation-mismatch-refused"
               , "adverse.minio-outage-refused"
@@ -969,7 +1008,7 @@ scenario selected projection = do
               [ sealedWith afterMissing && missingStillAbsent && not (ok missingRun)
               , sealedWith afterTamper && not (ok tamperRun) && restoredMissing
               , sealedWith afterOutage && not (ok outageRun) && ok services4
-              , not (ok productionRun) && sealedWith afterOutage
+              , not (ok productionRun) && sealedWith afterOutage && productionRetired
               , unsealedWith healthRecovered && sameCluster cluster1 healthRecovered && ok services3
               , sealedWith afterWrongKey && not (ok wrongKeyRun)
               , pendingGone && objectBack && unsealedWith healthRecovered
@@ -978,7 +1017,7 @@ scenario selected projection = do
             scenarioReport
               (bindingFor 5 "recreation")
               (ScenarioTiming case4Done done done)
-              (if ok unlock4 && ok reconcile2 || ok services5 then PrimarySucceeded else PrimaryFailed)
+              (if all ok [delete1, reconcile2, services5, unlock4] then PrimarySucceeded else PrimaryFailed)
               (if absent2 && retained2 && ok delete2 then CleanupConfirmed else CleanupFailed)
               [ "recreated.vault-sealed-with-retained-data"
               , "recreated.same-identity"
@@ -998,7 +1037,13 @@ scenario selected projection = do
       reports <- mapM (publishScenario project) [case1, case2, case3, case6, case7, case8, case4, case5]
       writeOutputLine (unlines (map fst reports))
       writeOutputLine
-        ( "detail: unlock1="
+        ( "detail: initial reconcile="
+            ++ take 600 (textOf reconcile1)
+            ++ " | initial services="
+            ++ take 350 (textOf services1)
+            ++ " | unobservable object control="
+            ++ take 450 (textOf deniedInit)
+            ++ " | unlock1="
             ++ take 200 (textOf unlock1)
             ++ " | missing="
             ++ take 200 (textOf missingRun)
@@ -1012,6 +1057,12 @@ scenario selected projection = do
             ++ take 900 (textOf unlock3)
             ++ " | production="
             ++ take 160 (textOf productionRun)
+            ++ " | first-delete="
+            ++ take 300 (textOf delete1)
+            ++ " | replacement="
+            ++ take 300 (textOf reconcile2)
+            ++ " | replacement-services="
+            ++ take 650 (unlines (filter (isInfixOf "NOT completed") (lines (textOf services5))))
         )
       pure (if all snd reports then ExitSuccess else ExitFailure 1)
  where
@@ -1108,3 +1159,183 @@ markLegacyFormat bytes = case Aeson.decodeStrict bytes of
           )
       )
   _ -> Nothing
+
+-- A scope-bound fixture launches two real Pods with the production one-shot
+-- worker resource envelope. Their program receives a limited test token
+-- only over attach stdin. The API binds each UID before either sees input.
+runBoundedVaultWorkers
+  :: BootstrapProjection
+  -> (Int -> [String] -> ByteString.ByteString -> IO (Either String (Int, ByteString.ByteString)))
+  -> ByteString.ByteString
+  -> Maybe ByteString.ByteString
+  -> IO (Bool, Bool, Bool)
+runBoundedVaultWorkers projection kubectl entropy token = do
+  kindIntent <- observeKindIntent projection
+  case (kindIntent, token) of
+    (KindIntentMatches operation, Just input) -> do
+      launched <- traverse (launch operation) [1, 2]
+      let workers = [(name index, uid) | (index, Just uid) <- zip [1, 2] launched]
+      ready <- case workers of
+        [(first, _), (second, _)] ->
+          successful
+            <$> request
+              60
+              [ "-n"
+              , managementNamespace
+              , "wait"
+              , "--for=condition=Ready"
+              , "pod/" ++ first
+              , "pod/" ++ second
+              , "--timeout=45s"
+              ]
+        _ -> pure False
+      concurrent <- if ready then and <$> traverse (observePhase "Running" False) workers else pure False
+      completed <-
+        if concurrent
+          then and <$> Async.mapConcurrently (runWorker input) workers
+          else pure False
+      cleanup <- and <$> traverse retire workers
+      pure (concurrent, completed, length workers == 2 && cleanup)
+    _ -> pure (False, False, False)
+ where
+  scope = bootstrapScope projection
+  nonce = take 12 (hex32 (entropy <> "capacity-workers"))
+  name index = "phase2-worker-" ++ nonce ++ "-" ++ show (index :: Int)
+  record index stage = name index ++ "-" ++ stage ++ ".json"
+  marker index = take 24 (hex32 (entropy <> ByteString8.pack (name index)))
+  request duration arguments = kubectl duration arguments ByteString.empty
+  successful result = either (const False) ((== 0) . fst) result
+  recordChecked path value = do
+    written <- writeJournalRecord projection path value
+    found <- observeJournalRecord projection path
+    pure (written && found == JournalRecordObserved value)
+  launch operation index = do
+    let worker = name index
+        identity =
+          [ "schema_version" .= (1 :: Int)
+          , "operation_id" .= operation
+          , "generation" .= bootstrapRootGeneration projection
+          , "deployment" .= scopeKindName scope
+          , "namespace" .= managementNamespace
+          , "pod" .= worker
+          ]
+    attempted <- recordChecked (record index "attempt") (Aeson.object identity)
+    if not attempted
+      then pure Nothing
+      else do
+        created <- kubectl 45 ["create", "-f", "-", "-o", "jsonpath={.metadata.uid}"] (manifest index)
+        case createdNamespaceUid (fmap (fmap ByteString8.unpack) created) of
+          Nothing -> pure Nothing
+          Just uid -> do
+            bound <- recordChecked (record index "created") (Aeson.object (("uid" .= uid) : identity))
+            pure (if bound then Just uid else Nothing)
+  profile = Capacity.oneShotSecretWorkerEnvelope
+  manifest index =
+    LazyByteString.toStrict $
+      Aeson.encode $
+        Aeson.object
+          [ "apiVersion" .= ("v1" :: String)
+          , "kind" .= ("Pod" :: String)
+          , "metadata"
+              .= Aeson.object
+                [ "name" .= name index
+                , "namespace" .= managementNamespace
+                , "labels"
+                    .= Aeson.object
+                      [ "prodbox.io/management-client" .= ("true" :: String)
+                      , "prodbox.io/phase2-workload" .= nonce
+                      ]
+                ]
+          , "spec"
+              .= Aeson.object
+                [ "restartPolicy" .= ("Never" :: String)
+                , "automountServiceAccountToken" .= False
+                , "activeDeadlineSeconds" .= (180 :: Int)
+                , "terminationGracePeriodSeconds" .= (0 :: Int)
+                , "containers"
+                    .= [ Aeson.object
+                           [ "name" .= ("worker" :: String)
+                           , "image" .= ("docker.io/hashicorp/vault:1.18.3" :: String)
+                           , "imagePullPolicy" .= ("Never" :: String)
+                           , "stdin" .= True
+                           , "stdinOnce" .= True
+                           , "command" .= ["/bin/sh", "-ec", script index]
+                           , "resources"
+                               .= Aeson.object
+                                 [ "requests" .= CapacityRender.resourceVectorRuntimeValue (Capacity.request profile)
+                                 , "limits" .= CapacityRender.resourceVectorRuntimeValue (Capacity.limit profile)
+                                 ]
+                           ]
+                       ]
+                ]
+          ]
+  script index =
+    let target = "phase2/workload-" ++ name index
+        value = marker index
+     in "IFS= read -r VAULT_TOKEN; export VAULT_TOKEN VAULT_ADDR=http://vault:8200; "
+          ++ "vault kv put -mount=secret "
+          ++ target
+          ++ " marker="
+          ++ value
+          ++ " >/dev/null; "
+          ++ "observed=$(vault kv get -mount=secret -field=marker "
+          ++ target
+          ++ "); "
+          ++ "test \"$observed\" = "
+          ++ value
+  observePhase phase requireExit (worker, uid) = do
+    let projectionPath =
+          "jsonpath={.metadata.uid} {.status.phase} {.spec.containers[0].imagePullPolicy} {.status.qosClass}"
+            ++ (if requireExit then " {.status.containerStatuses[0].state.terminated.exitCode}" else "")
+    current <- request 30 ["-n", managementNamespace, "get", "pod", worker, "-o", projectionPath]
+    pure
+      ( current
+          == Right (0, ByteString8.pack (unwords ([uid, phase, "Never", "Guaranteed"] ++ ["0" | requireExit])))
+      )
+  runWorker input worker@(selected, _) = do
+    attached <- kubectl 90 ["-n", managementNamespace, "attach", "-i", "pod/" ++ selected] input
+    finished <-
+      request
+        55
+        [ "-n"
+        , managementNamespace
+        , "wait"
+        , "--for=jsonpath={.status.phase}=Succeeded"
+        , "pod/" ++ selected
+        , "--timeout=45s"
+        ]
+    observed <- observePhase "Succeeded" True worker
+    pure (successful attached && successful finished && observed)
+  retire (worker, uid) = do
+    let path = "/api/v1/namespaces/" ++ managementNamespace ++ "/pods/" ++ worker
+        options =
+          LazyByteString.toStrict $
+            Aeson.encode $
+              Aeson.object
+                [ "apiVersion" .= ("v1" :: String)
+                , "kind" .= ("DeleteOptions" :: String)
+                , "preconditions" .= Aeson.object ["uid" .= uid]
+                ]
+    deleted <- kubectl 30 ["delete", "--raw", path, "-f", "-"] options
+    _ <-
+      request 50 ["-n", managementNamespace, "wait", "--for=delete", "pod/" ++ worker, "--timeout=40s"]
+    before <- request 15 ["get", "--raw", "/readyz"]
+    absent <-
+      request
+        15
+        [ "-n"
+        , managementNamespace
+        , "get"
+        , "pods"
+        , "--field-selector"
+        , "metadata.name=" ++ worker
+        , "-o"
+        , "jsonpath={.items[*].metadata.uid}"
+        ]
+    after <- request 15 ["get", "--raw", "/readyz"]
+    pure
+      ( successful deleted
+          && before == Right (0, "ok")
+          && absent == Right (0, "")
+          && after == Right (0, "ok")
+      )

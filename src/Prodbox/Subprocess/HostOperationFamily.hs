@@ -199,7 +199,8 @@ verifyHostControllerProgramInputs :: HostControllerProgram -> IO (Either HostOpe
 verifyHostControllerProgramInputs (HostControllerProgram _ inputs) =
   either (Left . HostOperationInputsRefused) Right <$> Inputs.verifyHostControllerInputs inputs
 
-hashHostControllerProgramExecutable :: HostControllerProgram -> IO (Either HostOperationError String)
+hashHostControllerProgramExecutable
+  :: HostControllerProgram -> IO (Either HostOperationError String)
 hashHostControllerProgramExecutable (HostControllerProgram _ inputs) =
   either (Left . HostOperationInputsRefused) Right <$> Inputs.hashHostControllerExecutable inputs
 
@@ -670,8 +671,12 @@ submitPublishedHostOperationFamily permit = submitHostOperationFamilyWithPublica
 -- The expected domain is checked at the same native submission boundary as
 -- provider qualification and the closing manager read.
 submitPublishedHostOperationFamilyBoundToDomain
-  :: Publication.HostPublicationSubmission -> Identity.HostManagerDomain -> IO Bool
-  -> BusConnection -> HostOperationIntent -> HostControllerProgram
+  :: Publication.HostPublicationSubmission
+  -> Identity.HostManagerDomain
+  -> IO Bool
+  -> BusConnection
+  -> HostOperationIntent
+  -> HostControllerProgram
   -> IO (Either HostOperationError ())
 submitPublishedHostOperationFamilyBoundToDomain permit domain stable =
   submitHostOperationFamilyWithPublication (Just permit) Nothing (Just (domain, stable))
@@ -705,8 +710,14 @@ submitHostOperationFamilyWithPublication publication input expectedDomain origin
       -- Kind submission requires both the held publication and the recorded
       -- manager/admission binding; the unbound generic entrypoints cannot
       -- send a kind controller.
-      when (hostOperationKind intent `elem` [Identity.KindController, Identity.KindProbeVerifierController, Identity.KindProbeSuccessorController]) $
-        case (publication, expectedDomain) of
+      when
+        ( hostOperationKind intent
+            `elem` [ Identity.KindController
+                   , Identity.KindProbeVerifierController
+                   , Identity.KindProbeSuccessorController
+                   ]
+        )
+        $ case (publication, expectedDomain) of
           (Just _, Just _) -> pure ()
           _ -> throwE HostOperationProgramUnavailable
       let HostControllerProgram _ originalInputs = program
@@ -746,7 +757,15 @@ submitHostOperationFamilyWithPublication publication input expectedDomain origin
       domain <- withExceptT HostOperationManagerRefused (observeManagerDomain connection)
       case expectedDomain of
         Just (expected, _) -> unless (domain == expected) (throwE HostSubmissionProviderMismatch)
-        Nothing -> when (hostOperationKind intent `elem` [Identity.KindController, Identity.KindProbeVerifierController, Identity.KindProbeSuccessorController]) (throwE HostSubmissionProviderMismatch)
+        Nothing ->
+          when
+            ( hostOperationKind intent
+                `elem` [ Identity.KindController
+                       , Identity.KindProbeVerifierController
+                       , Identity.KindProbeSuccessorController
+                       ]
+            )
+            (throwE HostSubmissionProviderMismatch)
       sender <- withExceptT HostOperationManagerRefused (observeBusSender connection)
       qualified <- lift $ Provider.withQualifiedProvider connection $ \provider -> runExceptT $ do
         unless (Provider.qualifiedProviderDomain provider == domain) (throwE HostSubmissionProviderMismatch)
